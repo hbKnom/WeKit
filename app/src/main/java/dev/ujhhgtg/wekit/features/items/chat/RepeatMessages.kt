@@ -59,7 +59,6 @@ object RepeatMessages : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsP
 
                     CoroutineScope(Dispatchers.IO).launch {
                         val sent = repeatMessage(msgInfo)
-                        if (!sent) showToastSuspend(context, context.localizedChatString(R.string.chat_repeat_failed))
                     }
                 }
             )
