@@ -654,7 +654,6 @@ object SwipeMessageOperations : ClickableFeature(), IResolveDex,
         val context = view.context
         CoroutineScope(Dispatchers.IO).launch {
             val sent = RepeatMessages.repeatMessage(msgInfo)
-            if (!sent) showToastSuspend(context, context.localizedChatString(R.string.chat_repeat_failed))
         }
     }
 
