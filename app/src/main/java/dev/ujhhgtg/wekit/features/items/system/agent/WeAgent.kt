@@ -2,11 +2,11 @@ package dev.ujhhgtg.wekit.features.items.system.agent
 
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.activity.agent.WeAgentSettingsActivity
 import dev.ujhhgtg.wekit.agent.data.WeAgentSettings
 import dev.ujhhgtg.wekit.features.api.agent.WeAgentService
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import kotlinx.coroutines.Dispatchers
@@ -19,16 +19,15 @@ import kotlinx.coroutines.withContext
  * overlay visibility is governed by the persisted [dev.ujhhgtg.wekit.agent.data.OverlayMode]
  * (default DISABLED). Tapping the row opens the full [WeAgentSettingsActivity].
  *
- * All detailed configuration (model providers, MCP servers, tool permissions, prompts, workspaces,
+ * All detailed configuration (model providers, MCP servers, tool permissions, prompts, Linux environments,
  * skills, global settings) lives in that Activity — not inline here.
  */
-@Feature(
-    id = "WeAgent",
-    nameRes = "feature_we_agent_name",
-    categoryIds = [FeatureCategoryIds.SYSTEM_PRIVACY],
-    descriptionRes = "feature_we_agent_description",
-)
 object WeAgent : ClickableFeature() {
+
+    override val technicalId = "WeAgent"
+    override val nameRes = R.string.feature_we_agent_name
+    override val categoryIds = listOf(FeatureCategoryIds.SYSTEM_PRIVACY)
+    override val descriptionRes = R.string.feature_we_agent_description
 
     override val alwaysEnabled = true
     override val noSwitchWidget = true

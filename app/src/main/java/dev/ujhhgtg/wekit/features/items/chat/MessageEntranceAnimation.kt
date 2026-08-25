@@ -1,5 +1,10 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,7 +25,6 @@ import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
@@ -60,13 +64,12 @@ import java.util.WeakHashMap
  *   - 重力掉落: translationY = -250dp + scale 0.9, spring 回 0/1.0
  *     (translation stiffness=300, dampingRatio=0.5; scale stiffness=200, dampingRatio=0.6)。
  */
-@Feature(
-    id = "消息进入动画",
-    nameRes = "feature_message_entrance_animation_name",
-    categoryIds = [FeatureCategoryIds.CHAT],
-    descriptionRes = "feature_message_entrance_animation_description",
-)
 object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
+
+    override val technicalId = "消息进入动画"
+    override val nameRes = R.string.feature_message_entrance_animation_name
+    override val categoryIds = listOf(FeatureCategoryIds.CHAT)
+    override val descriptionRes = R.string.feature_message_entrance_animation_description
 
     /**
      * 入场动效风格: 0=弹跳入场 1=平移滑入 2=重力掉落。
@@ -109,9 +112,12 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
 
     /** 进行中的弹簧动画, 绑定/复位时取消 (对应 Geek 的 h40 tag 集合) */
     private val activeSprings = WeakHashMap<View, MutableList<SpringAnimation>>()
+    private val activeFades = WeakHashMap<View, ObjectAnimator>()
+    private val animationGenerations = WeakHashMap<View, Int>()
 
     /** 侧滑队列 (对应 Geek 的 `ob0.a`), 下一帧按 position 排序错峰播放 */
     private val pendingSlides = ArrayList<SlideEntry>()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var drainPosted = false
     private val drainRunnable = Runnable { drainPendingSlides() }
 
@@ -119,6 +125,8 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
         val view: View,
         val position: Int,
         val msgId: Long,
+        val style: Int,
+        val generation: Int,
     )
 
     /**
@@ -207,14 +215,24 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
     }
 
     override fun onDisable() {
+        mainHandler.removeCallbacks(drainRunnable)
+        drainPosted = false
         pendingSlides.clear()
+        (activeSprings.keys + activeFades.keys + animationGenerations.keys)
+            .toSet()
+            .forEach(::resetRow)
+        animationGenerations.clear()
         activeSprings.clear()
+        activeFades.clear()
     }
 
     /** 对应 Geek `vh.j`: 取消动画并复位全部 transform */
     private fun resetRow(view: View) {
+        animationGenerations[view] = (animationGenerations[view] ?: 0) + 1
+        activeFades.remove(view)?.cancel()
         view.animate().cancel()
         cancelSprings(view)
+        view.setLayerType(View.LAYER_TYPE_NONE, null)
         view.translationX = 0f
         view.translationY = 0f
         view.rotation = 0f
@@ -234,12 +252,13 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
         view.scaleY = 0.85f
         startSpring(view, DynamicAnimation.SCALE_X, 1f, SPRING_STIFFNESS_BOUNCE, SPRING_DAMPING_BOUNCE)
         startSpring(view, DynamicAnimation.SCALE_Y, 1f, SPRING_STIFFNESS_BOUNCE, SPRING_DAMPING_BOUNCE)
-        view.animate().alpha(1f).setDuration(FADE_DURATION_MS).start()
+        startFade(view, 0L)
     }
 
     /** 侧滑/掉落路径 (对应 Geek ob0.a + od 队列 + lb0 弹簧) */
     private fun queueSlideEntrance(view: View, direction: Float, position: Int, msgId: Long) {
-        if (entranceStyle == STYLE_DROP) {
+        val style = entranceStyle
+        if (style == STYLE_DROP) {
             // 重力掉落: 初始态为上方 -250dp + scale 0.9
             view.translationX = 0f
             view.translationY = -DROP_DISTANCE_DP * view.resources.displayMetrics.density
@@ -253,10 +272,16 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
             view.scaleY = 1f
         }
         view.alpha = 0f
-        pendingSlides += SlideEntry(view, position, msgId)
+        pendingSlides += SlideEntry(
+            view = view,
+            position = position,
+            msgId = msgId,
+            style = style,
+            generation = animationGenerations[view] ?: 0,
+        )
         if (!drainPosted) {
             drainPosted = true
-            view.post(drainRunnable)
+            mainHandler.post(drainRunnable)
         }
     }
 
@@ -269,18 +294,15 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
 
         entries.forEachIndexed { index, entry ->
             // 行在入队后已被换绑到其他消息, 丢弃过期条目
-            if (entry.view.getTag(VIEW_TAG_MSG_ID) != entry.msgId) return@forEachIndexed
+            if (!isCurrent(entry)) return@forEachIndexed
 
             val delay = index * SLIDE_STAGGER_MS
             entry.view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-            entry.view.animate()
-                .alpha(1f)
-                .setStartDelay(delay)
-                .setDuration(FADE_DURATION_MS)
-                .start()
+            startFade(entry.view, delay)
 
-            entry.view.postOnAnimationDelayed({
-                if (entranceStyle == STYLE_DROP) {
+            mainHandler.postDelayed({
+                if (!isCurrent(entry)) return@postDelayed
+                if (entry.style == STYLE_DROP) {
                     startSpring(entry.view, DynamicAnimation.TRANSLATION_Y, 0f,
                         SPRING_STIFFNESS_TRANSLATION, SPRING_DAMPING_DROP)
                     startSpring(entry.view, DynamicAnimation.SCALE_X, 1f,
@@ -294,11 +316,38 @@ object MessageEntranceAnimation : ClickableFeature(), IResolveDex {
             }, delay)
 
             // 对应 Geek `p1(14, mb0)` 的 400ms 延迟清理
-            entry.view.postDelayed({
-                entry.view.setLayerType(View.LAYER_TYPE_NONE, null)
+            mainHandler.postDelayed({
+                if (isCurrent(entry)) {
+                    entry.view.setLayerType(View.LAYER_TYPE_NONE, null)
+                }
             }, delay + 400L)
         }
     }
+
+    private fun startFade(view: View, delay: Long) {
+        val animator = ObjectAnimator.ofFloat(view, View.ALPHA, 1f).apply {
+            startDelay = delay
+            duration = FADE_DURATION_MS
+        }
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationCancel(animation: Animator) = finishFade(view, animator)
+            override fun onAnimationEnd(animation: Animator) = finishFade(view, animator)
+        })
+        activeFades[view] = animator
+        animator.start()
+    }
+
+    private fun finishFade(view: View, animator: ObjectAnimator) {
+        if (activeFades[view] === animator) {
+            activeFades.remove(view)
+            view.alpha = 1f
+            view.setLayerType(View.LAYER_TYPE_NONE, null)
+        }
+    }
+
+    private fun isCurrent(entry: SlideEntry): Boolean =
+        entry.view.getTag(VIEW_TAG_MSG_ID) == entry.msgId &&
+                animationGenerations[entry.view] == entry.generation
 
     private fun startSpring(
         view: View,

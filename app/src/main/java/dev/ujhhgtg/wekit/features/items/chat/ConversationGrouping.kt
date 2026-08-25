@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -70,11 +71,11 @@ import com.composables.icons.materialsymbols.outlined.Edit
 import com.composables.icons.materialsymbols.outlined.Swap_vert
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.api.core.WeConversationApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.features.items.contacts.HideContacts
@@ -101,13 +102,12 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import java.lang.reflect.Modifier as JavaModifier
 
-@Feature(
-    id = "对话分组",
-    nameRes = "feature_conversation_grouping_name",
-    categoryIds = [FeatureCategoryIds.CHAT],
-    descriptionRes = "feature_conversation_grouping_description",
-)
 object ConversationGrouping : SwitchFeature(), IResolveDex {
+
+    override val technicalId = "对话分组"
+    override val nameRes = R.string.feature_conversation_grouping_name
+    override val categoryIds = listOf(FeatureCategoryIds.CHAT)
+    override val descriptionRes = R.string.feature_conversation_grouping_description
 
     const val GROUP_PREFIX = "wekit_group_"
 
@@ -158,7 +158,7 @@ object ConversationGrouping : SwitchFeature(), IResolveDex {
                 val groupsState = mutableStateOf(loadGroups())
                 setContent {
                     InjectedUiTheme {
-                        val localizedContext = LocalContext.current
+                        val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
                         var selectedGroupId by selectedGroupIdState
                         var groups by groupsState
 
@@ -359,7 +359,7 @@ object ConversationGrouping : SwitchFeature(), IResolveDex {
         modifier: Modifier = Modifier,
         containerColor: Color = if (isSystemInDarkTheme()) Color(0xFF111111) else Color(0xFFEDEDED),
     ) {
-        val localizedContext = LocalContext.current
+        val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
         var menuForGroupId by remember { mutableStateOf<String?>(null) }
         // Sort (edit) mode: tabs jiggle in place and can be long-pressed to drag-reorder.
         var sortMode by remember { mutableStateOf(false) }
@@ -522,9 +522,23 @@ object ConversationGrouping : SwitchFeature(), IResolveDex {
         }
     }
 
+    data class GroupChoice(val id: String, val name: String, val members: List<String>)
+
+    /** Public member snapshots used by contact pickers that need to filter by group. */
+    fun groupFilterOptions(context: Context): List<GroupChoice> =
+        loadGroups()
+            .filterNot { isAllTab(it.id) }
+            .map { group ->
+                GroupChoice(
+                    id = group.id,
+                    name = localizedGroupName(context, group),
+                    members = getGroupMembers(group),
+                )
+            }
+
     @Composable
     private fun groupDisplayName(group: ChatGroup): String =
-        localizedGroupName(LocalContext.current, group)
+        localizedGroupName(LocalWeKitLocalizedContext.current, group)
 
     /**
      * The row shown while sorting: every tab jiggles in place (iOS home-screen editing feel), and a
@@ -868,7 +882,7 @@ object ConversationGrouping : SwitchFeature(), IResolveDex {
         onDelete: (() -> Unit)? = null,
         onSave: (ChatGroup) -> Unit
     ) {
-        val localizedContext = LocalContext.current
+        val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
         val groupId = remember(group) { group?.id ?: newGroupId() }
         var name by remember(group) { mutableStateOf(group?.name ?: "") }
         var members by remember(group) { mutableStateOf(group?.members?.toSet().orEmpty()) }

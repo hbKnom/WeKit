@@ -20,7 +20,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -34,6 +33,8 @@ import dev.ujhhgtg.wekit.features.core.BaseFeature
 import dev.ujhhgtg.wekit.features.core.FeaturesProvider
 import dev.ujhhgtg.wekit.features.core.NewFeatures
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
+import dev.ujhhgtg.wekit.features.core.featureCategoryComparator
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import dev.ujhhgtg.wekit.i18n.WeKitLocaleController
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
@@ -62,7 +63,7 @@ private fun featureChecked(item: BaseFeature): Boolean {
 
 @Composable
 fun FeaturesPager(onOpenCategory: (String) -> Unit) {
-    val context = LocalContext.current
+    val context = LocalWeKitLocalizedContext.current
     val resolvedLocale = WeKitLocaleController.resolvedLocale
     val revision = FeatureCategoryState.revision
     var query by remember { mutableStateOf("") }
@@ -227,7 +228,7 @@ fun FeaturesPager(onOpenCategory: (String) -> Unit) {
 
 @Composable
 fun CategoryDetailScreen(categoryId: String, onBack: () -> Unit) {
-    val context = LocalContext.current
+    val context = LocalWeKitLocalizedContext.current
     val resolvedLocale = WeKitLocaleController.resolvedLocale
     val revision = FeatureCategoryState.revision
     val featureNameCollator = remember(resolvedLocale) {
@@ -239,9 +240,14 @@ fun CategoryDetailScreen(categoryId: String, onBack: () -> Unit) {
             ENABLED_FEATURES_CATEGORY -> FeatureCategoryState.enabledItems()
             else -> FeaturesProvider.ALL_HOOK_ITEMS
                 .filter { categoryId in it.categoryIds }
-                .sortedWith { first, second ->
-                    featureNameCollator.compare(first.localizedName(context), second.localizedName(context))
-                }
+                .sortedWith(
+                    featureCategoryComparator { first, second ->
+                        featureNameCollator.compare(
+                            first.localizedName(context),
+                            second.localizedName(context),
+                        )
+                    },
+                )
         }
     }
 

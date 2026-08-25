@@ -47,7 +47,7 @@ android {
 
         ndk {
             // noinspection ChromeOsAbiSupport
-            abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += "arm64-v8a"
         }
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
@@ -131,6 +131,9 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources.excludes += listOf(
             "kotlin/**",
             "**.bin",
@@ -291,6 +294,7 @@ dependencies {
     implementation(libs.mmkv)
 
     implementation(project(":libs:common:bsh"))
+    implementation(project(":libs:monet-generator-api"))
 
     compileOnly(libs.legacyxposed.api)
     compileOnly(libs.libxposed.api)
@@ -339,6 +343,7 @@ dependencies {
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.client.websockets)
     implementation(libs.ktor.serialization.kotlinx.json)
+    implementation(libs.jsch)
 
     implementation(libs.osmdroid.android)
 
@@ -348,6 +353,7 @@ dependencies {
     testImplementation(project(":libs:common:stubs"))
     testImplementation(libs.legacyxposed.api)
     testImplementation(libs.libxposed.api)
+    testImplementation(libs.sqlite.jdbc)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -361,6 +367,7 @@ val dexTestWorkerProperties = listOf(
     "wekit.dexTest.versionName",
     "wekit.dexTest.buildTag",
     "wekit.dexTest.isGooglePlay",
+    "wekit.dexTest.features",
 )
 val dexTestWorker = providers.gradleProperty("dexTestWorker").map(String::toBoolean).orElse(false)
 

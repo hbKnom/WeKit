@@ -18,8 +18,8 @@ profileinstaller = "1.4.1"
 serialization = "1.11.0"
 lombok = "1.18.46"
 google-protobuf = "4.35.1"
-ksp = "2.3.10"
-okhttp = "5.4.0"
+ksp = "2.3.11"
+okhttp = "5.5.0"
 fastjson2 = "2.0.64"
 hidden-api-bypass = "6.1"
 runtime = "1.12.0"
@@ -41,6 +41,11 @@ room = "2.8.4"
 ktor = "3.5.2"
 dexmaker = "2.28.6"
 dynamicanimation = "1.1.0"
+jsch = "2.28.6"
+sqliteJdbc = "3.50.3.0"
+arsclib = "1.4.0"
+apksig = "9.2.1"
+bouncycastle = "1.79"
 
 # noinspection UnusedVersionCatalogEntry
 namespace = "dev.ujhhgtg.wekit"
@@ -60,7 +65,6 @@ ndk = "30.0.14904198"
 [libraries]
 androidx-annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
 androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
-#androidx-compose-material3 = { module = "androidx.compose.material3:material3" } # use local-maven version
 androidx-compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "compose-material3" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle-runtime" }
@@ -88,6 +92,7 @@ coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version
 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
 
 markwon-core = { module = "io.noties.markwon:core", version.ref = "markwon" }
 markwon-ext-strikethrough = { module = "io.noties.markwon:ext-strikethrough", version.ref = "markwon" }
@@ -108,10 +113,10 @@ alibaba-fastjson2 = { module = "com.alibaba.fastjson2:fastjson2", version.ref = 
 legacyxposed-api = { module = "de.robv.android.xposed:api", version = "82" }
 dexkit = { module = "org.luckypray:dexkit", version.ref = "dexkit" }
 dexmaker = { module = "com.linkedin.dexmaker:dexmaker", version.ref = "dexmaker" }
-#arsclib = { module = "io.github.reandroid:ARSCLib", version.ref = "arsclib" }
-#apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
-#bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
-#bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+arsclib = { module = "io.github.reandroid:ARSCLib", version.ref = "arsclib" }
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
+bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 hiddenapibypass = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", version.ref = "hidden-api-bypass" }
 libsu-core = { module = "com.github.topjohnwu.libsu:core", version.ref = "libsu" }
 libxposed-api = { module = "io.github.libxposed:api", version.ref = "libxposed" }
@@ -137,6 +142,7 @@ ktor-client-core = { module = "io.ktor:ktor-client-core" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio" }
 ktor-client-websockets = { module = "io.ktor:ktor-client-websockets" }
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json" }
+jsch = { module = "com.github.mwiede:jsch", version.ref = "jsch" }
 
 androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "profileinstaller" }
 

@@ -20,7 +20,6 @@ import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.core.ApiFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
@@ -32,13 +31,12 @@ import dev.ujhhgtg.wekit.ui.utils.findViewWhich
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
 
-@Feature(
-    id = "聊天输入栏增强 API",
-    nameRes = "feature_we_chat_input_bar_menu_api_name",
-    categoryIds = [FeatureCategoryIds.API],
-    descriptionRes = "feature_we_chat_input_bar_menu_api_description",
-)
 object WeChatInputBarMenuApi : ApiFeature(), IResolveDex {
+
+    override val technicalId = "聊天输入栏增强 API"
+    override val nameRes = R.string.feature_we_chat_input_bar_menu_api_name
+    override val categoryIds = listOf(FeatureCategoryIds.API)
+    override val descriptionRes = R.string.feature_we_chat_input_bar_menu_api_description
 
     fun interface IActionItemsProvider {
         fun getActionItems(): List<ActionItem>
@@ -54,14 +52,14 @@ object WeChatInputBarMenuApi : ApiFeature(), IResolveDex {
     )
 
     private const val TAG = "WeChatInputBarMenuApi"
-    private val providers = mutableMapOf<String, IActionItemsProvider>()
+    private val providers = mutableSetOf<IActionItemsProvider>()
 
     fun addProvider(provider: IActionItemsProvider) {
-        providers[provider.javaClass.name] = provider
+        providers += provider
     }
 
     fun removeProvider(provider: IActionItemsProvider) {
-        providers.remove(provider.javaClass.name)
+        providers -= provider
     }
 
     val methodSendMessage by dexMethod {
@@ -102,7 +100,7 @@ object WeChatInputBarMenuApi : ApiFeature(), IResolveDex {
     }
 
     fun showMenu(context: Context, chatFooter: ChatFooter) {
-        val applicableItems = providers.values
+        val applicableItems = providers
             .flatMap { it.getActionItems() }
             .filter { it.isSupported(context, chatFooter) }
 

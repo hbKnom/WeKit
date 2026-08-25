@@ -1,6 +1,7 @@
 package dev.ujhhgtg.wekit.features.items.moments
 
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,10 +14,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -24,7 +25,6 @@ import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
@@ -47,13 +47,12 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.minutes
 
-@Feature(
-    id = "自动刷新",
-    nameRes = "feature_auto_refresh_name",
-    categoryIds = [FeatureCategoryIds.MOMENTS],
-    descriptionRes = "feature_auto_refresh_description",
-)
 object AutoRefresh : ClickableFeature(), IResolveDex {
+
+    override val technicalId = "自动刷新"
+    override val nameRes = R.string.feature_auto_refresh_name
+    override val categoryIds = listOf(FeatureCategoryIds.MOMENTS)
+    override val descriptionRes = R.string.feature_auto_refresh_description
 
     private const val TAG = "AutoRefresh"
     private const val DEFAULT_INTERVAL_MINUTES = 30L
@@ -143,7 +142,7 @@ object AutoRefresh : ClickableFeature(), IResolveDex {
                 mutableFloatStateOf(minutesToSliderPosition(initialInterval))
             }
             var intervalInput by remember { mutableIntStateOf(initialInterval) }
-            val localizedContext = LocalContext.current
+            val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
 
             AlertDialogContent(
                 title = { Text(stringResource(R.string.moments_auto_refresh_title)) },

@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.beautify
 
 import androidx.annotation.StringRes
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import android.content.Context
 import android.content.res.Resources
 import android.graphics.Bitmap
@@ -42,7 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.graphics.get
 import androidx.core.graphics.toColorInt
@@ -55,7 +55,6 @@ import dev.ujhhgtg.wekit.activity.TransparentActivity
 import dev.ujhhgtg.wekit.features.api.core.models.MessageType
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.items.beautify.CustomMessageBubbles.ICON_TINT_TAG
 import dev.ujhhgtg.wekit.features.items.beautify.CustomMessageBubbles.bubbleCache
@@ -85,13 +84,12 @@ import kotlin.io.path.exists
 import kotlin.io.path.fileSize
 import kotlin.io.path.getLastModifiedTime
 
-@Feature(
-    id = "自定义消息气泡",
-    nameRes = "feature_custom_message_bubbles_name",
-    categoryIds = [FeatureCategoryIds.BEAUTIFY, FeatureCategoryIds.CHAT],
-    descriptionRes = "feature_custom_message_bubbles_description",
-)
 object CustomMessageBubbles : ClickableFeature(), WeChatMessageViewApi.ICreateViewListener {
+
+    override val technicalId = "自定义消息气泡"
+    override val nameRes = R.string.feature_custom_message_bubbles_name
+    override val categoryIds = listOf(FeatureCategoryIds.BEAUTIFY, FeatureCategoryIds.CHAT)
+    override val descriptionRes = R.string.feature_custom_message_bubbles_description
 
     private const val TAG = "CustomMessageBubbles"
 
@@ -659,7 +657,7 @@ object CustomMessageBubbles : ClickableFeature(), WeChatMessageViewApi.ICreateVi
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            val localizedContext = LocalContext.current
+            val localizedContext = LocalWeKitLocalizedContext.current
             var selectedSide by remember { mutableStateOf(BubbleSide.OTHER) }
             var pendingDeletion by remember { mutableStateOf<BubbleSide?>(null) }
             var otherForm by remember {

@@ -23,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -32,10 +31,10 @@ import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
@@ -61,14 +60,13 @@ internal const val READ_RECEIPTS_NATIVE_TEXT_TAG = 0x7E000013
 
 internal data class ReadReceiptCountState(val count: Int?)
 
-@Feature(
-    id = "消息时间增强",
-    nameRes = "feature_message_time_enhancements_name",
-    categoryIds = [FeatureCategoryIds.CHAT],
-    descriptionRes = "feature_message_time_enhancements_description",
-)
 object MessageTimeEnhancements : ClickableFeature(),
     WeChatMessageViewApi.ICreateViewListener {
+
+    override val technicalId = "消息时间增强"
+    override val nameRes = R.string.feature_message_time_enhancements_name
+    override val categoryIds = listOf(FeatureCategoryIds.CHAT)
+    override val descriptionRes = R.string.feature_message_time_enhancements_description
 
     override fun onEnable() {
         WeChatMessageViewApi.addListener(this)
@@ -301,7 +299,7 @@ object MessageTimeEnhancements : ClickableFeature(),
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            val localizedContext = LocalContext.current
+            val localizedContext = LocalWeKitLocalizedContext.current
             var displayFormatInput by remember { mutableStateOf(TextFieldValue(displayFormat)) }
             var timeFormatInput by remember { mutableStateOf(timeFormat) }
             var textSizeInputRaw by remember { mutableStateOf(textSize.toString()) }
@@ -422,10 +420,7 @@ object MessageTimeEnhancements : ClickableFeature(),
                     Button(onClick = {
                         val textSizeInput = textSizeInputRaw.toIntOrNull()
                         if (textSizeInput == null || textSizeInput <= 0) {
-                            showToast(
-                                localizedContext,
-                                localizedContext.getString(R.string.chat_message_time_invalid_number),
-                            )
+                            showToast(localizedContext.getString(R.string.chat_message_time_invalid_number))
                             return@Button
                         }
 

@@ -1,6 +1,8 @@
 package dev.ujhhgtg.wekit.dextest
 
+import dev.ujhhgtg.wekit.utils.fs.asPath
 import dev.ujhhgtg.wekit.dexkit.resolution.DexHostMetadata
+import dev.ujhhgtg.wekit.features.core.DexResolutionTestEntry
 import dev.ujhhgtg.wekit.features.core.DexResolutionTestRegistry
 import java.nio.file.Files
 import java.nio.file.Path
@@ -20,6 +22,7 @@ internal data class DexTestWorkerConfig(
     val versionName: String,
     val buildTag: String,
     val isGooglePlay: Boolean,
+    val featureSelectors: List<String>?,
 ) {
     companion object {
         fun fromSystemProperties(properties: Properties): DexTestWorkerConfig {
@@ -30,9 +33,9 @@ internal data class DexTestWorkerConfig(
                     ?: error("wekit.dexTest.isGooglePlay must be true or false, was $raw")
             }
             return DexTestWorkerConfig(
-                apk = Path.of(required("wekit.dexTest.apk")).toAbsolutePath().normalize(),
-                nativeLibrary = Path.of(required("wekit.dexTest.nativeLibrary")).toAbsolutePath().normalize(),
-                report = Path.of(required("wekit.dexTest.report")).toAbsolutePath().normalize(),
+                apk = required("wekit.dexTest.apk").asPath.toAbsolutePath().normalize(),
+                nativeLibrary = required("wekit.dexTest.nativeLibrary").asPath.toAbsolutePath().normalize(),
+                report = required("wekit.dexTest.report").asPath.toAbsolutePath().normalize(),
                 dexKitVersion = required("wekit.dexTest.dexKitVersion"),
                 dexKitRevision = required("wekit.dexTest.dexKitRevision"),
                 versionCode = required("wekit.dexTest.versionCode").toLongOrNull()
@@ -40,6 +43,16 @@ internal data class DexTestWorkerConfig(
                 versionName = required("wekit.dexTest.versionName"),
                 buildTag = required("wekit.dexTest.buildTag"),
                 isGooglePlay = isGooglePlay,
+                featureSelectors = properties.getProperty("wekit.dexTest.features")
+                    ?.takeIf(String::isNotBlank)
+                    ?.split(',')
+                    ?.map { selector ->
+                        selector.trim().also {
+                            require(it.isNotEmpty()) {
+                                "wekit.dexTest.features contains an empty feature name"
+                            }
+                        }
+                    },
             )
         }
     }
@@ -60,12 +73,16 @@ class DexTestWorkerTest {
         )
 
         val report = try {
+            val entries = selectDexTestEntries(
+                DexResolutionTestRegistry.ITEMS,
+                config.featureSelectors,
+            )
             require(Files.isRegularFile(config.apk)) { "APK is not a regular file: ${config.apk}" }
             require(Files.isRegularFile(config.nativeLibrary)) { "DexKit native library is not a regular file: ${config.nativeLibrary}" }
             System.load(config.nativeLibrary.toString())
             DexKitBridge.create(config.apk.toString()).use { dexKit ->
                 val host = DexHostMetadata(config.versionCode, config.versionName, config.isGooglePlay)
-                val features = DexResolutionTestRegistry.ITEMS.map { entry ->
+                val features = entries.map { entry ->
                     runDexFeature(entry, dexKit, host, javaClass.classLoader ?: error("worker class loader is null"))
                 }
                 buildReport(
@@ -97,6 +114,26 @@ class DexTestWorkerTest {
             )
         }
         report.writeAtomically(config.report)
+    }
+}
+
+internal fun selectDexTestEntries(
+    entries: List<DexResolutionTestEntry>,
+    selectors: List<String>?,
+): List<DexResolutionTestEntry> {
+    if (selectors == null) return entries
+    return selectors.map { selector ->
+        val matches = if ('.' in selector) {
+            entries.filter { it.className == selector }
+        } else {
+            entries.filter { it.className.substringAfterLast('.') == selector }
+        }
+        require(matches.isNotEmpty()) { "unknown Dex resolver feature: $selector" }
+        require(matches.size == 1) {
+            "ambiguous Dex resolver feature $selector; use its fully qualified name: " +
+                matches.map(DexResolutionTestEntry::className).sorted().joinToString()
+        }
+        matches.single()
     }
 }
 

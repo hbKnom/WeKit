@@ -48,7 +48,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.withStyledAttributes
@@ -71,11 +70,11 @@ import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.Modifiers
 import dev.ujhhgtg.reflekt.utils.toClass
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexClass
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
-import dev.ujhhgtg.wekit.features.core.Feature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.items.beautify.Themes.THEMES_PATH
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
@@ -117,13 +116,12 @@ import kotlin.math.roundToInt
  */
 @Suppress("DEPRECATION")
 @SuppressLint("DiscouragedApi", "InternalInsetResource")
-@Feature(
-    id = "主题",
-    nameRes = "feature_themes_name",
-    categoryIds = [FeatureCategoryIds.BEAUTIFY],
-    descriptionRes = "feature_themes_description",
-)
 object Themes : ClickableFeature(), IResolveDex {
+
+    override val technicalId = "主题"
+    override val nameRes = R.string.feature_themes_name
+    override val categoryIds = listOf(FeatureCategoryIds.BEAUTIFY)
+    override val descriptionRes = R.string.feature_themes_description
 
     private const val TAG = "Themes"
 
@@ -2959,7 +2957,7 @@ object Themes : ClickableFeature(), IResolveDex {
     override fun onClick(context: ComponentActivity) {
         val themes = listOf(getDefaultTheme(context)) + scanThemes()
         showComposeDialog(context) {
-            val localizedContext = LocalContext.current
+            val localizedContext = LocalWeKitLocalizedContext.current
             var selectedId by remember {
                 mutableStateOf(
                     currentThemeId.takeIf { id ->

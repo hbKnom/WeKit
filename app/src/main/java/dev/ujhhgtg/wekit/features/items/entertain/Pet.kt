@@ -1,6 +1,6 @@
 package dev.ujhhgtg.wekit.features.items.entertain
 
-import dev.ujhhgtg.wekit.features.core.Feature
+import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.pet.PetService
@@ -14,13 +14,12 @@ import kotlinx.coroutines.launch
  * info/treat panel. When WeAgent is also enabled, the pet's activity follows the
  * agent session state via [PetService.onAgentEvent].
  */
-@Feature(
-    id = "桌面宠物",
-    nameRes = "feature_pet_name",
-    categoryIds = [FeatureCategoryIds.ENTERTAIN],
-    descriptionRes = "feature_pet_description",
-)
 object Pet : SwitchFeature() {
+
+    override val technicalId = "桌面宠物"
+    override val nameRes = R.string.feature_pet_name
+    override val categoryIds = listOf(FeatureCategoryIds.ENTERTAIN)
+    override val descriptionRes = R.string.feature_pet_description
 
     override fun onEnable() {
         PetService.init()
