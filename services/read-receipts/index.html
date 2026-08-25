@@ -1330,6 +1330,7 @@
                     <button class="btn btn-secondary" onclick="clearSearch()" style="padding:8px 14px;">清空</button>
                     <span style="width:1px; height:22px; background:#e2e5f2;"></span>
                     <button class="btn btn-secondary" onclick="openBatchStatus()" style="padding:8px 14px;" title="批量查询多个消息 ID 的已读数（复刻自参考项目 read-receipt-tracker）">📦 批量查已读</button>
+                    <button class="btn btn-secondary" onclick="openLeaderboard()" style="padding:8px 14px;" title="查看消息 / 已读 / 注册排行榜">🏆 排行榜</button>
                     <button class="btn btn-secondary" onclick="exportCSV()" style="padding:8px 14px;" title="导出当前筛选结果（当前页）为 CSV（复刻自参考项目 read-receipt-tracker）">📥 导出 CSV</button>
                     <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelected()" disabled style="padding:8px 14px;">删除选中 (0)</button>
                     <select id="pageSizeSelect" class="btn btn-secondary" style="padding: 6px 12px; margin-left:auto;" onchange="onPageSizeChange()">
@@ -1400,6 +1401,46 @@
                 <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:8px;">
                     <button class="btn btn-secondary" onclick="closeBatchStatus()">取消</button>
                     <button class="btn btn-primary" onclick="runBatchStatus()">查询</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Leaderboard Modal -->
+        <div class="modal-overlay" id="leaderboardModal" onclick="if(event.target===this)closeLeaderboard()">
+            <div class="modal" style="max-width:720px;">
+                <div class="modal-header">
+                    <span class="modal-title">🏆 排行榜</span>
+                    <button class="modal-close" onclick="closeLeaderboard()" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+                        <button class="btn btn-primary lb-metric" data-metric="msg" onclick="setLeaderboardMetric('msg')">消息榜</button>
+                        <button class="btn btn-secondary lb-metric" data-metric="read" onclick="setLeaderboardMetric('read')">已读榜</button>
+                        <button class="btn btn-secondary lb-metric" data-metric="reg" onclick="setLeaderboardMetric('reg')">注册榜</button>
+                        <span style="width:1px; height:22px; background:#e2e5f2;"></span>
+                        <button class="btn btn-secondary lb-scope" data-scope="day" onclick="setLeaderboardScope('day')">今日</button>
+                        <button class="btn btn-primary lb-scope" data-scope="total" onclick="setLeaderboardScope('total')">全部</button>
+                        <span style="flex:1;"></span>
+                        <button class="btn btn-secondary" onclick="exportAll('messages')" title="导出全部消息为 CSV">📥 消息 CSV</button>
+                        <button class="btn btn-secondary" onclick="exportAll('reads')" title="导出全部已读记录为 CSV">📥 已读 CSV</button>
+                    </div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:60px;">#</th>
+                                    <th id="lbKeyHeader">消息内容</th>
+                                    <th style="width:110px;">数量</th>
+                                </tr>
+                            </thead>
+                            <tbody id="leaderboardBody">
+                                <tr><td colspan="3" style="text-align:center; color:#999;">加载中…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeLeaderboard()">Close</button>
                 </div>
             </div>
         </div>
@@ -2206,6 +2247,81 @@
             modal.classList.remove('open');
             document.body.style.overflow = '';
             currentDetailMsgId = null;
+        }
+
+        // ==== Leaderboard ====
+        let leaderboardMetric = 'msg';
+        let leaderboardScope = 'total';
+
+        function openLeaderboard() {
+            document.getElementById('leaderboardModal').classList.add('open');
+            document.body.style.overflow = 'hidden';
+            updateLeaderboardSeg();
+            loadLeaderboard();
+        }
+
+        function closeLeaderboard() {
+            document.getElementById('leaderboardModal').classList.remove('open');
+            document.body.style.overflow = '';
+        }
+
+        function setLeaderboardMetric(m) {
+            leaderboardMetric = m;
+            updateLeaderboardSeg();
+            loadLeaderboard();
+        }
+
+        function setLeaderboardScope(s) {
+            leaderboardScope = s;
+            updateLeaderboardSeg();
+            loadLeaderboard();
+        }
+
+        function updateLeaderboardSeg() {
+            document.querySelectorAll('#leaderboardModal .lb-metric').forEach(b => {
+                b.className = 'btn ' + (b.dataset.metric === leaderboardMetric ? 'btn-primary' : 'btn-secondary');
+            });
+            document.querySelectorAll('#leaderboardModal .lb-scope').forEach(b => {
+                b.className = 'btn ' + (b.dataset.scope === leaderboardScope ? 'btn-primary' : 'btn-secondary');
+            });
+        }
+
+        async function loadLeaderboard() {
+            const body = document.getElementById('leaderboardBody');
+            body.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#999;">加载中…</td></tr>';
+            const keyHeader = document.getElementById('lbKeyHeader');
+            keyHeader.textContent = leaderboardMetric === 'msg' ? '消息内容' : 'wxId';
+            try {
+                const res = await fetch(`${API_BASE}/leaderboard?metric=${leaderboardMetric}&scope=${leaderboardScope}&limit=20`);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const entries = data.entries || [];
+                if (entries.length === 0) {
+                    body.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#999;">暂无数据</td></tr>';
+                    return;
+                }
+                body.innerHTML = entries.map(e => {
+                    const medal = e.rank === 1 ? '🥇 ' : e.rank === 2 ? '🥈 ' : e.rank === 3 ? '🥉 ' : e.rank;
+                    const heat = e.count >= 20 ? 'hot' : e.count >= 10 ? 'warm' : 'cool';
+                    return `<tr>
+                        <td>${medal}</td>
+                        <td>${escapeHtml(e.label || e.key)}</td>
+                        <td><span class="badge badge-count ${heat}">${e.count}</span></td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                body.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#c0392b;">加载失败：' + escapeHtml(e.message) + '</td></tr>';
+            }
+        }
+
+        // Export ALL data via the backend /export endpoint (downloads a CSV).
+        function exportAll(type) {
+            const a = document.createElement('a');
+            a.href = `${API_BASE}/export?type=${type}`;
+            a.download = `wekit-${type}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
         }
 
         // Load detail data

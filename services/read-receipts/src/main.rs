@@ -252,6 +252,25 @@ struct PaginatedMessages {
     total_pages: u32,
 }
 
+/// One row in a leaderboard response. `key` is the ranking dimension's raw
+/// identifier (sender wxId or message id); `label` is the human-facing text
+/// (wxId, or a content snippet for the per-message board).
+#[derive(Serialize)]
+struct LeaderboardEntry {
+    rank: u32,
+    key: String,
+    label: String,
+    count: i64,
+}
+
+/// Response body for GET /leaderboard.
+#[derive(Serialize)]
+struct LeaderboardResponse {
+    metric: String,
+    scope: String,
+    entries: Vec<LeaderboardEntry>,
+}
+
 struct AppState {
     db: Connection,
     ws_tx: broadcast::Sender<String>,
@@ -276,6 +295,11 @@ struct AppState {
     auth_user: String,
     /// Valid dashboard password (env AUTH_PASS, default "20031228").
     auth_pass: String,
+    /// Per-IP fixed-window request limiter: ip -> (window_start_min, count).
+    /// Guards /register, /read-report, /pixel and the dashboard login against
+    /// abuse. Fixed 1-minute window; fail-open (never blocks traffic if the
+    /// limiter itself errors).
+    rate_limiter: Arc<Mutex<HashMap<String, (i64, u32)>>>,
 }
 
 /// Dashboard login guard middleware. Rejects requests without a valid
@@ -2145,6 +2169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_tokens,
         auth_user,
         auth_pass,
+        rate_limiter: Arc::new(Mutex::new(HashMap::new())),
     });
 
     // Public routes: login page, auth endpoints, and client collection
@@ -2177,6 +2202,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/messages/{id}/detail", get(message_detail))
         .route("/reads/{id}", get(list_reads_for_message))
+        .route("/leaderboard", get(leaderboard))
+        .route("/export", get(export_csv))
         .route("/locate/street", get(street_locate_handler))
         .route("/locate/city", get(city_locate_handler))
         .route("/locate/district", get(district_locate_handler))
@@ -2313,8 +2340,20 @@ struct LoginRequest {
 /// session cookie (7 days). Returns 401 on wrong credentials.
 async fn auth_login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     body: String,
 ) -> Result<(StatusCode, HeaderMap, String), (StatusCode, String)> {
+    // Rate limit: 5 login attempts/min per IP (fail-open, anti brute-force).
+    {
+        let ip = extract_client_ip(&headers, remote_addr);
+        if !rate_limit_check(&state.rate_limiter, &ip, 5) {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                serde_json::json!({ "ok": false, "error": "尝试次数过多，请稍后再试" }).to_string(),
+            ));
+        }
+    }
     let req: LoginRequest = serde_json::from_str(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid login JSON: {e}")))?;
     let user = req.username.trim();
@@ -2419,10 +2458,18 @@ async fn serve_bgm() -> impl IntoResponse {
 async fn register_message(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     body: String,
 ) -> Result<Json<RegisterResponse>, (StatusCode, String)> {
     if !collector_authorized(&headers, None) {
         return Err((StatusCode::UNAUTHORIZED, "collector auth failed".to_string()));
+    }
+    // Rate limit: 60 registrations/min per IP (fail-open).
+    {
+        let ip = extract_client_ip(&headers, remote_addr);
+        if !rate_limit_check(&state.rate_limiter, &ip, 60) {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string()));
+        }
     }
     // Diagnostic: log the RAW request body so we can see exactly what the
     // client uploaded (field names & values), incl. whether `content` is set.
@@ -2616,6 +2663,32 @@ fn extract_client_ip(headers: &HeaderMap, remote_addr: SocketAddr) -> String {
     remote_addr.ip().to_string()
 }
 
+/// Fixed-window per-IP rate limiter. Returns `true` to ALLOW the request,
+/// `false` to BLOCK it. One-minute fixed window; `limit` is the max requests
+/// per window. Fail-open: any lock/state error lets the request through, so
+/// the limiter can never take the collection endpoints down.
+fn rate_limit_check(
+    limiter: &Arc<Mutex<HashMap<String, (i64, u32)>>>,
+    ip: &str,
+    limit: u32,
+) -> bool {
+    let mut map = match limiter.lock() {
+        Ok(m) => m,
+        Err(_) => return true, // fail-open
+    };
+    let now_min = Utc::now().timestamp() / 60;
+    // Opportunistic cleanup: keep the map bounded when it grows large.
+    if map.len() > 65536 {
+        map.retain(|_, (win, _)| *win >= now_min - 1);
+    }
+    let entry = map.entry(ip.to_string()).or_insert((now_min, 0));
+    if entry.0 != now_min {
+        *entry = (now_min, 0);
+    }
+    entry.1 += 1;
+    entry.1 <= limit
+}
+
 /// Best-effort scalar count helper used by the WebSocket stats broadcaster.
 /// Returns 0 on any query/row error (broadcasting must never fail the request).
 async fn scalar_count(db: &libsql::Connection, sql: &str) -> i64 {
@@ -2676,6 +2749,13 @@ async fn read_report(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !collector_authorized(&headers, None) {
         return Err((StatusCode::UNAUTHORIZED, "collector auth failed".to_string()));
+    }
+    // Rate limit: 60 reports/min per IP (fail-open).
+    {
+        let ip = extract_client_ip(&headers, remote_addr);
+        if !rate_limit_check(&state.rate_limiter, &ip, 60) {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string()));
+        }
     }
     let req: ReadReportRequest = serde_json::from_str(&body).map_err(|e| {
         (
@@ -2872,6 +2952,19 @@ async fn serve_tracking_pixel(
             .status(StatusCode::UNAUTHORIZED)
             .body(axum::body::Body::from("collector auth failed"))
             .unwrap();
+    }
+    // Rate limit: 60 pixel hits/min per IP (fail-open). WeChat's built-in
+    // browser does not persist cookies, so one person opening several messages
+    // in quick succession fires several pixel requests — keep the limit loose
+    // enough to never drop a legitimate read, while still stopping floods.
+    {
+        let ip = extract_client_ip(&headers, remote_addr);
+        if !rate_limit_check(&state.rate_limiter, &ip, 60) {
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::from("rate limit exceeded"))
+                .unwrap();
+        }
     }
     let client_ip = extract_client_ip(&headers, remote_addr);
     let now_str = now_db_str();
@@ -3188,6 +3281,267 @@ async fn global_stats(
         countries,
         cities,
     }))
+}
+
+/// Returns (start, end) UTC "YYYY-MM-DD HH:MM:SS" bounds for "today" in
+/// Beijing time (UTC+8), or None for all-time scope. `timestamp` columns are
+/// stored as UTC strings, so "today in Beijing" spans two UTC dates
+/// (16:00 yesterday UTC → 16:00 today UTC).
+fn leaderboard_day_range(scope: &str) -> Option<(String, String)> {
+    if scope != "day" {
+        return None;
+    }
+    let beijing = Utc::now() + chrono::Duration::hours(8);
+    let today = beijing.format("%Y-%m-%d").to_string();
+    let yesterday = (beijing - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    Some((
+        format!("{yesterday} 16:00:00"),
+        format!("{today} 16:00:00"),
+    ))
+}
+
+/// RFC 4180 CSV field escaping: quote fields containing comma/quote/newline,
+/// doubling any embedded quotes.
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Converts a libsql cell value to its CSV string form (None/NULL → empty).
+fn value_to_csv(v: Option<libsql::Value>) -> String {
+    match v {
+        Some(libsql::Value::Text(s)) => csv_escape(&s),
+        Some(libsql::Value::Integer(n)) => n.to_string(),
+        Some(libsql::Value::Real(f)) => f.to_string(),
+        Some(libsql::Value::Blob(b)) => csv_escape(&String::from_utf8_lossy(&b)),
+        _ => String::new(),
+    }
+}
+
+/// GET /leaderboard — read-only aggregates for the dashboard. `metric` =
+/// reg|read|msg, `scope` = day|total, `limit` = top-N (default 20, max 100).
+/// Pure SELECTs; no writes, so it cannot affect any existing endpoint.
+async fn leaderboard(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<LeaderboardResponse>, (StatusCode, String)> {
+    let metric = params.get("metric").map(|s| s.as_str()).unwrap_or("read");
+    let scope = params.get("scope").map(|s| s.as_str()).unwrap_or("total");
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    let day = leaderboard_day_range(scope);
+
+    let mut entries: Vec<LeaderboardEntry> = Vec::new();
+
+    match metric {
+        // reg: most messages sent, grouped by sender wxId.
+        "reg" => {
+            let mut rows = match &day {
+                Some((s, e)) => state
+                    .db
+                    .query(
+                        "SELECT wx_id, COUNT(*) AS c FROM messages WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY wx_id ORDER BY c DESC, wx_id ASC LIMIT ?3",
+                        libsql::params![s.clone(), e.clone(), limit],
+                    )
+                    .await,
+                None => state
+                    .db
+                    .query(
+                        "SELECT wx_id, COUNT(*) AS c FROM messages GROUP BY wx_id ORDER BY c DESC, wx_id ASC LIMIT ?1",
+                        libsql::params![limit],
+                    )
+                    .await,
+            }
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("leaderboard reg failed: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("row read failed: {e}"))
+            })? {
+                let key = row.get_str(0).unwrap_or_default().to_string();
+                let count = match row.get_value(1) {
+                    Ok(libsql::Value::Integer(n)) => n,
+                    _ => 0,
+                };
+                entries.push(LeaderboardEntry {
+                    rank: entries.len() as u32 + 1,
+                    key: key.clone(),
+                    label: key,
+                    count,
+                });
+            }
+        }
+        // read: whose conversation got the most reads (sender dimension).
+        "read" => {
+            let mut rows = match &day {
+                Some((s, e)) => state
+                    .db
+                    .query(
+                        "SELECT wx_id, COUNT(*) AS c FROM reads WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY wx_id ORDER BY c DESC, wx_id ASC LIMIT ?3",
+                        libsql::params![s.clone(), e.clone(), limit],
+                    )
+                    .await,
+                None => state
+                    .db
+                    .query(
+                        "SELECT wx_id, COUNT(*) AS c FROM reads GROUP BY wx_id ORDER BY c DESC, wx_id ASC LIMIT ?1",
+                        libsql::params![limit],
+                    )
+                    .await,
+            }
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("leaderboard read failed: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("row read failed: {e}"))
+            })? {
+                let key = row.get_str(0).unwrap_or_default().to_string();
+                let count = match row.get_value(1) {
+                    Ok(libsql::Value::Integer(n)) => n,
+                    _ => 0,
+                };
+                entries.push(LeaderboardEntry {
+                    rank: entries.len() as u32 + 1,
+                    key: key.clone(),
+                    label: key,
+                    count,
+                });
+            }
+        }
+        // msg: which single message got the most reads.
+        "msg" => {
+            let mut rows = match &day {
+                Some((s, e)) => state
+                    .db
+                    .query(
+                        "SELECT m.id, m.wx_id, m.content, COUNT(r.id) AS c FROM messages m JOIN reads r ON r.msg_id = m.id WHERE r.timestamp >= ?1 AND r.timestamp < ?2 GROUP BY m.id, m.wx_id, m.content ORDER BY c DESC, m.id ASC LIMIT ?3",
+                        libsql::params![s.clone(), e.clone(), limit],
+                    )
+                    .await,
+                None => state
+                    .db
+                    .query(
+                        "SELECT m.id, m.wx_id, m.content, COUNT(r.id) AS c FROM messages m JOIN reads r ON r.msg_id = m.id GROUP BY m.id, m.wx_id, m.content ORDER BY c DESC, m.id ASC LIMIT ?1",
+                        libsql::params![limit],
+                    )
+                    .await,
+            }
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("leaderboard msg failed: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("row read failed: {e}"))
+            })? {
+                let id = row.get_str(0).unwrap_or_default().to_string();
+                let wx = row.get_str(1).unwrap_or_default().to_string();
+                let content = row.get_str(2).unwrap_or_default().to_string();
+                let count = match row.get_value(3) {
+                    Ok(libsql::Value::Integer(n)) => n,
+                    _ => 0,
+                };
+                let snippet: String = content.chars().take(40).collect();
+                let label = if wx.is_empty() {
+                    snippet
+                } else {
+                    format!("{wx}: {snippet}")
+                };
+                entries.push(LeaderboardEntry {
+                    rank: entries.len() as u32 + 1,
+                    key: id,
+                    label,
+                    count,
+                });
+            }
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "metric must be reg|read|msg".to_string(),
+            ));
+        }
+    }
+
+    Ok(Json(LeaderboardResponse {
+        metric: metric.to_string(),
+        scope: scope.to_string(),
+        entries,
+    }))
+}
+
+/// GET /export?type=messages|reads — exports the dashboard data as a UTF-8 CSV
+/// download. Read-only; touches no tables and affects no existing endpoint.
+async fn export_csv(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<(HeaderMap, String), (StatusCode, String)> {
+    let export_type = params.get("type").map(|s| s.as_str()).unwrap_or("messages");
+    let mut csv = String::new();
+
+    match export_type {
+        "messages" => {
+            csv.push_str("id,wx_id,content,timestamp,create_time,talker,chat_name,read_count\n");
+            let mut rows = state
+                .db
+                .query(
+                    "SELECT m.id, m.wx_id, m.content, m.timestamp, m.create_time, \
+                     COALESCE(m.talker,''), COALESCE(m.chat_name,''), \
+                     (SELECT COUNT(DISTINCT COALESCE(r.visitor_id, r.ip)) FROM reads r WHERE r.msg_id = m.id) AS reads \
+                     FROM messages m ORDER BY m.timestamp DESC",
+                    (),
+                )
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("export messages failed: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("row read failed: {e}"))
+            })? {
+                let cells: Vec<String> = (0..8).map(|i| value_to_csv(row.get_value(i).ok())).collect();
+                csv.push_str(&cells.join(","));
+                csv.push('\n');
+            }
+        }
+        "reads" => {
+            csv.push_str("id,wx_id,msg_id,ip,timestamp,country,city,isp,reader_wx_id,reader_nickname,device_type,os_name,os_version,browser_name,browser_version,referrer,visitor_id,created_at\n");
+            let mut rows = state
+                .db
+                .query(
+                    "SELECT id, wx_id, msg_id, ip, timestamp, country, city, isp, \
+                     reader_wx_id, reader_nickname, device_type, os_name, os_version, \
+                     browser_name, browser_version, referrer, visitor_id, created_at \
+                     FROM reads ORDER BY timestamp DESC",
+                    (),
+                )
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("export reads failed: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("row read failed: {e}"))
+            })? {
+                let cells: Vec<String> = (0..18).map(|i| value_to_csv(row.get_value(i).ok())).collect();
+                csv.push_str(&cells.join(","));
+                csv.push('\n');
+            }
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "type must be messages|reads".to_string(),
+            ));
+        }
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/csv; charset=utf-8".parse().unwrap(),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"wekit-{export_type}.csv\"")
+            .parse()
+            .unwrap(),
+    );
+    Ok((headers, csv))
 }
 
 /// Liveness probe (mirrors the reference read-receipt-tracker `/health`).
