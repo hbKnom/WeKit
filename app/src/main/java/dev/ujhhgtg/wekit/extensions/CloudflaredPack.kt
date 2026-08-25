@@ -4,8 +4,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Cloud
 import dev.ujhhgtg.wekit.R
-import dev.ujhhgtg.wekit.features.items.chat.ReadReceipts
-import dev.ujhhgtg.wekit.features.items.chat.ReadReceiptsServerMode
 import dev.ujhhgtg.wekit.loader.utils.NativeLoader
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
@@ -51,9 +49,7 @@ object CloudflaredPack : ExtensionPack {
         return if (lib.isFile) lib else null
     }
 
-    override fun isInUse(): Boolean =
-        NativeLoader.isCloudflaredLoaded() ||
-            ReadReceipts.configuration().mode == ReadReceiptsServerMode.BUILT_IN
+    override fun isInUse(): Boolean = NativeLoader.isCloudflaredLoaded()
 
     override fun install(verifiedTmp: File, version: String, sha256: String, meta: String?) {
         val versionDir = baseDir.resolve(version)
