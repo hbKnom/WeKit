@@ -74,15 +74,14 @@ class ScriptsDrmBypassHookTest {
         hook.registerInterpreter(interpreter)
 
         val childParam = LocalMethodHookParam(
-            Interpreter(interpreter),
-            interpreter.nameSpace,
             "checkAuthorization",
-            emptyArray(),
-            emptyArray(),
+            emptyArray<Class<*>>(),
+            emptyArray<Any>(),
             Boolean::class.javaPrimitiveType,
             null,
             false,
-            emptyArray()
+            emptyArray<StackTraceElement>(),
+            interpreter,
         )
         hook.beforeLocalMethod(childParam)
 
@@ -131,14 +130,13 @@ class ScriptsDrmBypassHookTest {
 
     private fun param(interpreter: Interpreter, methodName: String, returnType: Class<*>?) =
         LocalMethodHookParam(
-            interpreter,
-            interpreter.nameSpace,
             methodName,
-            emptyArray(),
-            emptyArray(),
+            emptyArray<Class<*>>(),
+            emptyArray<Any>(),
             returnType,
             null,
             false,
-            emptyArray()
+            emptyArray<StackTraceElement>(),
+            interpreter,
         )
 }
