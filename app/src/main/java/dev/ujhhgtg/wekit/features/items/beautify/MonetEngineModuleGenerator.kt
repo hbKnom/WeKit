@@ -4,16 +4,14 @@ import android.app.Activity
 import android.os.Build
 import android.os.Process
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.clickable
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
@@ -31,18 +29,17 @@ import androidx.compose.ui.unit.dp
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.extensions.ExtensionPackDialogs
 import dev.ujhhgtg.wekit.extensions.ExtensionPacks
-import dev.ujhhgtg.wekit.extensions.MonetGeneratorPack
 import dev.ujhhgtg.wekit.extensions.MonetDexEvidenceCollector
-import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationEvent
-import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationListener
-import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationOptions
+import dev.ujhhgtg.wekit.extensions.MonetGeneratorPack
 import dev.ujhhgtg.wekit.extensions.monet.api.MonetBubbleStyle
-import dev.ujhhgtg.wekit.extensions.monet.api.MonetTabStyle
-import dev.ujhhgtg.wekit.extensions.monet.api.MonetUserScope
+import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationEvent
+import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationOptions
 import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationRequest
 import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationResult
 import dev.ujhhgtg.wekit.extensions.monet.api.MonetGenerationStage
 import dev.ujhhgtg.wekit.extensions.monet.api.MonetLogLevel
+import dev.ujhhgtg.wekit.extensions.monet.api.MonetTabStyle
+import dev.ujhhgtg.wekit.extensions.monet.api.MonetUserScope
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
@@ -150,13 +147,25 @@ object MonetEngineModuleGenerator : ClickableFeature() {
         showComposeDialog(activity, directlyDismissable = false) {
             var state by remember {
                 mutableStateOf<GeneratorUiState>(
-                    GeneratorUiState.Running(MonetGenerationStage.PREPARING),
+                    GeneratorUiState.Running(
+                        MonetGenerationEvent.Progress(
+                            MonetGenerationStage.LOADING_APKS,
+                            "准备生成",
+                            0,
+                            1,
+                        ),
+                    ),
                 )
             }
 
             LaunchedEffect(Unit) {
                 thread(name = "monet-module-generator") {
-                    var currentStage = MonetGenerationStage.PREPARING
+                    var currentProgress = MonetGenerationEvent.Progress(
+                        MonetGenerationStage.LOADING_APKS,
+                        "准备生成",
+                        0,
+                        1,
+                    )
                     try {
                         val resolvedOutputZip =
                             (KnownPaths.downloads / "monet_engine_module.zip").toFile()
@@ -178,25 +187,28 @@ object MonetEngineModuleGenerator : ClickableFeature() {
                         )
                         val result = resolvedPack.generator.generate(
                             request,
-                            MonetGenerationListener { event ->
-                                when (event) {
-                                    is MonetGenerationEvent.Progress -> {
-                                        currentStage = event.stage
-                                        window.decorView.post {
-                                            state = GeneratorUiState.Running(event.stage)
-                                        }
+                        ) { event ->
+                            when (event) {
+                                is MonetGenerationEvent.Progress -> {
+                                    currentProgress = event
+                                    window.decorView.post {
+                                        state = GeneratorUiState.Running(event)
                                     }
-
-                                    is MonetGenerationEvent.Log -> logEvent(event)
                                 }
-                            },
-                        )
+
+                                is MonetGenerationEvent.Log -> logEvent(event)
+                            }
+                        }
                         window.decorView.post { state = GeneratorUiState.Done(result) }
                     } catch (error: Throwable) {
-                        WeLogger.e(TAG, "generation failed during $currentStage", error)
+                        WeLogger.e(
+                            TAG,
+                            "generation failed during ${currentProgress.stage}: ${currentProgress.detail}",
+                            error,
+                        )
                         window.decorView.post {
                             state = GeneratorUiState.Failed(
-                                currentStage,
+                                currentProgress,
                                 error.message ?: error.toString(),
                             )
                         }
@@ -208,12 +220,12 @@ object MonetEngineModuleGenerator : ClickableFeature() {
                 title = { Text(stringResource(R.string.feature_monet_module_generator_name)) },
                 text = {
                     when (val current = state) {
-                        is GeneratorUiState.Running -> RunningContent(stageText(current.stage))
+                        is GeneratorUiState.Running -> RunningContent(current.progress)
                         is GeneratorUiState.Done -> DoneContent(current.result)
                         is GeneratorUiState.Failed -> Text(
                             stringResource(
                                 R.string.monet_generator_failed,
-                                stageText(current.stage),
+                                current.progress.detail,
                                 current.message,
                             ),
                         )
@@ -271,20 +283,10 @@ object MonetEngineModuleGenerator : ClickableFeature() {
 }
 
 private sealed interface GeneratorUiState {
-    data class Running(val stage: MonetGenerationStage) : GeneratorUiState
+    data class Running(val progress: MonetGenerationEvent.Progress) : GeneratorUiState
     data class Done(val result: MonetGenerationResult) : GeneratorUiState
-    data class Failed(val stage: MonetGenerationStage, val message: String) : GeneratorUiState
+    data class Failed(val progress: MonetGenerationEvent.Progress, val message: String) : GeneratorUiState
 }
-
-@Composable
-private fun stageText(stage: MonetGenerationStage): String = stringResource(
-    when (stage) {
-        MonetGenerationStage.PREPARING -> R.string.monet_generator_preparing
-        MonetGenerationStage.BUILDING_OVERLAY -> R.string.monet_generator_building
-        MonetGenerationStage.SIGNING -> R.string.monet_generator_signing
-        MonetGenerationStage.PACKAGING -> R.string.monet_generator_packaging
-    },
-)
 
 @Composable
 private fun RadioOption(label: String, selected: Boolean, onSelect: () -> Unit) {
@@ -298,11 +300,25 @@ private fun RadioOption(label: String, selected: Boolean, onSelect: () -> Unit) 
 }
 
 @Composable
-private fun RunningContent(status: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-        Spacer(Modifier.width(16.dp))
-        Text(status)
+private fun RunningContent(progress: MonetGenerationEvent.Progress) {
+    Column {
+        Text(progress.detail)
+        Spacer(Modifier.height(8.dp))
+        val completed = progress.completed
+        val total = progress.total
+        if (completed != null && total != null) {
+            LinearProgressIndicator(
+                progress = { completed.toFloat() / total.coerceAtLeast(1) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "$completed/$total",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.align(Alignment.End).padding(top = 4.dp),
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
     }
 }
 

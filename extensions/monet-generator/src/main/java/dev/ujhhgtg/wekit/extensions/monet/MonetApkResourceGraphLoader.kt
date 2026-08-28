@@ -4,21 +4,27 @@ import com.reandroid.apk.ApkModule
 import com.reandroid.arsc.model.ResourceEntry
 import com.reandroid.arsc.value.ValueItem
 import com.reandroid.arsc.value.ValueType
-import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.util.zip.InflaterInputStream
+import java.io.File
 import java.security.MessageDigest
+import java.util.zip.InflaterInputStream
 
 object MonetApkResourceGraphLoader {
-    fun load(apkPaths: List<File>, targetPackage: String): MonetResourceGraph {
+    fun load(
+        apkPaths: List<File>,
+        targetPackage: String,
+        onProgress: (detail: String, completed: Int, total: Int) -> Unit = { _, _, _ -> },
+    ): MonetResourceGraph {
         val resources = linkedMapOf<Int, MutableResource>()
         val xmlDocuments = mutableListOf<OwnedXml>()
 
-        apkPaths.forEach { apk ->
+        apkPaths.forEachIndexed { index, apk ->
+            onProgress("打开 ${apk.name}", index, apkPaths.size)
             ApkModule.loadApkFile(apk).apply { setLoadDefaultFramework(false) }.use { module ->
                 val resFiles = module.listResFiles().toList()
                 val fileStructures = resFiles.associate { it.filePath to it.fileStructure() }
+                onProgress("解析 ${apk.name} 的资源表", index, apkPaths.size)
                 module.tableBlock.listPackages()
                     .filter { it.name == targetPackage }
                     .forEach { packageBlock ->
@@ -27,6 +33,7 @@ object MonetApkResourceGraphLoader {
                         }
                     }
 
+                onProgress("解析 ${apk.name} 的 ${resFiles.count { it.isBinaryXml }} 个二进制 XML", index, apkPaths.size)
                 resFiles.asSequence()
                     .forEach { resFile ->
                         val owners = resFile.asSequence()
@@ -46,6 +53,7 @@ object MonetApkResourceGraphLoader {
                         }
                     }
             }
+            onProgress("完成 ${apk.name}", index + 1, apkPaths.size)
         }
 
         val definitions = linkedMapOf<XmlIdentity, MonetXmlElement>()
@@ -128,9 +136,9 @@ object MonetApkResourceGraphLoader {
         if (header.size < 26 || header[0].toInt() and 0xff != 0x89 || String(header, 1, 3) != "PNG") {
             return MonetFileStructure(format)
         }
-        fun intAt(offset: Int): Int = ((header[offset].toInt() and 0xff) shl 24) or
-            ((header[offset + 1].toInt() and 0xff) shl 16) or
-            ((header[offset + 2].toInt() and 0xff) shl 8) or
+        fun intAt(offset: Int): Int = header[offset].toInt() and 0xff shl 24 or
+            (header[offset + 1].toInt() and 0xff shl 16) or
+            (header[offset + 2].toInt() and 0xff shl 8) or
             (header[offset + 3].toInt() and 0xff)
         var offset = 8
         var firstDataLength: Int? = null
@@ -262,5 +270,5 @@ object MonetApkResourceGraphLoader {
         val xml: MonetBinaryXml,
     )
 
-    private val MONET_XML_RESOURCE_TYPES = setOf("drawable", "layout")
+    private val MONET_XML_RESOURCE_TYPES = setOf("color", "drawable", "layout")
 }

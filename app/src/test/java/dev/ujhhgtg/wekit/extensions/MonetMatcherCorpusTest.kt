@@ -16,6 +16,77 @@ import kotlin.io.path.createTempDirectory
 @EnabledIfSystemProperty(named = "wekit.monetCorpus", matches = "true")
 class MonetMatcherCorpusTest {
     @Test
+    fun `directly compare reference color targets to domestic resources`() {
+        val play = extractResourceApks(File("/home/ujhhgtg/coding/wechat_8072_3084.apks"))
+        val referenceApk = File.createTempFile("monet-reference-", ".apk").apply {
+            writeBytes(ZipFile("/home/ujhhgtg/Downloads/WeChatMonet_Pro_v26S4.zip").use { zip ->
+                zip.getInputStream(zip.getEntry("files/MonetWeChat.apk")).readBytes()
+            })
+        }
+        try {
+            val source = MonetApkResourceGraphLoader.load(play.second, "com.tencent.mm")
+            val referenceOverlay = MonetApkResourceGraphLoader.load(listOf(referenceApk), "monet.com.tencent.mm")
+            val playStructural = MonetStructureMatcher.structuralAudit(source)
+            mapOf(
+                "chat.transfer.incoming.expired" to "c2c_chatfrom_remittance_expired_bg",
+                "chat.transfer.incoming.received" to "z1",
+                "chat.transfer.outgoing.expired" to "c2c_chatto_remittance_expired_bg",
+                "chat.transfer.outgoing.received" to "zc",
+                "theme.color.unknown--10ffffff.slot-06" to "aa4",
+                "theme.color.unknown--system-surface-dark.slot-02" to "ni",
+            ).forEach { (role, name) ->
+                assertEquals(name, playStructural.getValue(role).singleOrNull()?.key?.name, "Play $role candidates=${playStructural.getValue(role).map { it.key.name }}")
+            }
+            DOMESTIC_SLOT_57.forEach { (version, expectedSlot57) ->
+                val target = MonetApkResourceGraphLoader.load(
+                    listOf(File(System.getProperty("wekit.monetTarget.$version") ?: "/home/ujhhgtg/coding/wechat_$version.apk")),
+                    "com.tencent.mm",
+                )
+                val structural = MonetStructureMatcher.structuralAudit(target)
+                val resolved = MonetStructureMatcher.resolveAll(target)
+                assertEquals(MonetStructureMatcher.roleIds, structural.keys, version)
+                assertEquals(MonetStructureMatcher.roleIds.size - if (expectedSlot57 == null) 1 else 0, resolved.size, version)
+                assertTrue(resolved.values.none { it.key.name in HOST_FOREGROUND_COLORS }, version)
+                assertTrue(
+                    structural.filterKeys { it != SURFACE_CONTAINER_SLOT_57 }
+                        .values.all { it.size == 1 },
+                    "$version unresolved: ${structural.filterValues { it.size != 1 }.mapValues { it.value.map { node -> node.key.name } }}",
+                )
+                assertEquals(expectedSlot57, structural.getValue(SURFACE_CONTAINER_SLOT_57).singleOrNull()?.key?.name, version)
+                assertEquals(DOMESTIC_SEARCH_BAR.getValue(version), structural.getValue(SEARCH_BAR_BACKGROUND).single().key.name, version)
+                assertEquals("ga", structural.getValue(THREE_STATE_STROKE).single().key.name, version)
+                assertEquals(DOMESTIC_FINDER_LIVE_TAB.getValue(version), structural.getValue(FINDER_LIVE_TAB).single().key.name, version)
+                assertEquals("tt", structural.getValue(DELETE_ACTION_COLOR).single().key.name, version)
+                assertEquals("dp", structural.getValue(APP_BRAND_PAGE_BACKGROUND).single().key.name, version)
+                assertEquals("af6", structural.getValue(SURFACE_CONTAINER_SLOT_27).single().key.name, version)
+                assertEquals("o6", structural.getValue(SURFACE_CONTAINER_SLOT_56).single().key.name, version)
+                assertEquals("rh", structural.getValue("theme.color.unknown--10ffffff.slot-06").single().key.name, version)
+                assertEquals("e2", structural.getValue("theme.color.unknown--system-surface-dark.slot-02").single().key.name, version)
+                assertEquals("c2c_chatfrom_remittance_expired_bg", structural.getValue("chat.transfer.incoming.expired").single().key.name, version)
+                assertEquals("k6", structural.getValue("chat.transfer.incoming.received").single().key.name, version)
+                assertEquals("c2c_chatto_remittance_expired_bg", structural.getValue("chat.transfer.outgoing.expired").single().key.name, version)
+                assertEquals("k9", structural.getValue("chat.transfer.outgoing.received").single().key.name, version)
+                for (role in MonetStructureMatcher.roleIds.filter { it.startsWith("theme.color.") }) {
+                    val reference = playStructural.getValue(role).single()
+                    assertTrue(referenceOverlay.node(reference.key) != null, "reference APK missing ${reference.key}")
+                    val selected = structural.getValue(role).singleOrNull()
+                    if (selected == null) {
+                        assertEquals(SURFACE_CONTAINER_SLOT_57, role, version)
+                        continue
+                    }
+                    if (role !in SOURCE_VERIFIED_ROLES) assertTrue(
+                        MonetStructureMatcher.candidates(reference, source, target).any { it.id == selected.id },
+                        "$version $role selected ${selected.key.name} but does not match Play XML/value feature",
+                    )
+                }
+            }
+        } finally {
+            play.first.deleteRecursively()
+            referenceApk.delete()
+        }
+    }
+
+    @Test
     fun `production matcher resolves the complete local APK corpus with live Dex evidence`() {
         System.load(File("../.wekit/dex-test/native/2.2.0/x86_64/cmake/libdexkit.so").canonicalPath)
         val samples = listOf("8065", "8067", "8069", "8074", "8076", "8077", "8069_3020_play").map {
@@ -99,6 +170,46 @@ class MonetMatcherCorpusTest {
     }
 
     private companion object {
+        val SOURCE_VERIFIED_ROLES = setOf(
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-27",
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-56",
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-57",
+            "theme.color.system-surface-container-light--10ffffff.slot-02",
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-50",
+            "theme.color.system-surface-light--system-surface-dark.slot-04",
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-26",
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-42",
+            "theme.color.unknown--10ffffff.slot-06",
+            "theme.color.unknown--system-surface-dark.slot-02",
+        )
+        const val SURFACE_CONTAINER_SLOT_57 =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-57"
+        const val SURFACE_CONTAINER_SLOT_56 =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-56"
+        const val SURFACE_CONTAINER_SLOT_27 =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-27"
+        const val SEARCH_BAR_BACKGROUND = "theme.color.system-surface-container-light--10ffffff.slot-02"
+        const val THREE_STATE_STROKE =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-50"
+        const val FINDER_LIVE_TAB = "theme.color.system-surface-light--system-surface-dark.slot-04"
+        const val DELETE_ACTION_COLOR =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-26"
+        const val APP_BRAND_PAGE_BACKGROUND =
+            "theme.color.system-surface-container-light--system-surface-container-dark.slot-42"
+        val DOMESTIC_SLOT_57 = linkedMapOf(
+            "8065" to "f1",
+            "8067" to "aid",
+            "8069" to "aip",
+            "8074" to "aj9",
+            "8076" to null,
+        )
+        val DOMESTIC_SEARCH_BAR = mapOf(
+            "8065" to "b", "8067" to "b", "8069" to "b", "8074" to "al1", "8076" to "akt",
+        )
+        val DOMESTIC_FINDER_LIVE_TAB = mapOf(
+            "8065" to "ai9", "8067" to "aiy", "8069" to "aja", "8074" to "ak7", "8076" to "ajz",
+        )
+        val HOST_FOREGROUND_COLORS = setOf("FG_0", "FG_1", "FG_2", "a0b", "a0c", "BW_70")
         val DEX_NAME = Regex("classes(\\d*)?\\.dex")
         val EXPECTED_ROLES = listOf(
             "main.surface.header.primary",
