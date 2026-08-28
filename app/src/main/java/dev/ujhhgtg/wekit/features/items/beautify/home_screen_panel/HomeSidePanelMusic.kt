@@ -31,13 +31,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,6 +49,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -58,16 +64,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Favorite
+import com.composables.icons.materialsymbols.outlined.Lyrics
 import com.composables.icons.materialsymbols.outlined.Music_note
 import com.composables.icons.materialsymbols.outlined.Pause
 import com.composables.icons.materialsymbols.outlined.Play_arrow
+import com.composables.icons.materialsymbols.outlined.Repeat
+import com.composables.icons.materialsymbols.outlined.Repeat_one
 import com.composables.icons.materialsymbols.outlined.Search
+import com.composables.icons.materialsymbols.outlined.Shuffle
+import com.composables.icons.materialsymbols.outlined.Skip_next
+import com.composables.icons.materialsymbols.outlined.Skip_previous
 import dev.ujhhgtg.wekit.R
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -96,6 +108,8 @@ internal data class HomeSidePanelMusicUiState(
     val favorite: Boolean = false,
     val loopMode: Int = 0,
     val lyricDisplay: String = "",
+    val positionMs: Int = 0,
+    val durationMs: Int = 0,
 )
 
 internal object HomeSidePanelMusicController {
@@ -199,6 +213,15 @@ internal object HomeSidePanelMusicController {
         _state.update { it.copy(loopMode = (it.loopMode + 1) % 3) }
     }
 
+    fun seekTo(positionMs: Int) {
+        val mp = mediaPlayer ?: return
+        try {
+            mp.seekTo(positionMs)
+            _state.update { it.copy(positionMs = positionMs) }
+        } catch (_: Exception) {
+        }
+    }
+
     private fun playCurrent(failedMessage: String) {
         val song = _state.value.playlist.getOrNull(_state.value.currentIndex) ?: return
         if (song.dataUrl.isEmpty()) {
@@ -261,14 +284,25 @@ internal object HomeSidePanelMusicController {
                     delay(200)
                     continue
                 }
+                val pos = try {
+                    mp.currentPosition
+                } catch (_: Exception) {
+                    -1
+                }
+                val dur = try {
+                    mp.duration
+                } catch (_: Exception) {
+                    -1
+                }
+                _state.update {
+                    it.copy(
+                        positionMs = if (pos >= 0) pos else it.positionMs,
+                        durationMs = if (dur >= 0) dur else it.durationMs,
+                    )
+                }
                 val times = song.lyricTimes
                 val lines = song.lyricLines
                 if (times.isNotEmpty() && lines.isNotEmpty()) {
-                    val pos = try {
-                        mp.currentPosition
-                    } catch (_: Exception) {
-                        -1
-                    }
                     var idx = 0
                     for (i in times.indices) {
                         if (times[i] > pos) break
@@ -597,7 +631,14 @@ internal object HomeSidePanelMusicController {
     } catch (_: Exception) {
         "{}"
     }
-}@Composable
+}private fun formatTime(ms: Int): String {
+    val totalSec = ms / 1000
+    val min = totalSec / 60
+    val sec = totalSec % 60
+    return "%02d:%02d".format(min, sec)
+}
+
+@Composable
 internal fun HomeSidePanelMusicCard(
     card: MusicCardConfig,
     editMode: Boolean,
@@ -610,21 +651,15 @@ internal fun HomeSidePanelMusicCard(
     val notFoundMessage = stringResource(R.string.home_side_panel_music_not_found)
     val failedMessage = stringResource(R.string.home_side_panel_music_search_failed)
     val playTapMessage = stringResource(R.string.home_side_panel_music_tap_search)
-    val noLyricMessage = stringResource(R.string.home_side_panel_music_no_lyric)
     val searchHint = stringResource(R.string.home_side_panel_music_search_hint)
 
     var searchExpanded by remember { mutableStateOf(false) }
     var keyword by remember { mutableStateOf(state.keyword) }
+    var lyricsExpanded by remember { mutableStateOf(false) }
 
     val song = state.playlist.getOrNull(state.currentIndex)
     val title = song?.title ?: stringResource(R.string.home_side_panel_music_tap_search)
     val artist = song?.artist ?: ""
-    val lyricPreview = when {
-        state.lyricDisplay.isNotEmpty() -> state.lyricDisplay
-        song != null && song.lyric.isNotEmpty() && song.lyric != "暂无歌词" -> song.lyric
-        song != null -> noLyricMessage
-        else -> stringResource(R.string.home_side_panel_music_tap_search)
-    }
 
     HomeSidePanelCardFrame(
         cardId = card.id,
@@ -731,8 +766,9 @@ internal fun HomeSidePanelMusicCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(76.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(20.dp))
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -741,65 +777,69 @@ internal fun HomeSidePanelMusicCard(
                             model = song.picUrl,
                             contentDescription = title,
                             modifier = Modifier
-                                .size(76.dp)
-                                .clip(RoundedCornerShape(16.dp)),
+                                .fillMaxWidth()
+                                .aspectRatio(1f)
+                                .clip(RoundedCornerShape(20.dp)),
                         )
                     } else {
                         Icon(
                             MaterialSymbols.Outlined.Music_note,
                             contentDescription = null,
-                            modifier = Modifier.size(32.dp),
-                            tint = contentColor,
+                            modifier = Modifier.size(56.dp),
+                            tint = contentColor.copy(alpha = 0.6f),
                         )
                     }
                 }
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = contentColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = artist,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = contentColor.copy(alpha = 0.72f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (state.isPreparing) {
-                        Row(
-                            modifier = Modifier.padding(top = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = contentColor,
-                            )
-                            Text(
-                                text = stringResource(R.string.home_side_panel_music_loading),
-                                modifier = Modifier.padding(start = 6.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = contentColor.copy(alpha = 0.72f),
-                            )
-                        }
-                    } else {
+            }
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = contentColor.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                )
+                if (state.isPreparing) {
+                    Row(
+                        modifier = Modifier.padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = contentColor,
+                        )
                         Text(
-                            text = lyricPreview,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = contentColor.copy(alpha = 0.85f),
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
+                            text = stringResource(R.string.home_side_panel_music_loading),
+                            modifier = Modifier.padding(start = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.72f),
                         )
                     }
+                } else if (song != null && state.lyricDisplay.isNotEmpty()) {
+                    Text(
+                        text = state.lyricDisplay,
+                        modifier = Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.85f),
+                        textAlign = TextAlign.Center,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
 
@@ -827,7 +867,12 @@ internal fun HomeSidePanelMusicCard(
                     onClick = { HomeSidePanelMusicController.prev(failedMessage) },
                     modifier = Modifier.size(40.dp),
                 ) {
-                    Text("⏮", fontSize = 18.sp, color = contentColor)
+                    Icon(
+                        MaterialSymbols.Outlined.Skip_previous,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
+                        tint = contentColor,
+                    )
                 }
                 Box(
                     modifier = Modifier
@@ -858,20 +903,108 @@ internal fun HomeSidePanelMusicCard(
                     onClick = { HomeSidePanelMusicController.next(failedMessage) },
                     modifier = Modifier.size(40.dp),
                 ) {
-                    Text("⏭", fontSize = 18.sp, color = contentColor)
+                    Icon(
+                        MaterialSymbols.Outlined.Skip_next,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
+                        tint = contentColor,
+                    )
                 }
                 IconButton(
                     onClick = { HomeSidePanelMusicController.cycleLoopMode() },
                     modifier = Modifier.size(40.dp),
                 ) {
-                    Text(
-                        text = when (state.loopMode) {
-                            0 -> "🔁"
-                            1 -> "🔂"
-                            else -> "🔀"
+                    Icon(
+                        imageVector = when (state.loopMode) {
+                            0 -> MaterialSymbols.Outlined.Repeat
+                            1 -> MaterialSymbols.Outlined.Repeat_one
+                            else -> MaterialSymbols.Outlined.Shuffle
                         },
-                        fontSize = 16.sp,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = if (state.loopMode == 0) {
+                            contentColor.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
                     )
+                }
+            }
+
+            if (song != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Slider(
+                        value = state.positionMs.toFloat().coerceAtMost(
+                            state.durationMs.toFloat().coerceAtLeast(1f),
+                        ),
+                        onValueChange = { HomeSidePanelMusicController.seekTo(it.toInt()) },
+                        valueRange = 0f..state.durationMs.toFloat().coerceAtLeast(1f),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = contentColor.copy(alpha = 0.2f),
+                        ),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = formatTime(state.positionMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.72f),
+                        )
+                        Text(
+                            text = formatTime(state.durationMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.72f),
+                        )
+                    }
+                }
+            }
+
+            if (song != null && song.lyric.isNotEmpty() && song.lyric != "暂无歌词") {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { lyricsExpanded = !lyricsExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            MaterialSymbols.Outlined.Lyrics,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = contentColor.copy(alpha = 0.72f),
+                        )
+                        Text(
+                            text = if (lyricsExpanded) {
+                                stringResource(R.string.home_side_panel_music_lyric_collapse)
+                            } else {
+                                stringResource(R.string.home_side_panel_music_lyric_expand)
+                            },
+                            modifier = Modifier.padding(start = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = contentColor.copy(alpha = 0.85f),
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = lyricsExpanded,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                    ) {
+                        Text(
+                            text = song.lyric,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 6.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = contentColor.copy(alpha = 0.9f),
+                        )
+                    }
                 }
             }
 

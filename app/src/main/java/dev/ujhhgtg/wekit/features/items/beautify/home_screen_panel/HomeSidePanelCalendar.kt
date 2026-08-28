@@ -72,6 +72,15 @@ internal fun HomeSidePanelCalendarCard(
             HomeSidePanelCalendarMode.DAY -> selectedDate = selectedDate.plusDays(1)
         }
     }
+    val goToday = {
+        val today = LocalDate.now()
+        selectedDate = today
+        when (viewMode) {
+            HomeSidePanelCalendarMode.MONTH -> monthCursor = YearMonth.from(today)
+            HomeSidePanelCalendarMode.WEEK -> weekCursor = today.with(DayOfWeek.MONDAY)
+            HomeSidePanelCalendarMode.DAY -> Unit
+        }
+    }
     val switchMode = { mode: HomeSidePanelCalendarMode ->
         viewMode = mode
         when (mode) {
@@ -129,6 +138,22 @@ internal fun HomeSidePanelCalendarCard(
                     textAlign = TextAlign.Center,
                 )
                 CalendarNavButton("▶") { navigateNext() }
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = goToday)
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .padding(vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = stringResource(R.string.home_side_panel_calendar_today),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
             }
 
             Row(
@@ -291,6 +316,8 @@ private fun MonthGrid(
                                 day = date.dayOfMonth,
                                 selected = date == selectedDate,
                                 isToday = date == LocalDate.now(),
+                                isWeekend = date.dayOfWeek == DayOfWeek.SATURDAY ||
+                                    date.dayOfWeek == DayOfWeek.SUNDAY,
                                 onClick = { onSelect(date) },
                             )
                         }
@@ -387,6 +414,7 @@ private fun DayCell(
     day: Int,
     selected: Boolean,
     isToday: Boolean,
+    isWeekend: Boolean,
     onClick: () -> Unit,
 ) {
     val cellBg = when {
@@ -397,6 +425,7 @@ private fun DayCell(
     val textColor = when {
         selected -> MaterialTheme.colorScheme.onPrimary
         isToday -> MaterialTheme.colorScheme.onPrimaryContainer
+        isWeekend -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurface
     }
     Box(
@@ -439,6 +468,8 @@ private fun SelectedDateDetail(
             ),
         )
     }
+    val almanac = remember(date) { homeSidePanelAlmanac(date.atStartOfDay()) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -460,5 +491,45 @@ private fun SelectedDateDetail(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        val tags = buildList {
+            almanac.solarTerm?.let { add(it) }
+            almanac.festival?.let { add(it) }
+        }
+        if (tags.isNotEmpty()) {
+            Text(
+                text = tags.joinToString(" · "),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
+        Text(
+            text = stringResource(
+                R.string.home_side_panel_calendar_ganzhi,
+                almanac.yearGanZhi,
+                almanac.shengXiao,
+                almanac.monthGanZhi,
+                almanac.dayGanZhi,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = stringResource(
+                R.string.home_side_panel_calendar_jianchu,
+                almanac.jianChu,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = stringResource(
+                R.string.home_side_panel_calendar_yiji,
+                almanac.yi,
+                almanac.ji,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

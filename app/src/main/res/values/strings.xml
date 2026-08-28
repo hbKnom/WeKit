@@ -3808,6 +3808,10 @@
     <string name="home_side_panel_calendar_month">Month</string>
     <string name="home_side_panel_calendar_week">Week</string>
     <string name="home_side_panel_calendar_day">Day</string>
+    <string name="home_side_panel_calendar_today">Today</string>
+    <string name="home_side_panel_calendar_ganzhi">%1$s year · %2$s · month %3$s · day %4$s</string>
+    <string name="home_side_panel_calendar_jianchu">%1$s day</string>
+    <string name="home_side_panel_calendar_yiji">Suitable: %1$s\nAvoid: %2$s</string>
     <string name="home_side_panel_music_search_hint">Search a song</string>
     <string name="home_side_panel_music_no_lyric">No lyrics</string>
     <string name="home_side_panel_music_tap_search">Tap to search a song</string>
@@ -3815,4 +3819,6 @@
     <string name="home_side_panel_music_search_failed">Search failed, please retry</string>
     <string name="home_side_panel_music_searching">Searching…</string>
     <string name="home_side_panel_music_loading">Buffering…</string>
+    <string name="home_side_panel_music_lyric_expand">View full lyrics</string>
+    <string name="home_side_panel_music_lyric_collapse">Hide lyrics</string>
 </resources>

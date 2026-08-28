@@ -139,7 +139,7 @@ internal fun HomeSidePanelDateTimeCard(
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    now.format(HOME_SIDE_PANEL_TIME_FORMATTER),
+                    now.format(HOME_SIDE_PANEL_CLOCK_FORMATTER),
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -640,8 +640,8 @@ private fun rememberHomeSidePanelNow(): LocalDateTime {
         while (true) {
             val current = LocalDateTime.now()
             now = current
-            val nextMinute = current.plusMinutes(1).withSecond(0).withNano(0)
-            delay(Duration.between(current, nextMinute).toMillis().coerceAtLeast(1L))
+            val nextSecond = current.plusSeconds(1).withNano(0)
+            delay(Duration.between(current, nextSecond).toMillis().coerceAtLeast(1L))
         }
     }
     return now
@@ -729,3 +729,5 @@ private fun formatWeatherPublishedAt(publishedAt: String): String = runCatching 
 }.getOrDefault(publishedAt)
 
 private val HOME_SIDE_PANEL_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm")
+
+private val HOME_SIDE_PANEL_CLOCK_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss")

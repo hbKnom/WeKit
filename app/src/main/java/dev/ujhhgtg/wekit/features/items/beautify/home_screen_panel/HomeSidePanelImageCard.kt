@@ -39,12 +39,15 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Add
 import com.composables.icons.materialsymbols.outlined.Aspect_ratio
@@ -165,7 +168,10 @@ internal fun HomeSidePanelImageCard(
                     !autoRatioUnsupported
                 ) {
                     AsyncImage(
-                        model = imageFile.toFile(),
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(imageFile.toFile())
+                            .crossfade(true)
+                            .build(),
                         imageLoader = GlobalImageLoader,
                         contentDescription = stringResource(R.string.home_side_panel_card_image),
                         modifier = Modifier.fillMaxSize(),
