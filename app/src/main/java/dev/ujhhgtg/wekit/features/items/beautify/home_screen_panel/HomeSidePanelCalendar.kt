@@ -286,7 +286,7 @@ private fun MonthGrid(
                         contentAlignment = Alignment.Center,
                     ) {
                         if (index >= leadingBlanks && index < leadingBlanks + daysInMonth) {
-                            val date = firstDay.plusDays(index - leadingBlanks)
+                            val date = firstDay.plusDays((index - leadingBlanks).toLong())
                             DayCell(
                                 day = date.dayOfMonth,
                                 selected = date == selectedDate,
@@ -310,7 +310,7 @@ private fun WeekRow(
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(modifier = Modifier.fillMaxWidth()) {
             repeat(7) { offset ->
-                val date = weekStart.plusDays(offset)
+                val date = weekStart.plusDays(offset.toLong())
                 val day = date.dayOfWeek.getDisplayName(
                     java.time.format.TextStyle.NARROW,
                     java.util.Locale.getDefault(),

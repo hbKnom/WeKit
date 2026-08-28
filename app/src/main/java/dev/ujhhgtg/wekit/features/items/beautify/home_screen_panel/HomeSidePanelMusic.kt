@@ -294,15 +294,13 @@ internal object HomeSidePanelMusicController {
 
     // ==================== QQ 音乐 API（复刻原脚本请求方式） ====================
 
-    private companion object {
-        const val API_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
-        const val PIC_URL = "https://y.gtimg.cn/music/photo_new/T002R500x500M000"
-        const val LYRIC_URL =
-            "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?format=json&nobase64=1"
-        const val BASE_URL = "http://aqqmusic.tc.qq.com/"
-        const val MUSIC_UA = "Mozilla/5.0 Chrome/92.0.4515.105 Safari/537.36"
-        val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
-    }
+    private const val API_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+    private const val PIC_URL = "https://y.gtimg.cn/music/photo_new/T002R500x500M000"
+    private const val LYRIC_URL =
+        "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?format=json&nobase64=1"
+    private const val BASE_URL = "http://aqqmusic.tc.qq.com/"
+    private const val MUSIC_UA = "Mozilla/5.0 Chrome/92.0.4515.105 Safari/537.36"
+    private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
     private fun searchSong(keyword: String): HomeSidePanelSong? {
         for (retry in 0..3) {
@@ -877,9 +875,10 @@ internal fun HomeSidePanelMusicCard(
                 }
             }
 
-            if (state.error != null) {
+            val errorText = state.error
+            if (errorText != null) {
                 Text(
-                    text = state.error,
+                    text = errorText,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                     maxLines = 2,
