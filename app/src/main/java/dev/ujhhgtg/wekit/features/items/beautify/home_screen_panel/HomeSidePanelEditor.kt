@@ -166,6 +166,8 @@ internal class HomeSidePanelEditSession(
         HomeSidePanelCardType.WALLET -> WalletCardConfig(idGenerator.nextId())
         HomeSidePanelCardType.HITOKOTO -> HitokotoCardConfig(idGenerator.nextId())
         HomeSidePanelCardType.IMAGE -> ImageCardConfig(idGenerator.nextId())
+        HomeSidePanelCardType.MUSIC -> MusicCardConfig(idGenerator.nextId())
+        HomeSidePanelCardType.CALENDAR -> CalendarCardConfig(idGenerator.nextId())
         HomeSidePanelCardType.HORIZONTAL_ACTIONS -> HorizontalActionsCardConfig(idGenerator.nextId(), emptyList())
         HomeSidePanelCardType.VERTICAL_ACTIONS -> VerticalActionsCardConfig(idGenerator.nextId(), emptyList())
     }

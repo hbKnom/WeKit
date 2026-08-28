@@ -3811,4 +3811,18 @@
     <string name="monet_user_current">目前使用者</string>
     <string name="monet_user_all">全部使用者</string>
     <string name="monet_generate">產生</string>
+
+    <!-- 負一屏：音樂 & 日曆卡片 -->
+    <string name="home_side_panel_card_music">音樂</string>
+    <string name="home_side_panel_card_calendar">日曆</string>
+    <string name="home_side_panel_calendar_month">月</string>
+    <string name="home_side_panel_calendar_week">週</string>
+    <string name="home_side_panel_calendar_day">日</string>
+    <string name="home_side_panel_music_search_hint">輸入歌名</string>
+    <string name="home_side_panel_music_no_lyric">暫無歌詞</string>
+    <string name="home_side_panel_music_tap_search">點擊搜尋歌曲</string>
+    <string name="home_side_panel_music_not_found">未找到歌曲</string>
+    <string name="home_side_panel_music_search_failed">搜尋失敗，請重試</string>
+    <string name="home_side_panel_music_searching">正在搜尋…</string>
+    <string name="home_side_panel_music_loading">緩衝中…</string>
 </resources>

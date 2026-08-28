@@ -480,6 +480,16 @@ private fun HomeSidePanelDraggedCard(
             editMode = true,
             interactionEnabled = false,
         )
+
+        is MusicCardConfig -> HomeSidePanelMusicCard(
+            card = card,
+            editMode = false,
+        )
+
+        is CalendarCardConfig -> HomeSidePanelCalendarCard(
+            card = card,
+            editMode = false,
+        )
     }
 }
 

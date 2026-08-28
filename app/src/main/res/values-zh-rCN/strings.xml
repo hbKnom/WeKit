@@ -3829,4 +3829,18 @@
     <string name="monet_user_current">当前用户</string>
     <string name="monet_user_all">全部用户</string>
     <string name="monet_generate">生成</string>
+
+    <!-- 负一屏：音乐 & 日历卡片 -->
+    <string name="home_side_panel_card_music">音乐</string>
+    <string name="home_side_panel_card_calendar">日历</string>
+    <string name="home_side_panel_calendar_month">月</string>
+    <string name="home_side_panel_calendar_week">周</string>
+    <string name="home_side_panel_calendar_day">日</string>
+    <string name="home_side_panel_music_search_hint">输入歌名</string>
+    <string name="home_side_panel_music_no_lyric">暂无歌词</string>
+    <string name="home_side_panel_music_tap_search">点击搜索歌曲</string>
+    <string name="home_side_panel_music_not_found">未找到歌曲</string>
+    <string name="home_side_panel_music_search_failed">搜索失败，请重试</string>
+    <string name="home_side_panel_music_searching">正在搜索…</string>
+    <string name="home_side_panel_music_loading">缓冲中…</string>
 </resources>

@@ -290,6 +290,20 @@ private fun HomeSidePanelLayoutCard(
             onDeleteCard = panelState::removeCard,
         )
 
+        is MusicCardConfig -> HomeSidePanelMusicCard(
+            card = card,
+            editMode = editMode,
+            modifier = modifier,
+            onDeleteCard = panelState::removeCard,
+        )
+
+        is CalendarCardConfig -> HomeSidePanelCalendarCard(
+            card = card,
+            editMode = editMode,
+            modifier = modifier,
+            onDeleteCard = panelState::removeCard,
+        )
+
         is HorizontalActionsCardConfig -> HomeSidePanelHorizontalActionsCard(
             card = card,
             content = HomeSidePanelActionCardContent.Runtime,

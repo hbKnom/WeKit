@@ -3801,4 +3801,18 @@
     <string name="monet_user_current">Current user</string>
     <string name="monet_user_all">All users</string>
     <string name="monet_generate">Generate</string>
+
+    <!-- Home side panel: music & calendar cards -->
+    <string name="home_side_panel_card_music">Music</string>
+    <string name="home_side_panel_card_calendar">Calendar</string>
+    <string name="home_side_panel_calendar_month">Month</string>
+    <string name="home_side_panel_calendar_week">Week</string>
+    <string name="home_side_panel_calendar_day">Day</string>
+    <string name="home_side_panel_music_search_hint">Search a song</string>
+    <string name="home_side_panel_music_no_lyric">No lyrics</string>
+    <string name="home_side_panel_music_tap_search">Tap to search a song</string>
+    <string name="home_side_panel_music_not_found">Song not found</string>
+    <string name="home_side_panel_music_search_failed">Search failed, please retry</string>
+    <string name="home_side_panel_music_searching">Searching…</string>
+    <string name="home_side_panel_music_loading">Buffering…</string>
 </resources>

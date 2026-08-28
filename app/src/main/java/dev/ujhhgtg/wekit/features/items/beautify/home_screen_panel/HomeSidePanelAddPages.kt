@@ -109,6 +109,8 @@ private val HOME_SIDE_PANEL_CARD_TYPES = listOf(
     HomeSidePanelCardType.WALLET,
     HomeSidePanelCardType.HITOKOTO,
     HomeSidePanelCardType.IMAGE,
+    HomeSidePanelCardType.MUSIC,
+    HomeSidePanelCardType.CALENDAR,
     HomeSidePanelCardType.HORIZONTAL_ACTIONS,
     HomeSidePanelCardType.VERTICAL_ACTIONS,
 )
@@ -224,6 +226,16 @@ internal fun HomeSidePanelCardCandidateVisual(
                 editMode = false,
                 importing = false,
                 preview = true,
+            )
+
+            HomeSidePanelCardType.MUSIC -> HomeSidePanelMusicCard(
+                card = MusicCardConfig("preview-music"),
+                editMode = false,
+            )
+
+            HomeSidePanelCardType.CALENDAR -> HomeSidePanelCalendarCard(
+                card = CalendarCardConfig("preview-calendar"),
+                editMode = false,
             )
 
             HomeSidePanelCardType.HORIZONTAL_ACTIONS -> HomeSidePanelHorizontalActionsCard(
@@ -387,6 +399,8 @@ internal fun homeSidePanelCardNameRes(type: HomeSidePanelCardType): Int = when (
     HomeSidePanelCardType.WALLET -> R.string.home_side_panel_card_wallet
     HomeSidePanelCardType.HITOKOTO -> R.string.home_side_panel_card_hitokoto
     HomeSidePanelCardType.IMAGE -> R.string.home_side_panel_card_image
+    HomeSidePanelCardType.MUSIC -> R.string.home_side_panel_card_music
+    HomeSidePanelCardType.CALENDAR -> R.string.home_side_panel_card_calendar
     HomeSidePanelCardType.HORIZONTAL_ACTIONS -> R.string.home_side_panel_card_horizontal_actions
     HomeSidePanelCardType.VERTICAL_ACTIONS -> R.string.home_side_panel_card_vertical_actions
 }

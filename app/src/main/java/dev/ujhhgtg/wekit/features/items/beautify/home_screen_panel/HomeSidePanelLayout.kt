@@ -50,6 +50,8 @@ internal enum class HomeSidePanelCardType {
     WALLET,
     HITOKOTO,
     IMAGE,
+    MUSIC,
+    CALENDAR,
     HORIZONTAL_ACTIONS,
     VERTICAL_ACTIONS,
 }
@@ -148,6 +150,25 @@ internal data class VerticalActionsCardConfig(
 ) : HomeSidePanelCardConfig() {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.VERTICAL_ACTIONS
+}
+
+@Serializable
+@SerialName("music")
+internal data class MusicCardConfig(
+    override val id: String,
+) : HomeSidePanelCardConfig() {
+    @Transient
+    override val type: HomeSidePanelCardType = HomeSidePanelCardType.MUSIC
+}
+
+@Serializable
+@SerialName("calendar")
+internal data class CalendarCardConfig(
+    override val id: String,
+    val showLunarCalendar: Boolean = true,
+) : HomeSidePanelCardConfig() {
+    @Transient
+    override val type: HomeSidePanelCardType = HomeSidePanelCardType.CALENDAR
 }
 
 internal class InvalidHomeSidePanelLayoutException(message: String) : IllegalArgumentException(message)
@@ -291,6 +312,7 @@ internal fun defaultHomeSidePanelLayout(
 ): HomeSidePanelLayout = HomeSidePanelLayout(
     cards = listOf(
         DateTimeCardConfig(idGenerator.nextId()),
+        CalendarCardConfig(idGenerator.nextId()),
         WeatherCardConfig(idGenerator.nextId(), legacy.weatherCity),
         WalletCardConfig(idGenerator.nextId(), legacy.hideWalletBalance),
         VerticalActionsCardConfig(
@@ -304,5 +326,6 @@ internal fun defaultHomeSidePanelLayout(
             ),
         ),
         HitokotoCardConfig(idGenerator.nextId(), legacy.hitokotoSettings),
+        MusicCardConfig(idGenerator.nextId()),
     ),
 )
