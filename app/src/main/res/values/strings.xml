@@ -636,6 +636,8 @@
     <string name="feature_display_group_member_roles_description">Show the identity of group members in group chat: group owner, administrator, member</string>
     <string name="feature_display_message_details_name">Show message details</string>
     <string name="feature_display_message_details_description">Add menu items to the message long press menu to view message details</string>
+    <string name="feature_chat_record_analysis_name">Chat record analysis</string>
+    <string name="feature_chat_record_analysis_description">Analyze chat records over a selected time range: local statistics report and AI summary</string>
     <string name="feature_download_files_to_local_storage_name">Save files locally</string>
     <string name="feature_download_files_to_local_storage_description">Add a download button to the file message menu, allowing files to be cached and saved locally</string>
     <string name="feature_download_images_to_local_storage_name">Save images locally</string>
@@ -2285,6 +2287,18 @@
     <string name="chat_message_details_content">Content</string>
     <string name="chat_message_details_title">Message details</string>
     <string name="chat_message_details_copied">Copied</string>
+    <string name="chat_record_analysis_menu">Analyze</string>
+    <string name="chat_record_analysis_range_title">Analysis time range</string>
+    <string name="chat_record_analysis_range_hint">Statistics and summary of text chats in this period: %1$s</string>
+    <string name="chat_record_analysis_report_title">%1$s · %2$s</string>
+    <string name="chat_record_analysis_no_text">No text chat records in %1$s, AI summary unavailable</string>
+    <string name="chat_record_analysis_busy">An analysis task is running, please wait</string>
+    <string name="chat_record_analysis_ai_button">AI Summary</string>
+    <string name="chat_record_analysis_ai_title">AI Summary</string>
+    <string name="chat_record_analysis_ai_running">AI is generating…</string>
+    <string name="chat_record_analysis_ai_failed">AI returned no valid content</string>
+    <string name="chat_record_analysis_copy">Copy</string>
+    <string name="chat_record_analysis_copied">Copied</string>
     <plurals name="chat_message_time_days_ago">
         <item quantity="one">%1$d day ago</item>
         <item quantity="other">%1$d days ago</item>

@@ -596,6 +596,8 @@
     <string name="feature_display_group_member_roles_description">在羣聊中顯示羣成員的身份: 羣主, 管理員, 成員</string>
     <string name="feature_display_message_details_name">顯示消息詳情</string>
     <string name="feature_display_message_details_description">向消息長按菜單添加菜單項, 可查看消息詳情</string>
+    <string name="feature_chat_record_analysis_name">聊天記錄分析</string>
+    <string name="feature_chat_record_analysis_description">分析選定時間段內的聊天記錄: 本地統計報告 + AI 總結</string>
     <string name="feature_download_files_to_local_storage_name">文件下載到本地</string>
     <string name="feature_download_files_to_local_storage_description">在文件消息菜單添加下載按鈕, 允許將文件緩存並保存到本地</string>
     <string name="feature_download_images_to_local_storage_name">圖片保存到本地</string>
@@ -2240,6 +2242,18 @@
     <string name="chat_message_details_content">內容</string>
     <string name="chat_message_details_title">消息詳情</string>
     <string name="chat_message_details_copied">已複製</string>
+    <string name="chat_record_analysis_menu">分析</string>
+    <string name="chat_record_analysis_range_title">分析時間範圍</string>
+    <string name="chat_record_analysis_range_hint">統計並總結「%1$s」該時段內的純文本聊天記錄</string>
+    <string name="chat_record_analysis_report_title">%1$s · %2$s</string>
+    <string name="chat_record_analysis_no_text">%1$s該時段內沒有提取到純文本聊天記錄, AI 無法進行總結</string>
+    <string name="chat_record_analysis_busy">已有分析任務進行中, 請稍候</string>
+    <string name="chat_record_analysis_ai_button">AI 總結</string>
+    <string name="chat_record_analysis_ai_title">AI 智能洞察</string>
+    <string name="chat_record_analysis_ai_running">AI 生成中…</string>
+    <string name="chat_record_analysis_ai_failed">AI 未返回有效內容</string>
+    <string name="chat_record_analysis_copy">複製</string>
+    <string name="chat_record_analysis_copied">已複製</string>
     <plurals name="chat_message_time_days_ago">
         <item quantity="other">%1$d 天前</item>
     </plurals>

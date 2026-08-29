@@ -6,6 +6,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
@@ -37,6 +38,10 @@ class OpenAiChatCompletionsClient(
     private val endpoint = "${baseUrl.trimEnd('/')}/chat/completions"
 
     override fun stream(request: LlmRequest): Flow<LlmStreamEvent> = flow {
+        if (!request.stream) {
+            emit(nonStreaming(request))
+            return@flow
+        }
         val body = LlmJson.shallowMerge(buildBody(request, stream = true), request.customJsonOverride)
         // The response is scoped to `execute { … }`: every early exit below (HTTP error, break on
         // [DONE]) previously abandoned an open SSE body channel, leaking the connection until GC.
@@ -100,6 +105,66 @@ class OpenAiChatCompletionsClient(
                     usage,
                 )
             )
+        }
+    }
+
+    /**
+     * Non-streaming path: one request/response round-trip, parsing the plain JSON `choices` payload
+     * into a single terminal [LlmStreamEvent]. Emits at most one [LlmStreamEvent.Completed] or
+     * [LlmStreamEvent.Failed], mirroring the streaming flow's contract so callers can collect the
+     * flow identically regardless of [LlmRequest.stream].
+     */
+    private suspend fun nonStreaming(request: LlmRequest): LlmStreamEvent {
+        val body = LlmJson.shallowMerge(buildBody(request, stream = false), request.customJsonOverride)
+        return try {
+            http.preparePost(endpoint) {
+                header(HttpHeaders.Authorization, "Bearer $apiKey")
+                contentType(ContentType.Application.Json)
+                setBody(LlmJson.json.encodeToString(JsonObject.serializer(), body))
+            }.execute { resp ->
+                if (!resp.status.isSuccess()) {
+                    LlmStreamEvent.Failed(LlmException("HTTP ${resp.status.value}: ${readBodyText(resp)}"))
+                } else {
+                    parseNonStreamingResponse(resp.bodyAsText())
+                }
+            }
+        } catch (e: Throwable) {
+            LlmStreamEvent.Failed(LlmException(e.message ?: e.javaClass.simpleName, e))
+        }
+    }
+
+    /** Parses a plain (non-streaming) Chat Completions JSON body into a terminal [LlmStreamEvent]. */
+    private fun parseNonStreamingResponse(raw: String): LlmStreamEvent {
+        return try {
+            val root = LlmJson.json.parseToJsonElement(raw).jsonObject
+            val choice = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+            val message = choice?.get("message")?.jsonObject
+            val content = message?.get("content")?.jsonPrimitive?.contentOrNullSafe()
+            val reasoning = (message?.get("reasoning") ?: message?.get("reasoning_content"))
+                ?.jsonPrimitive?.contentOrNullSafe()
+            val toolCalls = message?.get("tool_calls")?.jsonArray?.mapNotNull { call ->
+                val fn = call.jsonObject["function"]?.jsonObject ?: return@mapNotNull null
+                val name = fn["name"]?.jsonPrimitive?.contentOrNullSafe() ?: return@mapNotNull null
+                LlmToolCall(
+                    id = call.jsonObject["id"]?.jsonPrimitive?.contentOrNullSafe()
+                        ?: "call_$name",
+                    name = name,
+                    argumentsJson = fn["arguments"]?.jsonPrimitive?.contentOrNullSafe() ?: "{}",
+                )
+            }.orEmpty()
+            val finishReason = choice?.get("finish_reason")?.jsonPrimitive?.contentOrNullSafe()
+            LlmStreamEvent.Completed(
+                message = LlmMessage(
+                    role = LlmRole.ASSISTANT,
+                    content = content?.takeIf { it.isNotEmpty() },
+                    reasoning = reasoning?.takeIf { it.isNotEmpty() },
+                    toolCalls = toolCalls,
+                ),
+                finishReason = finishReason,
+                usage = parseUsage(root["usage"]?.jsonObject),
+            )
+        } catch (e: Throwable) {
+            LlmStreamEvent.Failed(LlmException("Malformed response: ${e.message ?: e.javaClass.simpleName}", e))
         }
     }
 

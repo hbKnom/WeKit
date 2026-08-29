@@ -6,6 +6,7 @@ import dev.ujhhgtg.wekit.agent.data.entity.ModelProviderEntity
 import dev.ujhhgtg.wekit.agent.data.entity.ModelProviderType
 import dev.ujhhgtg.wekit.agent.model.local.LocalLlamaController
 import dev.ujhhgtg.wekit.agent.model.local.LocalLlamaModels
+import dev.ujhhgtg.wekit.agent.model.local.LOCAL_LLAMA_MIN_CONTEXT_WINDOW
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -208,6 +209,61 @@ object ModelProviderManager {
                     ?.sorted()
                     ?: emptyList()
             }
+        }
+    }
+
+    /**
+     * Verifies a provider + specific model id actually answers by sending one minimal non-streaming
+     * round-trip (a single "ping" user message with a tiny token cap). Returns [Result.success] with
+     * the model's reply text on success, or [Result.failure] carrying the [LlmException] message.
+     *
+     * Local llama providers start (or reuse) the inference server through a lease, exactly like a
+     * normal completion, so this also validates that the GGUF pack is installed and runnable.
+     */
+    suspend fun testConnection(
+        provider: ModelProviderEntity,
+        modelIdRemote: String,
+        apiKey: String? = null,
+    ): Result<String> {
+        val effectiveProvider = if (apiKey != null) provider.copy(apiKey = apiKey) else provider
+        val request = LlmRequest(
+            modelIdRemote = modelIdRemote,
+            messages = listOf(LlmMessage(role = LlmRole.USER, content = "ping")),
+            stream = false,
+            maxTokens = 16,
+        )
+        return runCatching {
+            var reply: String? = null
+            when (effectiveProvider.type) {
+                ModelProviderType.LOCAL_LLAMA -> {
+                    val gguf = LocalLlamaModels.resolveModelFile(modelIdRemote)
+                        ?: error("local model pack is not installed: $modelIdRemote")
+                    localClientFor(
+                        provider = effectiveProvider,
+                        modelIdRemote = modelIdRemote,
+                        nCtx = LocalLlamaModels.defaultContextWindow(modelIdRemote)
+                            ?: LOCAL_LLAMA_MIN_CONTEXT_WINDOW,
+                        backend = "auto",
+                    ).stream(request).collect { event ->
+                        when (event) {
+                            is LlmStreamEvent.Completed -> reply = event.message.content
+                            is LlmStreamEvent.Failed -> throw event.error
+                            else -> Unit
+                        }
+                    }
+                }
+
+                else -> {
+                    clientFor(effectiveProvider).stream(request).collect { event ->
+                        when (event) {
+                            is LlmStreamEvent.Completed -> reply = event.message.content
+                            is LlmStreamEvent.Failed -> throw event.error
+                            else -> Unit
+                        }
+                    }
+                }
+            }
+            reply ?: "OK"
         }
     }
 }
