@@ -97,7 +97,7 @@ object ChatRecordAnalysis : SwitchFeature(),
                 multiSelect = WeChatMessageContextMenuApi.MultiSelectSupport.Unsupported
             ) { view, _, msgInfo ->
                 if (busy) {
-                    view.context.showToast(localizedChatString(R.string.chat_record_analysis_busy))
+                    showToast(view.context, localizedChatString(R.string.chat_record_analysis_busy))
                     return@MenuItem
                 }
                 gTalker = msgInfo.talker
