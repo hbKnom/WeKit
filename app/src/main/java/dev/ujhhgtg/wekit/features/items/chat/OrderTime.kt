@@ -16,6 +16,7 @@ import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi.MultiSelect
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.ui.utils.OrderTimeIcon
+import dev.ujhhgtg.wekit.ui.utils.ShowComposeDialogScope
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
@@ -28,6 +29,8 @@ import java.util.Locale
 import java.util.UUID
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Schedule
+
+private fun ShowComposeDialogScope.dismiss() = onDismiss()
 
 /**
  * OrderTime —— 微信定时发送文本消息
