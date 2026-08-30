@@ -222,7 +222,8 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
             showToast("未配置 AI 模型，请先在设置中添加")
             return
         }
-        runTest(view, model)
+        // 拉取 /models 列表 → 弹窗点选模型 → 流式+非流式验证
+        runTest(view, model, autoTestModel = null)
     }
 
     private fun testRawModel(view: View, model: AiModelConfig) {
@@ -230,27 +231,88 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
             showToast("请先填写 Base URL 和 API Key")
             return
         }
-        runTest(view, model)
+        // 编辑弹窗里测试：优先直接测当前填写的模型
+        runTest(view, model, autoTestModel = model.model.trim().ifEmpty { null })
     }
 
-    private fun runTest(view: View, model: AiModelConfig) {
+    private fun runTest(view: View, model: AiModelConfig, autoTestModel: String?) {
         if (busy) return
         busy = true
         var dialogDismiss: (() -> Unit)? = null
         showComposeDialog(view.context) {
             dialogDismiss = { dismiss() }
-            ChatAnalysisUi.TestResultContent(loading = true, result = null, onClose = { dismiss() })
+            ChatAnalysisUi.TestResultContent(
+                state = ChatAnalysisUi.TestUiState.LoadingModels,
+                onTestModel = {},
+                onClose = { dismiss() },
+            )
         }
         Thread {
-            val result = runCatching { ChatAnalysisAi.testConnection(model) }
+            val listResult = runCatching { ChatAnalysisAi.fetchModels(model.baseUrl, model.apiKey) }
+            mainHandler.post {
+                busy = false
+                dialogDismiss?.invoke()
+                val list = listResult.getOrNull() ?: emptyList()
+                val err = listResult.exceptionOrNull()?.message
+                val target = autoTestModel?.trim()?.takeIf { it.isNotEmpty() }
+                if (target != null) {
+                    // 已有指定模型：直接进入验证
+                    showModelTesting(view, model, target)
+                } else if (list.isNotEmpty() || err == null) {
+                    // 展示模型列表供点选测试
+                    showComposeDialog(view.context) {
+                        ChatAnalysisUi.TestResultContent(
+                            state = ChatAnalysisUi.TestUiState.ModelList(list, err),
+                            onTestModel = { m -> dismiss(); showModelTesting(view, model, m) },
+                            onClose = { dismiss() },
+                        )
+                    }
+                } else {
+                    showComposeDialog(view.context) {
+                        ChatAnalysisUi.TestResultContent(
+                            state = ChatAnalysisUi.TestUiState.Result(
+                                AiTestResult(false, "拉取模型列表失败：$err\n请检查 Base URL / API Key"),
+                                err,
+                            ),
+                            onTestModel = {},
+                            onClose = { dismiss() },
+                        )
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** 验证指定模型：流式 + 非流式请求，展示结果；可再测一次或设为当前模型 */
+    private fun showModelTesting(view: View, model: AiModelConfig, targetModel: String) {
+        if (busy) return
+        busy = true
+        var dialogDismiss: (() -> Unit)? = null
+        showComposeDialog(view.context) {
+            dialogDismiss = { dismiss() }
+            ChatAnalysisUi.TestResultContent(
+                state = ChatAnalysisUi.TestUiState.Testing(targetModel),
+                onTestModel = {},
+                onClose = { dismiss() },
+            )
+        }
+        Thread {
+            val result = runCatching { ChatAnalysisAi.testModel(model, targetModel) }
             mainHandler.post {
                 busy = false
                 dialogDismiss?.invoke()
                 val r = result.getOrNull()
                 showComposeDialog(view.context) {
                     ChatAnalysisUi.TestResultContent(
-                        loading = false,
-                        result = r ?: AiTestResult(false, "连接失败：${result.exceptionOrNull()?.message}"),
+                        state = ChatAnalysisUi.TestUiState.Result(
+                            r ?: AiTestResult(false, "测试失败：${result.exceptionOrNull()?.message}"),
+                            result.exceptionOrNull()?.message,
+                        ),
+                        onTestModel = { m -> dismiss(); showModelTesting(view, model, m) },
+                        onUseModel = { m ->
+                            ChatAnalysisModelStore.select(m)
+                            showToast("已切换当前模型：$m")
+                        },
                         onClose = { dismiss() },
                     )
                 }
@@ -373,8 +435,18 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         showToast("AI 生成中…")
         Thread {
             try {
-                val sys = "你是一个微信聊天记录分析助手。请基于用户提供的聊天记录，用简体中文给出结构化总结：" +
-                    "1) 话题主线 2) 关键信息与决策 3) 情绪氛围 4) 值得注意的细节。控制在 300 字以内，分点输出。"
+                val sys = "你是一名资深的微信聊天记录分析师，擅长从碎片对话中还原事实、洞察人心。请基于用户提供的聊天记录，输出一份详尽、专业、有深度的中文分析报告。\n" +
+                    "输出要求：\n" +
+                    "1. 报告总字数 1500~2500 字，宁详勿略，禁止敷衍、禁止只列要点不展开。\n" +
+                    "2. 按话题/主题分段：每段先【事实】客观完整地复述该话题下发生了什么（涉及谁、时间线、关键对话内容、数字与结论），再写【深度剖析】给出精辟评价（动机、立场、矛盾点、潜在影响、可借鉴之处），剖析必须具体、有洞察，不能空泛。\n" +
+                    "3. 额外覆盖以下章节（同样要求事实+剖析）：\n" +
+                    "   - 话题主线与讨论脉络（从开头到结尾的推进逻辑）\n" +
+                    "   - 关键信息与决策（重要结论、待办、约定）\n" +
+                    "   - 人物角色与发言风格（谁主导、谁附和、谁带节奏）\n" +
+                    "   - 情绪氛围与变化（紧张/轻松/分歧/共识的转折点）\n" +
+                    "   - 风险与机会（可能踩的坑、值得抓住的点）\n" +
+                    "4. 引用对话原文时保留说话人称呼，让报告读起来有据可依。\n" +
+                    "5. 使用小标题（【】）和编号要点，段落完整，不要使用过于口语化的表达。"
                 val user = buildString {
                     if (extra.isNotBlank()) {
                         append("【附加要求】").append(extra).append("\n\n")

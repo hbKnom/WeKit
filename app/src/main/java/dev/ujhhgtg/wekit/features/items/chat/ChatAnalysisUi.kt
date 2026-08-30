@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -481,15 +482,27 @@ internal object ChatAnalysisUi {
                 }
                 t.contains("█") -> {
                     val barLen = t.count { it == '█' }
-                    val clean = t.replace("█", "").replace(" ", "").trim()
-                    val m = Regex("^(.*?)(\\d+)$").find(clean)
-                    val label = m?.groupValues?.get(1) ?: clean
-                    val value = m?.groupValues?.get(2) ?: ""
-                    out.add(ReportUnit.BarRow(label, value, barLen / 16f))
+                    val clean = t.replace("█", "").trim()
+                    var label = clean
+                    var value = ""
+                    // 格式1：排行行 "1. 张三：45 条 ████" → label=排名+昵称, value=45条
+                    val rankM = Regex("^(\\d+[.．、]?\\s*.*?)[:：]\\s*(\\d+)\\s*条?$").find(clean)
+                    if (rankM != null) {
+                        label = rankM.groupValues[1].trim()
+                        value = rankM.groupValues[2] + "条"
+                    } else {
+                        // 格式2/3：载体偏好 "图片 5 ██"、活跃频次 "凌晨0-5点 3 ██" → 最后一个空格分隔
+                        val lastSpace = clean.lastIndexOf(' ')
+                        if (lastSpace > 0 && clean.substring(lastSpace + 1).trim().all { it.isDigit() }) {
+                            label = clean.substring(0, lastSpace).trim()
+                            value = clean.substring(lastSpace + 1).trim()
+                        }
+                    }
+                    out.add(ReportUnit.BarRow(label, value, (barLen / 16f).coerceIn(0f, 1f)))
                 }
                 t.matches(Regex("^([^\\s×]+×\\d+[\\s　]*)+$")) -> {
                     // 高频词行：word×n word×n ...
-                    val words = Regex("([^\\s]+?)×(\\d+)").findAll(t)
+                    val words = Regex("([^\\s×]+)×(\\d+)").findAll(t)
                         .map { it.groupValues[1] to it.groupValues[2].toInt() }
                         .toList()
                     if (words.isNotEmpty()) out.add(ReportUnit.WordChips(words))
@@ -532,24 +545,32 @@ internal object ChatAnalysisUi {
 
     @Composable
     private fun BarRowView(unit: ReportUnit.BarRow, accent: Color) {
-        Column(Modifier.padding(vertical = 3.dp)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     unit.label,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    unit.value,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = accent,
-                )
+                if (unit.value.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        unit.value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = accent,
+                        maxLines = 1,
+                    )
+                }
             }
             Spacer(Modifier.height(3.dp))
             LinearProgressIndicator(
@@ -569,25 +590,38 @@ internal object ChatAnalysisUi {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(unit.key, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                unit.key,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 unit.value,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
 
     @Composable
     private fun WordChipsView(words: List<Pair<String, Int>>) {
-        Row(
-            modifier = Modifier.padding(vertical = 2.dp),
+        // FlowRow 自动换行，避免词太多挤成一排被截断
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            words.take(12).forEach { (word, count) ->
+            words.take(20).forEach { (word, count) ->
                 Box(
                     Modifier
                         .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(10.dp))
@@ -597,6 +631,7 @@ internal object ChatAnalysisUi {
                         "$word ×$count",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        maxLines = 1,
                     )
                 }
             }
@@ -796,37 +831,123 @@ internal object ChatAnalysisUi {
     // ---------------- 测试结果 ----------------
 
     @Composable
+    /** 模型测试弹窗状态机：拉取列表 → 点选模型 → 流式/非流式验证 → 结果 */
+    sealed interface TestUiState {
+        object LoadingModels : TestUiState
+        data class ModelList(val models: List<String>, val error: String?) : TestUiState
+        data class Testing(val model: String) : TestUiState
+        data class Result(val result: AiTestResult, val error: String?) : TestUiState
+    }
+
+    @Composable
     fun TestResultContent(
-        loading: Boolean,
-        result: AiTestResult?,
+        state: TestUiState,
+        onTestModel: (String) -> Unit,
+        onUseModel: (String) -> Unit = {},
         onClose: () -> Unit,
-        onApplyModels: (List<String>) -> Unit = {},
     ) {
+        val titleText = when (state) {
+            is TestUiState.LoadingModels -> "测试连接"
+            is TestUiState.ModelList -> "选择要测试的模型（${state.models.size} 个）"
+            is TestUiState.Testing -> "测试中 · ${state.model}"
+            is TestUiState.Result ->
+                if (state.result.success) "✅ 测试通过" else "❌ 测试失败"
+        }
         AlertDialogContent(
-            title = { Text(if (loading) "测试连接" else if (result?.success == true) "✅ 测试通过" else "❌ 测试失败") },
+            title = { Text(titleText) },
             text = {
-                Column(Modifier.heightIn(max = 360.dp)) {
-                    if (loading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Spacer(Modifier.height(10.dp))
-                        Text("正在请求模型接口，请稍候…")
-                    } else if (result != null) {
-                        Text(result.message)
-                        if (result.models.isNotEmpty()) {
+                when (state) {
+                    is TestUiState.LoadingModels -> {
+                        Column(Modifier.fillMaxWidth()) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             Spacer(Modifier.height(10.dp))
-                            Text("可用模型（${result.models.size} 个）：", fontWeight = FontWeight.Bold)
-                            LazyColumn(Modifier.heightIn(max = 180.dp)) {
-                                itemsIndexed(result.models) { _, m ->
-                                    Text(m, style = MaterialTheme.typography.bodySmall)
+                            Text("正在拉取模型列表（GET /models），请稍候…")
+                        }
+                    }
+                    is TestUiState.ModelList -> {
+                        Column(Modifier.fillMaxWidth()) {
+                            if (!state.error.isNullOrBlank()) {
+                                Text(
+                                    "⚠️ 拉取列表失败：${state.error}（仍可手动测试下方默认模型）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(bottom = 6.dp),
+                                )
+                            }
+                            Text(
+                                "点击某个模型即可发起流式 + 非流式请求验证其可用性：",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                                itemsIndexed(state.models) { _, m ->
+                                    BaseWidget(
+                                        icon = MaterialSymbols.Outlined.Smart_toy,
+                                        iconPlaceholder = true,
+                                        title = m,
+                                        description = "点击测试此模型",
+                                        onClick = { onTestModel(m) },
+                                        trailingDivider = true,
+                                        trailingContent = {
+                                            Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                                        },
+                                    )
                                 }
+                            }
+                        }
+                    }
+                    is TestUiState.Testing -> {
+                        Column(Modifier.fillMaxWidth()) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(10.dp))
+                            Text("正在验证「${state.model}」（流式 + 非流式请求），请稍候…")
+                        }
+                    }
+                    is TestUiState.Result -> {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                state.result.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (!state.error.isNullOrBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "注意：${state.error}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                             }
                         }
                     }
                 }
             },
             confirmButton = {
-                if (!loading) {
-                    Button(onClose) { Text("关闭") }
+                when (state) {
+                    is TestUiState.ModelList -> {
+                        Button(onClose) { Text("关闭") }
+                    }
+                    is TestUiState.Result -> {
+                        if (state.result.success && state.result.testedModel.isNotBlank()) {
+                            Button({ onUseModel(state.result.testedModel) }) {
+                                Icon(MaterialSymbols.Outlined.Check, null)
+                                Text("设为当前模型")
+                            }
+                        }
+                        if (state.result.testedModel.isNotBlank()) {
+                            Button({ onTestModel(state.result.testedModel) }) {
+                                Icon(MaterialSymbols.Outlined.Refresh, null)
+                                Text("再测一次")
+                            }
+                        }
+                        Button(onClose) { Text("关闭") }
+                    }
+                    else -> Unit
                 }
             },
         )

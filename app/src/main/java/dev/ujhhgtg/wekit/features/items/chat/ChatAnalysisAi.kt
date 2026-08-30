@@ -27,11 +27,12 @@ object ChatAnalysisAi {
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
-    fun buildBody(model: String, sys: String, userContent: String, stream: Boolean): String {
+    fun buildBody(model: String, sys: String, userContent: String, stream: Boolean, maxTokens: Int? = null): String {
         val body = JSONObject()
         body.put("model", model)
         body.put("temperature", 0.7)
         body.put("stream", stream)
+        if (maxTokens != null) body.put("max_tokens", maxTokens)
         val messages = JSONArray()
         messages.put(JSONObject().put("role", "system").put("content", sys))
         messages.put(JSONObject().put("role", "user").put("content", userContent))
@@ -52,7 +53,23 @@ object ChatAnalysisAi {
     /** 流式请求：回调增量文本，返回完整文本。失败抛异常。 */
     @Throws(Exception::class)
     fun stream(config: AiModelConfig, sys: String, userContent: String, onDelta: (String) -> Unit = {}): String {
-        val body = buildBody(config.model, sys, userContent, stream = true)
+        return streamInternal(config, sys, userContent, null, onDelta)
+    }
+
+    /** 流式请求（带 max_tokens 限制，用于测试连接）。 */
+    @Throws(Exception::class)
+    fun streamWithMaxTokens(config: AiModelConfig, sys: String, userContent: String, maxTokens: Int): String {
+        return streamInternal(config, sys, userContent, maxTokens, {})
+    }
+
+    private fun streamInternal(
+        config: AiModelConfig,
+        sys: String,
+        userContent: String,
+        maxTokens: Int?,
+        onDelta: (String) -> Unit,
+    ): String {
+        val body = buildBody(config.model, sys, userContent, stream = true, maxTokens = maxTokens)
         post(config, body).use { resp ->
             if (!resp.isSuccessful) {
                 val err = resp.body?.string().orEmpty()
@@ -86,7 +103,17 @@ object ChatAnalysisAi {
     /** 非流式请求（流式失败时的降级路径）。 */
     @Throws(Exception::class)
     fun plain(config: AiModelConfig, sys: String, userContent: String): String? {
-        val body = buildBody(config.model, sys, userContent, stream = false)
+        return plainInternal(config, sys, userContent, null)
+    }
+
+    /** 非流式请求（带 max_tokens 限制，用于测试连接）。 */
+    @Throws(Exception::class)
+    fun plainWithMaxTokens(config: AiModelConfig, sys: String, userContent: String, maxTokens: Int): String? {
+        return plainInternal(config, sys, userContent, maxTokens)
+    }
+
+    private fun plainInternal(config: AiModelConfig, sys: String, userContent: String, maxTokens: Int?): String? {
+        val body = buildBody(config.model, sys, userContent, stream = false, maxTokens = maxTokens)
         post(config, body).use { resp ->
             if (!resp.isSuccessful) {
                 val err = resp.body?.string().orEmpty()
@@ -101,48 +128,56 @@ object ChatAnalysisAi {
     }
 
     /**
-     * 测试连接：GET {baseUrl}/models 拉取模型列表（OpenAI 兼容），再发一次最小对话验证。
+     * 测试指定模型是否可用：先发流式请求，再发非流式请求，两者任一成功即判定可用。
+     * 用于「从 /models 拉取列表 → 点选某个模型 → 验证该模型」的测试流程。
      */
     @Throws(Exception::class)
-    fun testConnection(config: AiModelConfig): AiTestResult {
-        val b = config.baseUrl.trim().trimEnd('/')
-        val models = runCatching { fetchModels(b, config.apiKey) }.getOrDefault(emptyList())
+    fun testModel(config: AiModelConfig, targetModel: String): AiTestResult {
+        val model = targetModel.trim().ifBlank { config.model.trim().ifBlank { "gpt-4o-mini" } }
 
-        // 最小对话 ping（非流式，max_tokens 小）
-        val pingBody = JSONObject()
-        pingBody.put("model", config.model.ifEmpty { models.firstOrNull() ?: "gpt-4o-mini" })
-        pingBody.put("stream", false)
-        pingBody.put("max_tokens", 16)
-        val messages = JSONArray()
-        messages.put(JSONObject().put("role", "user").put("content", "ping"))
-        pingBody.put("messages", messages)
-
-        val req = Request.Builder()
-            .url(config.endpoint())
-            .addHeader("Content-Type", "application/json; charset=utf-8")
-            .addHeader("Authorization", "Bearer ${config.apiKey}")
-            .post(pingBody.toString().toRequestBody(jsonType))
-            .build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                val err = resp.body?.string().orEmpty()
-                throw Exception("HTTP ${resp.code}：${err.lineSequence().firstOrNull().orEmpty().take(300)}")
-            }
-            val text = resp.body?.string().orEmpty()
-            val obj = runCatching { JSONObject(text) }.getOrNull()
-            val reply = obj?.optJSONArray("choices")
-                ?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
-            val msg = if (reply.isNotBlank()) {
-                "✅ 连接成功，模型已响应：${reply.take(60)}"
-            } else {
-                "✅ 连接成功（HTTP ${resp.code}），但未解析到回复内容"
-            }
-            return AiTestResult(
-                success = true,
-                message = msg,
-                models = models,
-            )
+        // 1) 流式测试（小 max_tokens）
+        var streamText = ""
+        var streamError: String? = null
+        try {
+            streamText = streamWithMaxTokens(config.copy(model = model), "你是测试助手，只回复OK", "ping", 32)
+        } catch (e: Exception) {
+            streamError = e.message
         }
+
+        // 2) 非流式测试
+        var plainText = ""
+        var plainError: String? = null
+        try {
+            plainText = plainWithMaxTokens(config.copy(model = model), "你是测试助手，只回复OK", "ping", 32).orEmpty()
+        } catch (e: Exception) {
+            plainError = e.message
+        }
+
+        val streamOk = streamText.isNotBlank()
+        val plainOk = plainText.isNotBlank()
+        val success = streamOk || plainOk
+
+        val sb = StringBuilder()
+        sb.append("模型「").append(model).append("」").append(if (success) "可用" else "不可用").append("\n\n")
+        if (streamOk) {
+            sb.append("✅ 流式请求正常：").append(streamText.trim().take(60)).append("\n")
+        } else {
+            sb.append("❌ 流式请求失败：").append(streamError ?: "无返回内容").append("\n")
+        }
+        if (plainOk) {
+            sb.append("✅ 非流式请求正常：").append(plainText.trim().take(60)).append("\n")
+        } else {
+            sb.append("❌ 非流式请求失败：").append(plainError ?: "无返回内容").append("\n")
+        }
+        if (success && !streamOk) sb.append("（流式不可用时，AI 总结将自动降级为非流式）\n")
+
+        return AiTestResult(
+            success = success,
+            message = sb.toString().trim(),
+            testedModel = model,
+            streamOk = streamOk,
+            plainOk = plainOk,
+        )
     }
 
     /** 拉取 OpenAI 兼容 /models 列表。 */

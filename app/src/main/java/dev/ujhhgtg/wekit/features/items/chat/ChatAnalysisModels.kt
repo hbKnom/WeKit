@@ -55,6 +55,9 @@ data class AiTestResult(
     val success: Boolean,
     val message: String,
     val models: List<String> = emptyList(),
+    val testedModel: String = "",
+    val streamOk: Boolean = false,
+    val plainOk: Boolean = false,
 )
 
 /**

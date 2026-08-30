@@ -495,15 +495,21 @@ object ChatAnalysisEngine {
         return body
     }
 
-    /** 说话人显示名：我 / 对方 / 群成员昵称 */
+    /** 说话人显示名：我 / 对方 / 群成员昵称（群昵称 → 微信名/备注 → wxid） */
     private fun speakerDisplayName(key: String, talker: String, isGroup: Boolean, nickCache: MutableMap<String, String>): String {
         if (key == "我") return "我"
         if (key == "对方") return talkerDisplayName(talker)
         if (key == "群友") return "群友"
         if (!isGroup) return key
         return nickCache.getOrPut(key) {
-            runCatching { WeDatabaseApi.getGroupMemberDisplayNameMap(talker)[key] }.getOrNull()
-                ?.takeIf { it.isNotBlank() } ?: key
+            // 1. 群备注/群昵称（roomdata protobuf）
+            val groupNick = runCatching { WeDatabaseApi.getGroupMemberDisplayNameMap(talker)[key] }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+            if (groupNick != null) return@getOrPut groupNick
+            // 2. 微信名/备注（rcontact 表）
+            val display = runCatching { WeDatabaseApi.getDisplayName(key) }.getOrNull()
+                ?.takeIf { it.isNotBlank() && it != key }
+            display ?: key
         }
     }
 
