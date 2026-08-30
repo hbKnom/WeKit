@@ -187,7 +187,7 @@ object ChatAnalysisPng {
 
         // 页脚
         val footerP = paint(24f, COLOR_META)
-        cv.drawText("WeKit · 聊天记录分析 · 生成于 $reportDateText()", PAD.toFloat(), y, footerP)
+        cv.drawText("WeKit · 聊天记录分析 · 生成于 ${reportDateText()}", PAD.toFloat(), y.toFloat(), footerP)
 
         var fos: FileOutputStream? = null
         try {

@@ -3,6 +3,8 @@ package dev.ujhhgtg.wekit.features.items.chat
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.History
 import dev.ujhhgtg.wekit.R
@@ -11,8 +13,8 @@ import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi.MenuItem
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi.MultiSelectSupport
-import dev.ujhhgtg.wekit.features.items.FeatureCategoryIds
-import dev.ujhhgtg.wekit.features.items.base.SwitchFeature
+import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
+import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.utils.ChatInfoIcon

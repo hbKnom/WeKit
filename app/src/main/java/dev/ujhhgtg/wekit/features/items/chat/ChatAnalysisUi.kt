@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -156,18 +158,22 @@ internal object ChatAnalysisUi {
                             },
                         )
                     }
-                    HorizontalDivider()
-                    BaseWidget(
-                        icon = MaterialSymbols.Outlined.Settings,
-                        iconPlaceholder = true,
-                        title = "⚙️ 设置",
-                        description = "功能开关 / 分析参数 / AI 模型管理",
-                        onClick = onSettings,
-                        trailingDivider = true,
-                        trailingContent = {
-                            Icon(MaterialSymbols.Outlined.Chevron_right, null)
-                        },
-                    )
+                    item {
+                        HorizontalDivider()
+                    }
+                    item {
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Settings,
+                            iconPlaceholder = true,
+                            title = "⚙️ 设置",
+                            description = "功能开关 / 分析参数 / AI 模型管理",
+                            onClick = onSettings,
+                            trailingDivider = true,
+                            trailingContent = {
+                                Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                            },
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -761,9 +767,8 @@ internal object ChatAnalysisUi {
                         Modifier
                             .fillMaxWidth()
                             .heightIn(max = 460.dp)
-                            .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                    ) {
-                        Text(ai, style = MaterialTheme.typography.bodyMedium)
+                            .verticalScroll(rememberScrollState())
+                    ) {                        Text(ai, style = MaterialTheme.typography.bodyMedium)
                     }
                 } else {
                     ReportContent(units, MaterialTheme.colorScheme.tertiary)
