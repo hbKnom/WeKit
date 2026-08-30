@@ -84,7 +84,7 @@ object OrderTime : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvid
     override fun getMenuItems(): List<MenuItem> = listOf(
         MenuItem(
             id = MENU_ID,
-            text = "定时发送",
+            text = "定时",
             drawable = OrderTimeIcon,
             imageVector = MaterialSymbols.Outlined.Schedule,
             isSupported = { _ -> true },

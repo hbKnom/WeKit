@@ -454,8 +454,17 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     append("【聊天记录（抽样）】\n").append(gTranscript)
                 }
                 var text = ""
+                var lastToastLen = 0
                 try {
-                    text = ChatAnalysisAi.stream(model, sys, user) {}
+                    text = ChatAnalysisAi.stream(model, sys, user) { delta ->
+                        // 流式进度反馈：每累计约 600 字提示一次，避免长时间无反馈
+                        lastToastLen += delta.length
+                        if (lastToastLen >= 600) {
+                            val n = lastToastLen
+                            mainHandler.post { showToast("AI 生成中… 已生成 $n 字") }
+                            lastToastLen = 0
+                        }
+                    }
                 } catch (e: Exception) {
                     // 流式失败 → 非流式降级
                     text = ChatAnalysisAi.plain(model, sys, user).orEmpty()
