@@ -830,7 +830,6 @@ internal object ChatAnalysisUi {
 
     // ---------------- 测试结果 ----------------
 
-    @Composable
     /** 模型测试弹窗状态机：拉取列表 → 点选模型 → 流式/非流式验证 → 结果 */
     sealed interface TestUiState {
         object LoadingModels : TestUiState
