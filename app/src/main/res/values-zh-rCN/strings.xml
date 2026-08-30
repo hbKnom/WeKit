@@ -600,6 +600,8 @@
     <string name="feature_display_message_details_description">向消息长按菜单添加菜单项, 可查看消息详情</string>
     <string name="feature_chat_record_analysis_name">聊天记录分析</string>
     <string name="feature_chat_record_analysis_description">分析选定时间段内的聊天记录: 本地统计报告 + AI 总结</string>
+    <string name="feature_order_time_name">定时发送</string>
+    <string name="feature_order_time_description">按设定时间定时发送文本消息: 超时补发 / 间隔发送 / 重复任务 / 多目标 / 系统闹钟唤醒</string>
     <string name="feature_download_files_to_local_storage_name">文件下载到本地</string>
     <string name="feature_download_files_to_local_storage_description">在文件消息菜单添加下载按钮, 允许将文件缓存并保存到本地</string>
     <string name="feature_download_images_to_local_storage_name">图片保存到本地</string>

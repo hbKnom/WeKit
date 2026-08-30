@@ -638,6 +638,8 @@
     <string name="feature_display_message_details_description">Add menu items to the message long press menu to view message details</string>
     <string name="feature_chat_record_analysis_name">Chat record analysis</string>
     <string name="feature_chat_record_analysis_description">Analyze chat records over a selected time range: local statistics report and AI summary</string>
+    <string name="feature_order_time_name">Scheduled send</string>
+    <string name="feature_order_time_description">Schedule text messages to be sent at a set time: timeout catch-up, interval, repeat, multi-target, system alarm wake-up</string>
     <string name="feature_download_files_to_local_storage_name">Save files locally</string>
     <string name="feature_download_files_to_local_storage_description">Add a download button to the file message menu, allowing files to be cached and saved locally</string>
     <string name="feature_download_images_to_local_storage_name">Save images locally</string>

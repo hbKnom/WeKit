@@ -90,19 +90,30 @@ object ChatAnalysisPng {
         for (line in lines) {
             val t = line.trim()
             when {
-                t.isEmpty() -> { /* 空行用 Gap 控制间距 */ }
+                t.isEmpty() -> out.add(Unit.Gap)
                 t.startsWith("【") && t.endsWith("】") -> {
                     out.add(Unit.Gap)
                     out.add(Unit.Section(t.removeSurrounding("【", "】")))
                 }
                 t.contains("█") -> {
                     val barLen = t.count { it == '█' }
-                    val clean = t.replace("█", "").replace(" ", "").trim()
-                    // 形如「凌晨0-5点123」或「1.张三：5条123」→ 分离 label 与数字
-                    val m = Regex("^(.*?)(\\d+)$").find(clean)
-                    val label = m?.groupValues?.get(1) ?: clean
-                    val value = m?.groupValues?.get(2) ?: ""
-                    out.add(Unit.BarLine(label, value, barLen / 16f))
+                    val clean = t.replace("█", "").trim()
+                    var label = clean
+                    var value = ""
+                    // 排行行 "1. 张三：45 条 ████" → label=排名+昵称, value=45条
+                    val rankM = Regex("^(\\d+[.．、]?\\s*.*?)[:：]\\s*(\\d+)\\s*条?$").find(clean)
+                    if (rankM != null) {
+                        label = rankM.groupValues[1].trim()
+                        value = rankM.groupValues[2] + "条"
+                    } else {
+                        // 载体偏好 "图片 5" / 活跃频次 "凌晨0-5点 3" → 最后一个空格分隔
+                        val lastSpace = clean.lastIndexOf(' ')
+                        if (lastSpace > 0 && clean.substring(lastSpace + 1).trim().all { it.isDigit() }) {
+                            label = clean.substring(0, lastSpace).trim()
+                            value = clean.substring(lastSpace + 1).trim()
+                        }
+                    }
+                    out.add(Unit.BarLine(label, value, (barLen / 16f).coerceIn(0f, 1f)))
                 }
                 else -> out.add(Unit.TextLine(t))
             }
@@ -168,21 +179,21 @@ object ChatAnalysisPng {
         // 统计卡片
         if (statsUnits.isNotEmpty()) {
             val cardTop = y - 16
-            val bodyH = statsUnits.sumOf { unitHeight(it, maxW, bodyP, sectionP, metaP) } + 44
+            val bodyH = statsUnits.sumOf { unitHeight(it, maxW, bodyP, sectionP, metaP) } + 72
             val cardBottom = cardTop + bodyH
             drawCard(cv, cardTop, cardBottom, COLOR_ACCENT)
             y = drawUnits(cv, statsUnits, y, maxW, COLOR_ACCENT)
-            y += 28
+            y += 52
         }
 
         // AI 卡片
         if (aiUnits.isNotEmpty()) {
             val cardTop = y - 16
-            val bodyH = aiUnits.sumOf { unitHeight(it, maxW, bodyP, sectionP, metaP) } + 44
+            val bodyH = aiUnits.sumOf { unitHeight(it, maxW, bodyP, sectionP, metaP) } + 72
             val cardBottom = cardTop + bodyH
             drawCard(cv, cardTop, cardBottom, COLOR_ACCENT2)
             y = drawUnits(cv, aiUnits, y, maxW, COLOR_ACCENT2)
-            y += 28
+            y += 52
         }
 
         // 页脚
@@ -304,10 +315,10 @@ object ChatAnalysisPng {
     }
 
     private fun unitHeight(u: Unit, maxW: Int, bodyP: Paint, sectionP: Paint, metaP: Paint): Int = when (u) {
-        is Unit.Gap -> 18
-        is Unit.Section -> 52
-        is Unit.BarLine -> 44
-        is Unit.TextLine -> wrapCount(u.text, maxW, bodyP) * 40 + 6
+        is Unit.Gap -> 20
+        is Unit.Section -> 62
+        is Unit.BarLine -> 50
+        is Unit.TextLine -> wrapCount(u.text, maxW, bodyP) * 44 + 8
     }
 
     private fun drawUnits(
@@ -324,29 +335,45 @@ object ChatAnalysisPng {
 
         for (u in units) {
             when (u) {
-                is Unit.Gap -> y += 18
+                is Unit.Gap -> y += 20
                 is Unit.Section -> {
-                    // 分区标题：色块 + 文字
+                    // 分区标题：色块 + 文字 + 淡色背景条（板块分割更明显）
+                    val bgP = Paint().apply { color = (accent and 0x00FFFFFF) or 0x14000000.toInt() }
+                    val bgRect = RectF(
+                        (PAD - 12).toFloat(), (y - 38).toFloat(),
+                        (W - PAD + 12).toFloat(), (y + 8).toFloat(),
+                    )
+                    cv.drawRoundRect(bgRect, 12f, 12f, bgP)
                     val accentP = Paint().apply { color = accent }
                     cv.drawRoundRect(
-                        RectF((PAD - 8).toFloat(), (y - 34).toFloat(), (PAD - 0).toFloat(), (y - 2).toFloat()),
+                        RectF((PAD - 8).toFloat(), (y - 36).toFloat(), (PAD - 0).toFloat(), (y - 4).toFloat()),
                         4f, 4f, accentP,
                     )
-                    cv.drawText(u.title, (PAD + 8).toFloat(), y.toFloat(), sectionP)
-                    y += 52
+                    cv.drawText(u.title, (PAD + 12).toFloat(), y.toFloat(), sectionP)
+                    y += 62
                 }
                 is Unit.BarLine -> {
-                    // label（左）+ value（中）+ 进度条（右）
+                    // label（左，超长截断）+ value（中）+ 进度条（右）
                     val labelP = paint(27f, COLOR_BODY)
                     val valueP = paint(27f, COLOR_META, bold = true)
-                    cv.drawText(u.label, (PAD + 8).toFloat(), y.toFloat(), labelP)
-                    val valueX = (PAD + 8 + 300).toFloat()
+                    val labelMaxW = 300
+                    val labelText = if (labelP.measureText(u.label) > labelMaxW) {
+                        var s = u.label
+                        while (s.isNotEmpty() && labelP.measureText(s + "…") > labelMaxW) {
+                            s = s.dropLast(1)
+                        }
+                        s + "…"
+                    } else {
+                        u.label
+                    }
+                    cv.drawText(labelText, (PAD + 8).toFloat(), y.toFloat(), labelP)
+                    val valueX = (PAD + 8 + labelMaxW + 16).toFloat()
                     cv.drawText(u.value, valueX, y.toFloat(), valueP)
                     // 进度条
                     val trackP = Paint().apply { color = 0xFFE4EBF2.toInt() }
                     val trackRect = RectF(
-                        (PAD + 8 + 340).toFloat(), (y - 18).toFloat(),
-                        (W - PAD - 20).toFloat(), (y - 6).toFloat(),
+                        (PAD + 8 + 340).toFloat(), (y - 20).toFloat(),
+                        (W - PAD - 20).toFloat(), (y - 8).toFloat(),
                     )
                     cv.drawRoundRect(trackRect, 6f, 6f, trackP)
                     val fillP = Paint().apply {
@@ -363,11 +390,11 @@ object ChatAnalysisPng {
                             6f, 6f, fillP,
                         )
                     }
-                    y += 44
+                    y += 50
                 }
                 is Unit.TextLine -> {
-                    y = drawWrapped(cv, u.text, PAD + 8, y, maxW - 16, 40, bodyP)
-                    y += 6
+                    y = drawWrapped(cv, u.text, PAD + 8, y, maxW - 16, 44, bodyP)
+                    y += 8
                 }
             }
         }
