@@ -602,6 +602,14 @@
     <string name="feature_chat_record_analysis_description">分析选定时间段内的聊天记录: 本地统计报告 + AI 总结</string>
     <string name="feature_order_time_name">定时发送</string>
     <string name="feature_order_time_description">按设定时间定时发送文本消息: 超时补发 / 间隔发送 / 重复任务 / 多目标 / 系统闹钟唤醒</string>
+    <string name="feature_chat_title_tag_name">会话自定义头衔</string>
+    <string name="feature_chat_title_tag_description">为群成员或私聊对象设置头衔，以渐变徽章形式显示在昵称旁</string>
+    <string name="feature_custom_at_name">群聊自定义艾特</string>
+    <string name="feature_custom_at_description">发送时用自定义文本和样式替换群成员的 @提及显示名</string>
+    <string name="feature_make_emoji_name">制作表情</string>
+    <string name="feature_make_emoji_description">通过第三方表情接口用聊天内容生成 GIF 表情，保留原始关键词表</string>
+    <string name="feature_mofang_tts_name">魔方文转音</string>
+    <string name="feature_mofang_tts_description">通过魔方 TTS 接口将文本转为语音并以语音消息发送</string>
     <string name="feature_download_files_to_local_storage_name">文件下载到本地</string>
     <string name="feature_download_files_to_local_storage_description">在文件消息菜单添加下载按钮, 允许将文件缓存并保存到本地</string>
     <string name="feature_download_images_to_local_storage_name">图片保存到本地</string>
