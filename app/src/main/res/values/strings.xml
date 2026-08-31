@@ -643,7 +643,7 @@
     <string name="feature_chat_title_tag_name">Custom chat title</string>
     <string name="feature_chat_title_tag_description">Set a styled title for a chat member or private contact, shown as a gradient badge next to their nickname</string>
     <string name="feature_custom_at_name">Custom group mention</string>
-    <string name="feature_custom_at_description">Replace a group member&#39;s @mention display name with a custom label and style when sending</string>
+    <string name="feature_custom_at_description">Replace the @mention display name of a group member with a custom label and style when sending</string>
     <string name="feature_make_emoji_name">Make sticker</string>
     <string name="feature_make_emoji_description">Generate a GIF sticker from chat messages using third-party meme APIs with the original keyword set</string>
     <string name="feature_mofang_tts_name">Mofang voice</string>
