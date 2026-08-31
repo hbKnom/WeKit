@@ -475,12 +475,12 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         val sequence = exactGroupMemberSequence(talker, wxid)
         if (sequence <= 0) {
             val hash = if (wxid.isEmpty()) 0 else wxid.hashCode()
-            val index = (((hash.toLong()) and 0x7FFFFFFFL) % titles.size()).toInt()
+            val index = (((hash.toLong()) and 0x7FFFFFFFL) % titles.size).toInt()
             return titles[index] + "（$wxid）"
         }
         val zeroBased = (sequence - 1).coerceAtLeast(0)
-        val index = zeroBased % titles.size()
-        val round = zeroBased / titles.size()
+        val index = zeroBased % titles.size
+        val round = zeroBased / titles.size
         return titles[index] + if (round == 0) "" else funTitleNumberSuffix(round)
     }
 
@@ -558,7 +558,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         var candidate = truncateAtLabel(base, 39)
         if (!isAtLabelMappedToOther(entries, candidate, wxid)) return candidate
         val suffix = "·" + stableAnonymousCode(wxid)
-        candidate = truncateAtLabel(base, 39 - suffix.length()) + suffix
+        candidate = truncateAtLabel(base, 39 - suffix.length) + suffix
         if (!isAtLabelMappedToOther(entries, candidate, wxid)) return candidate
         return truncateAtLabel(wxid, 39)
     }
@@ -584,12 +584,12 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         if (listener is ChatFooter) return listener
         runCatching {
             listener.reflekt().firstFieldOrNull { name = "d" }?.get() as? ChatFooter
-        }?.let { if (it != null) return it }
+        }.getOrNull()?.let { if (it != null) return it }
         runCatching {
             listener.reflekt().firstFieldOrNull {
                 type { it == ChatFooter::class.java || ChatFooter::class.java.isAssignableFrom(it) }
             }?.get() as? ChatFooter
-        }?.let { if (it != null) return it }
+        }.getOrNull()?.let { if (it != null) return it }
         return null
     }
 
@@ -605,7 +605,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         return runCatching {
             val atState = footer.reflekt().firstFieldOrNull { name = "x0" }?.get()
             val rawMap = atState?.reflekt()?.firstFieldOrNull { name = "e" }?.get() as? Map<*, *>
-            rawMap?.keys?.firstOrNull { (it as? String)?.isGroupChatWxId() == true } as? String ?: ""
+            rawMap?.keys?.firstOrNull { (it as? String)?.isGroupChatWxId == true } as? String ?: ""
         }.getOrDefault("")
     }
 
@@ -698,7 +698,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         try {
             val footer = findFooterFromListener(n1) ?: return
             val talker = findTalkerFromFooter(footer)
-            if (!talker.isGroupChatWxId() || !isTalkerEnabled(talker)) return
+            if (!talker.isGroupChatWxId || !isTalkerEnabled(talker)) return
 
             val rewrite = rewriteFooterAtText(footer, talker)
             if (rewrite.wxids.isEmpty()) return
