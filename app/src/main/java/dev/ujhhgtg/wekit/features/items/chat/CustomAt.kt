@@ -566,7 +566,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     private fun replaceFirstAtToken(text: String, oldToken: String, newToken: String): String {
         val index = text.indexOf(oldToken)
         if (index < 0) return text
-        return text.substring(0, index) + newToken + text.substring(index + oldToken.length())
+        return text.substring(0, index) + newToken + text.substring(index + oldToken.length)
     }
 
     // ---------------- 发送改写（微信 @token → 自定义 label） ----------------
