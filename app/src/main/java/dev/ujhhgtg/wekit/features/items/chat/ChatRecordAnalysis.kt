@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.History
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi
@@ -87,7 +88,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         MenuItem(
             id = 777266,
             text = "分析",
-            drawable = ChatInfoIcon,
+            drawable = MenuIcons.res(R.drawable.ic_menu_analysis),
             imageVector = MaterialSymbols.Outlined.History,
             isSupported = { _ -> true },
             multiSelect = MultiSelectSupport.Unsupported,

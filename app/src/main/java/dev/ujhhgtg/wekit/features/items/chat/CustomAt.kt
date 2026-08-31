@@ -85,7 +85,6 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     // ---------------- 常量（与脚本一致） ----------------
 
     private const val MENU_ID = 777269
-    private const val SETTINGS_MENU_ID = 777272
 
     private const val MEMBER_AT_CONFIG_KEY = "member_at_labels_v1"
     private const val MEMBER_AT_SEPARATOR = "\u0001"
@@ -157,29 +156,20 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     override fun getMenuItems(): List<MenuItem> = listOf(
         MenuItem(
             id = MENU_ID,
-            text = "专属艾特",
+            text = "艾特",
             drawable = MenuIcons.res(R.drawable.ic_menu_at),
             imageVector = MaterialSymbols.Outlined.Alternate_email,
-            isSupported = { msg -> msg.isInGroupChat && msg.sender.isNotEmpty() && msg.sender != "system" && !msg.isSelfSender },
+            isSupported = { msg -> msg.isInGroupChat },
             multiSelect = MultiSelectSupport.Unsupported,
             onClick = { view, _, msgInfo ->
                 val talker = msgInfo.talker
                 val wxid = msgInfo.sender
-                if (wxid.isEmpty() || wxid == WeApi.selfWxId) {
-                    showToast("未取得该群成员，请长按对方消息后重试")
-                    return@MenuItem
+                if (wxid.isNotEmpty() && wxid != "system" && !msgInfo.isSelfSender && wxid != WeApi.selfWxId) {
+                    openMemberAtInput(view, talker, wxid)
+                } else {
+                    openSettings(view)
                 }
-                openMemberAtInput(view, talker, wxid)
             }
-        ),
-        MenuItem(
-            id = SETTINGS_MENU_ID,
-            text = "艾特设置",
-            drawable = MenuIcons.res(R.drawable.ic_menu_analysis),
-            imageVector = MaterialSymbols.Outlined.Tune,
-            isSupported = { msg -> msg.isInGroupChat },
-            multiSelect = MultiSelectSupport.Unsupported,
-            onClick = { view, _, _ -> openSettings(view) }
         )
     )
 
@@ -236,7 +226,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         if (raw.isEmpty()) return
         try {
             for (row in raw.split("\n")) {
-                val values = row.split("|", limit = -1)
+                val values = row.split("|")
                 if (values.size != 3) continue
                 val talker = decodeBase64(values[0])
                 val wxid = decodeBase64(values[1])
@@ -254,7 +244,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         try {
             val sb = StringBuilder()
             for ((key, label) in memberAtLabels) {
-                val parts = key.split(MEMBER_AT_SEPARATOR, limit = -1)
+                val parts = key.split(MEMBER_AT_SEPARATOR)
                 val cleanLabel = nonEmpty(label)
                 if (parts.size != 2 || cleanLabel.isEmpty()) continue
                 if (sb.isNotEmpty()) sb.append("\n")

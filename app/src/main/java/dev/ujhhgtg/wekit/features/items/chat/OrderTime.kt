@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi
@@ -85,7 +86,7 @@ object OrderTime : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvid
         MenuItem(
             id = MENU_ID,
             text = "定时",
-            drawable = OrderTimeIcon,
+            drawable = MenuIcons.res(R.drawable.ic_menu_timer),
             imageVector = MaterialSymbols.Outlined.Schedule,
             isSupported = { _ -> true },
             multiSelect = MultiSelectSupport.Unsupported,
