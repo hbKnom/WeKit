@@ -684,11 +684,26 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     }
 
     private fun findTalkerFromFooter(footer: ChatFooter): String {
-        return runCatching {
+        // 1) x0.e keySet（与脚本一致：找第一个 @chatroom key）
+        runCatching {
             val atState = footer.reflekt().firstFieldOrNull { name = "x0" }?.get()
             val rawMap = atState?.reflekt()?.firstFieldOrNull { name = "e" }?.get() as? Map<*, *>
-            rawMap?.keys?.firstOrNull { (it as? String)?.isGroupChatWxId == true } as? String ?: ""
-        }.getOrDefault("")
+            rawMap?.keys?.firstOrNull { (it as? String)?.isGroupChatWxId == true } as? String
+        }.getOrNull()?.let { if (it.isNotEmpty()) return it }
+        // 2) 兜底：遍历 footer 所有 String 字段找 @chatroom 结尾的值（切群后 x0.e 可能为空）
+        runCatching {
+            var clazz: Class<*>? = footer.javaClass
+            while (clazz != null) {
+                for (field in clazz.declaredFields) {
+                    if (field.type != String::class.java) continue
+                    runCatching { field.isAccessible = true }
+                    val value = runCatching { field.get(footer) as? String }.getOrNull()
+                    if (!value.isNullOrEmpty() && value.isGroupChatWxId) return value
+                }
+                clazz = clazz.superclass
+            }
+        }
+        return ""
     }
 
     private fun getFooterText(footer: ChatFooter): String {
@@ -884,6 +899,22 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
             if (changed) {
                 param.result = newMap
                 setFooterText(footer, text)
+                // 注入 x0.e（label→wxid），保证微信后续解析/发送 @label 能拿到映射
+                runCatching {
+                    val atState = footer.reflekt().firstFieldOrNull { name = "x0" }?.get()
+                    val rawMap = atState?.reflekt()?.firstFieldOrNull { name = "e" }?.get() as? MutableMap<*, *>
+                    if (rawMap != null) {
+                        val talkerMap = rawMap as MutableMap<Any?, Any?>
+                        val entries = talkerMap[talker]
+                        val newEntry = LinkedHashMap<Any?, Any?>()
+                        newEntry[newMap.keys.lastOrNull() ?: return@runCatching] = newMap.values.lastOrNull() ?: return@runCatching
+                        if (entries is MutableList<*>) {
+                            (entries as MutableList<Any?>).add(newEntry)
+                        } else {
+                            talkerMap[talker] = mutableListOf<Any?>(newEntry)
+                        }
+                    }
+                }
                 WeLogger.d(TAG, "s0 映射兜底改写：群=$talker，正文=${text.take(50)}")
             }
         } catch (error: Throwable) {
