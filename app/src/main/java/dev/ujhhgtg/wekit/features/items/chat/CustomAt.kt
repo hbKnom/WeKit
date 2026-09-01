@@ -1,5 +1,7 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.view.View
 import androidx.compose.foundation.layout.Column
@@ -38,6 +40,7 @@ import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
+import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.core.models.WeContact
 import dev.ujhhgtg.wekit.features.api.ui.WeChatInputBarMenuApi
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi
@@ -53,8 +56,11 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.HookHandle
 import dev.ujhhgtg.wekit.utils.android.showToast
+import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
+import java.lang.reflect.Method
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -127,27 +133,83 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     override fun onEnable() {
         loadMemberAtLabels()
         WeChatMessageContextMenuApi.addProvider(this)
-        runCatching { installSendHooks() }.onFailure {
-            WeLogger.e(TAG, "发送改写 Hook 安装失败", it)
-        }
+        installSendHooks()
+        // 微信启动早期可能对类做热修复/替换，延迟重装一次覆盖新 ArtMethod（幂等）
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (isEnabled) reinstallSendHooks("启动延迟重装")
+        }, 5000)
         WeLogger.d(TAG, "群聊自定义艾特已启用，当前样式=${getAtStyleName()}")
     }
 
     override fun onDisable() {
         WeChatMessageContextMenuApi.removeProvider(this)
+        unhookAllSendHooks()
         clearPendingAddedEntries()
         groupNickCache.clear()
         memberListCache.clear()
         WeLogger.d(TAG, "群聊自定义艾特已停用")
     }
 
+    // ---------------- 发送改写 Hook（对照脚本：明确 hook n1.onClick，带类替换自愈） ----------------
+
+    private val sendHookHandles = mutableListOf<HookHandle>()
+    private var hookedN1Class: Class<*>? = null
+
     private fun installSendHooks() {
-        // hookBefore: 改写输入框 @token + 注入 label→wxid 映射；hookAfter: 清理注入项
-        WeChatInputBarMenuApi.methodSendMessage.hookBefore {
-            handleSendClickBefore(thisObject)
+        // 主路径（与脚本一致）：com.tencent.mm.pluginsdk.ui.chat.n1.onClick(View)
+        var n1Ok = false
+        runCatching {
+            val n1Class = Class.forName("com.tencent.mm.pluginsdk.ui.chat.n1", false, ClassLoaders.HOST)
+            val onClick = n1Class.getDeclaredMethod("onClick", View::class.java)
+            onClick.isAccessible = true
+            hookedN1Class = n1Class
+            sendHookHandles += onClick.hookBeforeDirectly(100) { handleSendClickBefore(thisObject) }
+            n1Ok = true
+        }.onFailure {
+            WeLogger.e(TAG, "n1.onClick Hook 安装失败", it)
         }
-        WeChatInputBarMenuApi.methodSendMessage.hookAfter {
-            clearPendingAddedEntries()
+        if (!n1Ok) {
+            // 兜底：微信类名变化时退回 dexkit 匹配的 methodSendMessage
+            runCatching {
+                WeChatInputBarMenuApi.methodSendMessage.hookBefore(50) { handleSendClickBefore(thisObject) }
+                    .let { sendHookHandles += it }
+                WeChatInputBarMenuApi.methodSendMessage.hookAfter(50) { clearPendingAddedEntries() }
+                    .let { sendHookHandles += it }
+            }.onFailure {
+                WeLogger.e(TAG, "发送改写兜底 Hook 安装失败", it)
+            }
+        }
+        WeLogger.d(TAG, "群聊自定义艾特发送 Hook 已安装（n1=$n1Ok）")
+    }
+
+    private fun unhookAllSendHooks() {
+        for (handle in sendHookHandles) {
+            runCatching { handle.unhook() }
+        }
+        sendHookHandles.clear()
+        hookedN1Class = null
+    }
+
+    private fun reinstallSendHooks(reason: String) {
+        unhookAllSendHooks()
+        installSendHooks()
+        WeLogger.d(TAG, "发送 Hook 已重装（原因：$reason）")
+    }
+
+    /**
+     * 类替换自愈：微信热修复（Tinker 等）或启动期二次加载可能替换 n1 类，
+     * 旧 ArtMethod 上的 hook 随之失效。每次发送前校验类对象是否一致，不一致即重装。
+     */
+    private fun ensureSendHooksAlive() {
+        val hooked = hookedN1Class ?: return
+        runCatching {
+            val current = Class.forName("com.tencent.mm.pluginsdk.ui.chat.n1", false, ClassLoaders.HOST)
+            if (current !== hooked) {
+                WeLogger.w(TAG, "检测到 n1 类被替换（$hooked → $current），重装发送 Hook")
+                reinstallSendHooks("类替换")
+            }
+        }.onFailure {
+            WeLogger.e(TAG, "n1 类替换检测失败", it)
         }
     }
 
@@ -162,16 +224,56 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
             isSupported = { msg -> msg.isInGroupChat },
             multiSelect = MultiSelectSupport.Unsupported,
             onClick = { view, _, msgInfo ->
-                val talker = msgInfo.talker
-                val wxid = msgInfo.sender
-                if (wxid.isNotEmpty() && wxid != "system" && !msgInfo.isSelfSender && wxid != WeApi.selfWxId) {
-                    openMemberAtInput(view, talker, wxid)
-                } else {
-                    openSettings(view)
-                }
+                openAtPanel(view, msgInfo)
             }
         )
     )
+
+    /** 点击「艾特」后先弹出面板：修改专属艾特 / 设置选项 两个入口 */
+    private fun openAtPanel(view: View, msgInfo: MessageInfo) {
+        val context = view.context
+        val talker = msgInfo.talker
+        val wxid = msgInfo.sender
+        val isMemberTarget = wxid.isNotEmpty() && wxid != "system" &&
+            !msgInfo.isSelfSender && wxid != WeApi.selfWxId
+        val targetName = if (isMemberTarget) {
+            myDisplayName(talker, wxid).ifEmpty { wxid }
+        } else ""
+        showComposeDialog(context) {
+            AlertDialogContent(
+                title = { Text("群聊艾特") },
+                text = {
+                    Column {
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Edit,
+                            iconPlaceholder = true,
+                            title = "修改专属艾特",
+                            description = if (isMemberTarget) "为「$targetName」设置固定 @ 文本" else "请长按群成员的消息后再点「艾特」",
+                            onClick = {
+                                if (isMemberTarget) {
+                                    onDismiss()
+                                    openMemberAtInput(view, talker, wxid)
+                                } else {
+                                    showToast("请长按群成员的消息，再点「艾特」来设置专属艾特")
+                                }
+                            },
+                        )
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Tune,
+                            iconPlaceholder = true,
+                            title = "设置选项",
+                            description = "样式、生效群聊、趣味称号、模板等",
+                            onClick = {
+                                onDismiss()
+                                openSettings(view)
+                            },
+                        )
+                    }
+                },
+                dismissButton = { TextButton(onDismiss) { Text(stringResource(R.string.dialog_close)) } }
+            )
+        }
+    }
 
     // ---------------- 基础工具 ----------------
 
@@ -636,10 +738,16 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         if (!isTalkerEnabled(talker)) return RewriteResult(text, emptyList(), emptyMap(), "group_filtered")
 
         val talkerMap = getTalkerAtMap(footer)
-        if (talkerMap == null) return RewriteResult(text, emptyList(), emptyMap(), "talker_at_map_null")
+        if (talkerMap == null) {
+            WeLogger.w(TAG, "改写未命中：footer.x0.e 读取失败（群=$talker），如频繁出现请反馈")
+            return RewriteResult(text, emptyList(), emptyMap(), "talker_at_map_null")
+        }
 
         val rawEntries = talkerMap[talker]
-        if (rawEntries !is List<*>) return RewriteResult(text, emptyList(), emptyMap(), "talker_entries_missing")
+        if (rawEntries !is List<*>) {
+            WeLogger.w(TAG, "改写未命中：x0.e 中无该群 @映射（群=$talker），如频繁出现请反馈")
+            return RewriteResult(text, emptyList(), emptyMap(), "talker_entries_missing")
+        }
         val entries = rawEntries
 
         data class Pair3(val displayName: String, val wxid: String, val entry: MutableMap<Any?, Any?>)
@@ -657,7 +765,10 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
             }
         }
         pairs.sortByDescending { it.displayName.length }
-        if (pairs.isEmpty()) return RewriteResult(text, emptyList(), emptyMap(), "at_mapping_empty")
+        if (pairs.isEmpty()) {
+            WeLogger.w(TAG, "改写未命中：x0.e 中该群 @映射为空列表（群=$talker），如频繁出现请反馈")
+            return RewriteResult(text, emptyList(), emptyMap(), "at_mapping_empty")
+        }
 
         var rewritten = text
         val wxids = mutableListOf<String>()
@@ -685,6 +796,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
 
     /** 发送点击 before：改写输入框 + 注入映射（n1.onClick 是 void，hookBefore 安全） */
     private fun handleSendClickBefore(n1: Any?) {
+        ensureSendHooksAlive()
         try {
             val footer = findFooterFromListener(n1) ?: return
             val talker = findTalkerFromFooter(footer)
