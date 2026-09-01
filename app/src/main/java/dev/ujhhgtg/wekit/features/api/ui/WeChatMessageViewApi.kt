@@ -175,9 +175,10 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
             .firstField { type = WeMessageApi.classChattingDataAdapter.clazz }
             .get()!!
         val msgId = param.args[2] as Int
-        val msgInfo = chattingDataAdapter.reflekt()
+        val raw = chattingDataAdapter.reflekt()
             .firstMethod { name = "getItem" }
             .invoke(msgId)!!
+        val msgInfo = MessageInfo(raw)
         // 诊断日志：确认 onBindView 参数与 getItem 取到的消息是否一致（头衔串排查用）
         runCatching {
             WeLogger.d(
@@ -187,6 +188,6 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
                     "getItem talker=${msgInfo.talker} sender=${msgInfo.sender} type=${msgInfo.typeCode}"
             )
         }
-        return MessageInfo(msgInfo)
+        return msgInfo
     }
 }
