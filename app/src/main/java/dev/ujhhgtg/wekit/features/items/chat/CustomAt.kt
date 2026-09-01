@@ -58,6 +58,7 @@ import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.HookHandle
 import dev.ujhhgtg.wekit.utils.android.showToast
+import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
 import java.lang.reflect.Method

@@ -15,6 +15,7 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.utils.android.showToast
 
 /**
  * 会话自定义头衔 · 上（忠实还原原脚本「会话自定义头衔」的注入位置）

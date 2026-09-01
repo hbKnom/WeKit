@@ -22,6 +22,7 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.utils.android.showToast
 import kotlin.math.roundToInt
 
 /**

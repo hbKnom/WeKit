@@ -127,7 +127,7 @@ internal class TitleStore(private val prefKey: String, private val tag: String) 
             WePrefs.putString(prefKey, sb.toString())
         } catch (e: Exception) {
             WeLogger.e(tag, "saveTitles failed", e)
-            showToast("$tag保存失败，请查看日志")
+            showToast("${tag}保存失败，请查看日志")
         }
     }
 
@@ -153,8 +153,8 @@ internal fun applyTitleStyle(view: TextView, entry: TitleEntry) {
         GradientDrawable.Orientation.LEFT_RIGHT,
         intArrayOf(bgStart, bgEnd),
     )
-    bg.setCornerRadius((9f * density + 0.5f).toInt())
-    bg.setStroke((1f * density + 0.5f).toInt(), Color.argb(180, 255, 239, 190))
+    bg.setCornerRadius(9f * density + 0.5f)
+    bg.setStroke(1f * density + 0.5f, Color.argb(180, 255, 239, 190))
     view.background = bg
     view.setTextColor(fg)
     view.textSize = 10f
@@ -169,9 +169,9 @@ internal fun applyTitleStyle(view: TextView, entry: TitleEntry) {
         (2f * density + 0.5f).toInt(),
     )
     view.setShadowLayer(
-        (1f * density + 0.5f).toInt(),
+        1f * density + 0.5f,
         0f,
-        (1f * density + 0.5f).toInt(),
+        1f * density + 0.5f,
         Color.argb(120, 0, 0, 0),
     )
 }
@@ -282,7 +282,7 @@ internal fun showTitleEditDialog(
                         ),
                     )
                     onDismiss()
-                    showToast(if (trimmed.isEmpty()) "已恢复默认头衔" else "$tag已保存")
+                    showToast(if (trimmed.isEmpty()) "已恢复默认头衔" else "${tag}已保存")
                 }) { Text(stringResource(R.string.action_save)) }
             },
         )
