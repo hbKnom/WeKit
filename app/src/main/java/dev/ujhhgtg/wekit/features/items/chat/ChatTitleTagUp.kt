@@ -15,6 +15,7 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 
 /**
@@ -93,6 +94,14 @@ object ChatTitleTagUp : SwitchFeature(),
         val group = msgInfo.isInGroupChat
         val room = msgInfo.talker
         val wxid = if (group) msgInfo.sender else msgInfo.talker
+        val entry = runCatching { store.entryFor(group, room, wxid) }.getOrNull()
+        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）
+        runCatching {
+            WeLogger.d(
+                TAG,
+                "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
+            )
+        }
         if (wxid.isEmpty() || wxid == WeApi.selfWxId) {
             hideOverlay(view)
             return
@@ -102,16 +111,12 @@ object ChatTitleTagUp : SwitchFeature(),
         val textView = findUserTvField(tag)?.get(tag) as? TextView ?: return
 
         // 无配置时隐藏（与「头衔下」一致），避免所有消息都冒出默认头衔造成"串"的错觉
-        val entry = store.entryFor(group, room, wxid) ?: run {
-            TitleTagOverlay.hide(textView, OVERLAY_KEY)
-            return
-        }
-        if (entry.title.isBlank()) {
+        if (entry == null || entry.title.isBlank()) {
             TitleTagOverlay.hide(textView, OVERLAY_KEY)
             return
         }
 
-        val titleView = TitleTagOverlay.getOrCreate(textView, OVERLAY_KEY) { applyTitleStyle(it, entry) }
+        val titleView = TitleTagOverlay.getOrCreate(textView, OVERLAY_KEY, TitleTagOverlay.TitlePlacement.ABOVE) { applyTitleStyle(it, entry) }
             ?: return
         titleView.text = entry.title
         titleView.visibility = View.VISIBLE

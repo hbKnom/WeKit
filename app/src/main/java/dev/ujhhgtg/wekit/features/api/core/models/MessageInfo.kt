@@ -158,6 +158,7 @@ class MessageInfo(val instance: Any) {
 
     /**
      * 对照原脚本 senderOf 的反射链路：R1() 方法 → P 字段 → field_fromUsername 字段。
+     * 原脚本对这三个来源「非空即用」（不校验格式）；content 兜底才需要校验过滤 XML。
      * 结果带缓存（按类名），避免列表滚动时反复反射遍历造成卡顿。
      */
     private fun resolveGroupSenderFromInstance(): String? {
@@ -170,7 +171,7 @@ class MessageInfo(val instance: Any) {
         }
         if (method != null) {
             val value = runCatching { method.invoke(instance) as? String }.getOrNull()
-            if (!value.isNullOrEmpty() && value.isValidGroupSenderWxId()) return value
+            if (!value.isNullOrEmpty()) return value
         }
         // P / field_fromUsername
         for (fieldName in listOf("P", "field_fromUsername")) {
@@ -189,7 +190,7 @@ class MessageInfo(val instance: Any) {
             }
             if (field != null) {
                 val value = runCatching { field.get(instance) as? String }.getOrNull()
-                if (!value.isNullOrEmpty() && value.isValidGroupSenderWxId()) return value
+                if (!value.isNullOrEmpty()) return value
             }
         }
         return null

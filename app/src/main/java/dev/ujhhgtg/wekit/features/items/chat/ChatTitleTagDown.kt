@@ -22,6 +22,7 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 import kotlin.math.roundToInt
 
@@ -104,12 +105,19 @@ object ChatTitleTagDown : SwitchFeature(),
         val group = msgInfo.isInGroupChat
         val room = msgInfo.talker
         val wxid = if (group) msgInfo.sender else msgInfo.talker
+        val entry = runCatching { store.entryFor(group, room, wxid) }.getOrNull()
+        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）
+        runCatching {
+            WeLogger.d(
+                TAG,
+                "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
+            )
+        }
         if (wxid.isEmpty()) return
 
         val tag = view.tag
         val textView = findUserTvField(tag)?.get(tag) as? TextView ?: return
 
-        val entry = store.entryFor(group, room, wxid)
         if (entry == null || entry.title.isBlank()) {
             // 无配置时隐藏可能残留的注入标签，并清理旧 Span 污染（view 复用会残留上一条消息的头衔前缀）
             TitleTagOverlay.hide(textView, OVERLAY_KEY)
@@ -158,11 +166,11 @@ object ChatTitleTagDown : SwitchFeature(),
         textView.text = sb
     }
 
-    /** 私聊昵称不可见时：参考原脚本在昵称父容器注入独立标签。 */
+    /** 私聊昵称不可见时：参考原脚本在昵称父容器注入独立标签（头衔「下」→ 昵称下方/右侧，与「头衔上」位置错开）。 */
     private fun renderOverlayTag(nick: TextView, entry: TitleEntry) {
         // 切到 overlay 渲染前同样清理旧 Span，避免昵称文本残留头衔前缀
         clearInlineSpan(nick)
-        val titleView = TitleTagOverlay.getOrCreate(nick, OVERLAY_KEY) { applyTitleStyle(it, entry) } ?: return
+        val titleView = TitleTagOverlay.getOrCreate(nick, OVERLAY_KEY, TitleTagOverlay.TitlePlacement.BELOW) { applyTitleStyle(it, entry) } ?: return
         titleView.text = entry.title
         titleView.visibility = View.VISIBLE
     }
