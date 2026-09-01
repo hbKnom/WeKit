@@ -154,7 +154,7 @@ internal fun applyTitleStyle(view: TextView, entry: TitleEntry) {
         intArrayOf(bgStart, bgEnd),
     )
     bg.setCornerRadius(9f * density + 0.5f)
-    bg.setStroke(1f * density + 0.5f, Color.argb(180, 255, 239, 190))
+    bg.setStroke((1f * density + 0.5f).toInt(), Color.argb(180, 255, 239, 190))
     view.background = bg
     view.setTextColor(fg)
     view.textSize = 10f

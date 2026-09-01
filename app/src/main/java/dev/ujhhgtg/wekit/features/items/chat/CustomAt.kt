@@ -56,12 +56,9 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
-import dev.ujhhgtg.wekit.utils.HookHandle
 import dev.ujhhgtg.wekit.utils.android.showToast
-import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
-import java.lang.reflect.Method
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -144,7 +141,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
 
     override fun onDisable() {
         WeChatMessageContextMenuApi.removeProvider(this)
-        unhookAllSendHooks()
+        unhookAll()
         clearPendingAddedEntries()
         groupNickCache.clear()
         memberListCache.clear()
@@ -153,7 +150,6 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
 
     // ---------------- 发送改写 Hook（对照脚本：明确 hook n1.onClick，带类替换自愈） ----------------
 
-    private val sendHookHandles = mutableListOf<HookHandle>()
     private var hookedN1Class: Class<*>? = null
 
     private fun installSendHooks() {
@@ -164,7 +160,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
             val onClick = n1Class.getDeclaredMethod("onClick", View::class.java)
             onClick.isAccessible = true
             hookedN1Class = n1Class
-            sendHookHandles += onClick.hookBeforeDirectly(100) { handleSendClickBefore(thisObject) }
+            onClick.hookBefore(100) { handleSendClickBefore(thisObject) }
             n1Ok = true
         }.onFailure {
             WeLogger.e(TAG, "n1.onClick Hook 安装失败", it)
@@ -173,9 +169,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
             // 兜底：微信类名变化时退回 dexkit 匹配的 methodSendMessage
             runCatching {
                 WeChatInputBarMenuApi.methodSendMessage.hookBefore(50) { handleSendClickBefore(thisObject) }
-                    .let { sendHookHandles += it }
                 WeChatInputBarMenuApi.methodSendMessage.hookAfter(50) { clearPendingAddedEntries() }
-                    .let { sendHookHandles += it }
             }.onFailure {
                 WeLogger.e(TAG, "发送改写兜底 Hook 安装失败", it)
             }
@@ -183,16 +177,8 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         WeLogger.d(TAG, "群聊自定义艾特发送 Hook 已安装（n1=$n1Ok）")
     }
 
-    private fun unhookAllSendHooks() {
-        for (handle in sendHookHandles) {
-            runCatching { handle.unhook() }
-        }
-        sendHookHandles.clear()
-        hookedN1Class = null
-    }
-
     private fun reinstallSendHooks(reason: String) {
-        unhookAllSendHooks()
+        unhookAll()
         installSendHooks()
         WeLogger.d(TAG, "发送 Hook 已重装（原因：$reason）")
     }
