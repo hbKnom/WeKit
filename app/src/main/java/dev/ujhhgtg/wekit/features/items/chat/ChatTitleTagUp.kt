@@ -92,7 +92,10 @@ object ChatTitleTagUp : SwitchFeature(),
         val group = msgInfo.isInGroupChat
         val room = msgInfo.talker
         val wxid = if (group) msgInfo.sender else msgInfo.talker
-        if (wxid.isEmpty() || wxid == WeApi.selfWxId) return
+        if (wxid.isEmpty() || wxid == WeApi.selfWxId) {
+            hideOverlay(view)
+            return
+        }
 
         val tag = view.tag
         val textView = tag.reflekt()
