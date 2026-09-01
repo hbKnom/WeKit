@@ -604,6 +604,8 @@
     <string name="feature_order_time_description">按设定时间定时发送文本消息: 超时补发 / 间隔发送 / 重复任务 / 多目标 / 系统闹钟唤醒</string>
     <string name="feature_chat_title_tag_name">会话自定义头衔</string>
     <string name="feature_chat_title_tag_description">为群成员或私聊对象设置头衔，以渐变徽章形式显示在昵称旁</string>
+    <string name="feature_chat_title_tag_up_name">会话自定义头衔（上）</string>
+    <string name="feature_chat_title_tag_up_description">原版注入位置：头衔标签显示在昵称上方，群聊和私聊都支持，默认头衔「带刀侍卫」</string>
     <string name="feature_custom_at_name">群聊自定义艾特</string>
     <string name="feature_custom_at_description">发送时用自定义文本和样式替换群成员的 @提及显示名</string>
     <string name="feature_make_emoji_name">制作表情</string>

@@ -642,6 +642,8 @@
     <string name="feature_order_time_description">Schedule text messages to be sent at a set time: timeout catch-up, interval, repeat, multi-target, system alarm wake-up</string>
     <string name="feature_chat_title_tag_name">Custom chat title</string>
     <string name="feature_chat_title_tag_description">Set a styled title for a chat member or private contact, shown as a gradient badge next to their nickname</string>
+    <string name="feature_chat_title_tag_up_name">Custom chat title (up)</string>
+    <string name="feature_chat_title_tag_up_description">Original style title injected above the nickname in both group and private chats, default title 带刀侍卫</string>
     <string name="feature_custom_at_name">Custom group mention</string>
     <string name="feature_custom_at_description">Replace the @mention display name of a group member with a custom label and style when sending</string>
     <string name="feature_make_emoji_name">Make sticker</string>
