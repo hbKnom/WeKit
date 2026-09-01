@@ -32,6 +32,12 @@ pub fn ensure_dir(path: &str, uid: uid_t, gid: gid_t) -> bool {
 
 /// Copy a file from the module dir fd to dst_path with atomic rename.
 /// Uses a PID-unique temp file, fchown, fsync, then rename.
+///
+/// NOTE: No longer used on the hot path — payload bytes are captured in-memory
+/// during preAppSpecialize (see read_module_file_via_fd) because the module dir
+/// fd is not readable from the app process post-specialize on Zygisk Next /
+/// FolkPatch. Kept for compatibility/reference.
+#[allow(dead_code)]
 pub fn copy_module_file(
     module_dir_fd: RawFd,
     src_rel: &str,
@@ -173,7 +179,126 @@ pub fn copy_module_file(
     true
 }
 
+/// Read a module-relative file into memory via the module dir fd (no path walk,
+/// works from the pre-specialize privileged context). Returns None on any error.
+pub fn read_module_file_via_fd(module_dir_fd: RawFd, rel_path: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    let rel_cstr = match CString::new(rel_path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let fd = unsafe {
+        libc::openat(
+            module_dir_fd,
+            rel_cstr.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        loge!(
+            "Zygisk: openat {rel_path}: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0
+        || (st.st_mode & libc::S_IFMT as u32) != libc::S_IFREG as u32
+        || st.st_size <= 0
+        || st.st_size as u64 > max_bytes
+    {
+        loge!("Zygisk: invalid module payload {rel_path}");
+        unsafe { libc::close(fd) };
+        return None;
+    }
+    let size = st.st_size as usize;
+    let mut buf = vec![0u8; size];
+    let mut got = 0usize;
+    while got < size {
+        let n = unsafe { libc::read(fd, buf[got..].as_mut_ptr().cast(), size - got) };
+        if n <= 0 {
+            unsafe { libc::close(fd) };
+            return None;
+        }
+        got += n as usize;
+    }
+    unsafe { libc::close(fd) };
+    Some(buf)
+}
+
+/// Write a byte buffer to `dst_path` with a PID-unique temp file + atomic rename.
+/// Same publish semantics as [copy_module_file], but the source bytes come from
+/// memory (captured while the process still had module-dir access).
+pub fn write_bytes_to_file(bytes: &[u8], dst_path: &str, uid: uid_t, gid: gid_t) -> bool {
+    let tmp_path = format!("{}.{}.tmp", dst_path, unsafe { libc::getpid() });
+    let tmp_cstr = match CString::new(tmp_path.as_str()) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let dst_cstr = match CString::new(dst_path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    unsafe {
+        libc::unlink(tmp_cstr.as_ptr());
+    }
+    let dst_fd = unsafe {
+        libc::open(
+            tmp_cstr.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if dst_fd < 0 {
+        loge!(
+            "Zygisk: cannot create {}: {}",
+            tmp_path,
+            std::io::Error::last_os_error()
+        );
+        return false;
+    }
+    let mut written = 0usize;
+    let mut ok = true;
+    while written < bytes.len() {
+        let w = loop {
+            let r = unsafe {
+                libc::write(dst_fd, bytes[written..].as_ptr().cast(), bytes.len() - written)
+            };
+            if r < 0 && std::io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EINTR {
+                continue;
+            }
+            break r;
+        };
+        if w <= 0 {
+            ok = false;
+            break;
+        }
+        written += w as usize;
+    }
+    if ok && unsafe { libc::geteuid() } == 0 && unsafe { libc::fchown(dst_fd, uid, gid) } != 0 {
+        ok = false;
+    }
+    if ok && unsafe { libc::fsync(dst_fd) } != 0 {
+        ok = false;
+    }
+    unsafe {
+        libc::close(dst_fd);
+    }
+    if !ok || unsafe { libc::rename(tmp_cstr.as_ptr(), dst_cstr.as_ptr()) } != 0 {
+        loge!(
+            "Zygisk: failed to publish {}: {}",
+            dst_path,
+            std::io::Error::last_os_error()
+        );
+        unsafe {
+            libc::unlink(tmp_cstr.as_ptr());
+        }
+        return false;
+    }
+    true
+}
+
 /// Read a previously-copied file into memory (O_NOFOLLOW for safety).
+#[allow(dead_code)]
 pub fn read_file(path: &str) -> Option<Vec<u8>> {
     let cpath = CString::new(path).ok()?;
     let fd = unsafe {

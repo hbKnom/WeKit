@@ -17,7 +17,7 @@ use std::{
     ffi::{CStr, c_char},
     os::{
         fd::{FromRawFd, OwnedFd},
-        unix::io::{AsRawFd, RawFd},
+        unix::io::RawFd,
     },
 };
 
@@ -31,6 +31,11 @@ pub struct WeKitModule {
     pub data_dir: String,
     pub process_name: String,
     pub dex_names: Vec<String>,
+    // payload bytes captured in preAppSpecialize (privileged context); the
+    // module dir fd is not readable from the app process post-specialize on
+    // Zygisk Next / FolkPatch (EACCES), so we cache the bytes up front.
+    pub apk_bytes: Option<Vec<u8>>,
+    pub dex_bytes: Vec<Vec<u8>>,
     pub telegram_socket_name: Option<String>,
     pub enabled: bool,
     // filled in postAppSpecialize
@@ -48,6 +53,8 @@ impl WeKitModule {
             data_dir: String::new(),
             process_name: String::new(),
             dex_names: Vec::new(),
+            apk_bytes: None,
+            dex_bytes: Vec::new(),
             telegram_socket_name: None,
             enabled: false,
             module_classloader: None,
@@ -218,6 +225,36 @@ pub unsafe fn do_pre_app_specialize(module: &mut WeKitModule, args: *mut AppSpec
         return;
     }
 
+    // Capture payload bytes NOW while still in the privileged pre-specialize
+    // context. On Zygisk Next / FolkPatch the module dir fd is not readable
+    // from the app process once it drops privileges (EACCES on openat), so the
+    // APK/DEX copies in postAppSpecialize would otherwise fail and WeChat would
+    // never get the WeKit entry.
+    if let Some(apk) = crate::payload::read_module_file_via_fd(mod_fd, "payload/wekit.apk", 256 * 1024 * 1024)
+    {
+        module.apk_bytes = Some(apk);
+    } else {
+        loge!("Zygisk: failed to read payload/wekit.apk");
+        (*module.api).set_option(DLCLOSE_MODULE_LIBRARY);
+        return;
+    }
+    for name in &module.dex_names {
+        let rel = format!("payload/{name}");
+        match crate::payload::read_module_file_via_fd(mod_fd, &rel, 64 * 1024 * 1024) {
+            Some(bytes) => module.dex_bytes.push(bytes),
+            None => {
+                loge!("Zygisk: failed to read {rel}");
+                (*module.api).set_option(DLCLOSE_MODULE_LIBRARY);
+                return;
+            }
+        }
+    }
+    logi!(
+        "Zygisk: cached payload apk={} bytes, dex={} entries for {nice_name}",
+        module.apk_bytes.as_ref().map_or(0, Vec::len),
+        module.dex_bytes.len()
+    );
+
     // Non-isolated processes: negotiate Telegram socket, write to global
     if !nice_name.contains(':')
         && let Some(name) = negotiate_telegram_socket(module.api, uid, &nice_name)
@@ -235,52 +272,50 @@ pub unsafe fn do_post_app_specialize(module: &mut WeKitModule, _args: *const App
     if !module.enabled {
         return;
     }
-    let mod_fd = match module.module_dir_fd.as_ref() {
-        Some(f) => f.as_raw_fd(),
-        None => return,
-    };
+    // The module dir fd was consumed in preAppSpecialize only for payload
+    // capture; it is not readable from this app process (EACCES on Zygisk
+    // Next / FolkPatch). Keep the guard so a module without a dir fd bails.
+    if module.module_dir_fd.is_none() {
+        return;
+    }
     let data_dir = module.data_dir.clone();
     let uid = module.app_uid;
     let gid = module.app_gid;
     crate::payload::ensure_dir(&format!("{data_dir}/files"), uid, gid);
     crate::payload::ensure_dir(&format!("{data_dir}/files/mmkv"), uid, gid);
 
-    // Copy APK
+    // Publish the payload captured during preAppSpecialize. The module dir fd
+    // is not readable from the app process here (EACCES under Zygisk Next /
+    // FolkPatch), so we write the cached bytes instead of openat'ing payload/.
     let apk_dst = format!("{data_dir}/files/mmkv/.wekit-bootstrap.apk");
-    if !crate::payload::copy_module_file(
-        mod_fd,
-        "payload/wekit.apk",
-        &apk_dst,
-        uid,
-        gid,
-        256 * 1024 * 1024,
-    ) {
-        loge!("Zygisk: failed to copy wekit.apk");
-        return;
-    }
-
-    // Copy DEX files and read them into memory
-    // dex_names already includes the .dex extension.
-    let mut dex_bufs: Vec<Vec<u8>> = Vec::new();
-    for name in module.dex_names.clone() {
-        let dst = format!("{data_dir}/files/mmkv/.wekit-bootstrap-{name}");
-        if !crate::payload::copy_module_file(
-            mod_fd,
-            &format!("payload/{name}"),
-            &dst,
-            uid,
-            gid,
-            64 * 1024 * 1024,
-        ) {
-            loge!("Zygisk: failed to copy DEX payload {name}");
+    let apk_bytes = match module.apk_bytes.take() {
+        Some(bytes) if !bytes.is_empty() => bytes,
+        _ => {
+            loge!("Zygisk: no cached wekit.apk bytes");
             return;
         }
-        if let Some(b) = crate::payload::read_file(&dst) {
-            dex_bufs.push(b);
+    };
+    if !crate::payload::write_bytes_to_file(&apk_bytes, &apk_dst, uid, gid) {
+        loge!("Zygisk: failed to publish wekit.apk");
+        return;
+    }
+    for (i, name) in module.dex_names.iter().enumerate() {
+        let dst = format!("{data_dir}/files/mmkv/.wekit-bootstrap-{name}");
+        let bytes = match module.dex_bytes.get(i) {
+            Some(b) if !b.is_empty() => b,
+            _ => {
+                loge!("Zygisk: missing cached DEX payload {name}");
+                return;
+            }
+        };
+        if !crate::payload::write_bytes_to_file(bytes, &dst, uid, gid) {
+            loge!("Zygisk: failed to publish DEX payload {name}");
+            return;
         }
     }
 
-    // Build InMemoryDexClassLoader
+    // Build InMemoryDexClassLoader from the cached bytes
+    let dex_bufs = module.dex_bytes.clone();
     let fns = *module.env;
     let sys_cl_class = ((*fns).v1_6.FindClass)(module.env, c"java/lang/ClassLoader".as_ptr());
     let get_sys_id = ((*fns).v1_6.GetStaticMethodID)(
