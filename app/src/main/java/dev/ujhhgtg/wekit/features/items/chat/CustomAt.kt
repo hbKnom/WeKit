@@ -56,6 +56,7 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
@@ -174,6 +175,8 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
                 WeLogger.e(TAG, "发送改写兜底 Hook 安装失败", it)
             }
         }
+        // s0 兜底（独立于 n1，恒定生效）：微信解析 @映射的必经方法
+        installS0Hook()
         WeLogger.d(TAG, "群聊自定义艾特发送 Hook 已安装（n1=$n1Ok）")
     }
 
@@ -799,6 +802,92 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         } catch (error: Throwable) {
             clearPendingAddedEntries()
             WeLogger.e(TAG, "发送前改写异常：${error::class.java.simpleName}", error)
+        }
+    }
+
+    // ---------------- s0 兜底（微信解析 @映射的必经方法，恒定生效） ----------------
+
+    private var s0DumpLogged = false
+
+    /**
+     * 兜底：微信发送/输入 @ 时调用 ChatFooter.s0(text, talker) 解析 @映射并返回 Map。
+     * 切群后 footer.x0.e 可能没有当前群映射（主路径注入失败），但 s0 每次解析 @ 都会调用，
+     * 在此把返回 Map 中的「显示名 → 自定义 label」替换，同时改写输入框 @显示名 → @label。
+     * 不依赖 x0.e 状态 → 恒定生效。
+     */
+    private fun installS0Hook() {
+        runCatching {
+            val footerClass = Class.forName("com.tencent.mm.pluginsdk.ui.chat.ChatFooter", false, ClassLoaders.HOST)
+            val s0 = footerClass.getDeclaredMethod("s0", String::class.java, String::class.java)
+            s0.isAccessible = true
+            if (!Map::class.java.isAssignableFrom(s0.returnType)) {
+                WeLogger.w(TAG, "s0 返回类型异常：${s0.returnType}")
+                return
+            }
+            s0.hookAfter(100) { handleS0After(this) }
+            WeLogger.d(TAG, "s0 兜底 Hook 已安装")
+        }.onFailure {
+            WeLogger.e(TAG, "s0 兜底 Hook 安装失败", it)
+        }
+    }
+
+    private fun handleS0After(param: HookParam) {
+        try {
+            val footer = param.thisObject as? ChatFooter ?: return
+            // talker 优先取 s0 参数（切群后 x0.e 可能空），fallback 遍历 x0.e keySet
+            val talker = (param.args.getOrNull(1) as? String)
+                ?.takeIf { it.isGroupChatWxId }
+                ?: findTalkerFromFooter(footer)
+            if (!talker.isGroupChatWxId || !isTalkerEnabled(talker)) return
+
+            val result = param.result as? Map<*, *> ?: return
+            if (result.isEmpty()) return
+
+            if (!s0DumpLogged) {
+                s0DumpLogged = true
+                WeLogger.d(
+                    TAG,
+                    "s0 首次调用：talker=$talker，args0=${param.args.getOrNull(0)?.toString()?.take(40)}，" +
+                        "返回Map=${result.entries.joinToString(limit = 5) { "${it.key}=${it.value}" }}"
+                )
+            }
+
+            // 构造新 Map：显示名 → 自定义 label（不依赖原 Map 可变性）
+            val newMap = LinkedHashMap<Any?, Any?>()
+            var changed = false
+            var text = getFooterText(footer)
+            for ((k, v) in result) {
+                val kStr = k?.toString().orEmpty()
+                val vStr = v?.toString().orEmpty()
+                if (kStr.isEmpty() || vStr.isEmpty()) {
+                    newMap[k] = v
+                    continue
+                }
+                // 方向1：key=显示名, value=wxid
+                val labelFromV = getMemberAtLabel(talker, vStr)
+                if (labelFromV.isNotEmpty() && labelFromV != kStr) {
+                    newMap[labelFromV] = v
+                    text = text.replace("@" + kStr + AT_SEPARATOR, "@" + labelFromV + AT_SEPARATOR)
+                    changed = true
+                    continue
+                }
+                // 方向2：key=wxid, value=显示名
+                val labelFromK = getMemberAtLabel(talker, kStr)
+                if (labelFromK.isNotEmpty() && labelFromK != vStr) {
+                    newMap[k] = labelFromK
+                    text = text.replace("@" + vStr + AT_SEPARATOR, "@" + labelFromK + AT_SEPARATOR)
+                    changed = true
+                    continue
+                }
+                newMap[k] = v
+            }
+            if (changed) {
+                param.result = newMap
+                setFooterText(footer, text)
+                WeLogger.d(TAG, "s0 映射兜底改写：群=$talker，正文=${text.take(50)}")
+            }
+        } catch (error: Throwable) {
+            WeLogger.e(TAG, "s0 兜底改写异常：${error::class.java.simpleName}", error)
         }
     }
 
