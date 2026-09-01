@@ -185,6 +185,30 @@ internal fun titleDisplayName(group: Boolean, room: String, wxid: String): Strin
     return name.ifBlank { wxid }
 }
 
+// ================= userTV 反射缓存（避免列表滚动时反复反射遍历造成卡顿） =================
+
+private val userTvFieldCache = ConcurrentHashMap<Class<*>, java.lang.reflect.Field?>()
+
+/** 从消息项 tag/holder 反射取昵称 TextView 的 userTV 字段，带缓存（按类名）。 */
+internal fun findUserTvField(tag: Any): java.lang.reflect.Field? {
+    val clazz = tag.javaClass
+    return userTvFieldCache.getOrPut(clazz) {
+        runCatching {
+            var c: Class<*>? = clazz
+            while (c != null) {
+                for (field in c.declaredFields) {
+                    if (field.name == "userTV" && android.widget.TextView::class.java.isAssignableFrom(field.type)) {
+                        field.isAccessible = true
+                        return@getOrPut field
+                    }
+                }
+                c = c.superclass
+            }
+            null
+        }.getOrNull()
+    }
+}
+
 /** 头衔设置弹窗（「头衔下」「头衔上」共用，store 独立）。 */
 internal fun showTitleEditDialog(
     context: Context,

@@ -107,14 +107,13 @@ object ChatTitleTagDown : SwitchFeature(),
         if (wxid.isEmpty()) return
 
         val tag = view.tag
-        val textView = tag.reflekt()
-            .firstField { name = "userTV"; superclass() }
-            .get() as? TextView ?: return
+        val textView = findUserTvField(tag)?.get(tag) as? TextView ?: return
 
         val entry = store.entryFor(group, room, wxid)
         if (entry == null || entry.title.isBlank()) {
-            // 无配置时隐藏可能残留的注入标签
+            // 无配置时隐藏可能残留的注入标签，并清理旧 Span 污染（view 复用会残留上一条消息的头衔前缀）
             TitleTagOverlay.hide(textView, OVERLAY_KEY)
+            clearInlineSpan(textView)
             return
         }
 
@@ -125,7 +124,24 @@ object ChatTitleTagDown : SwitchFeature(),
         }
     }
 
+    /**
+     * 清除昵称文本流中残留的旧头衔 Span，并还原干净昵称。
+     * 列表 view 复用时微信可能不重置 userTV.text（或 setText 晚于 bind 回调），
+     * 不清理会导致上一条消息的头衔前缀串到当前消息。
+     */
+    private fun clearInlineSpan(textView: TextView) {
+        val text = textView.text
+        if (text !is Spanned) return
+        val spans = text.getSpans(0, text.length, TitleBadgeSpan::class.java)
+        if (spans.isEmpty()) return
+        val end = text.getSpanEnd(spans.first())
+        val clean = text.toString().substring(end).trimStart()
+        textView.text = SpannableStringBuilder(clean)
+    }
+
     private fun renderInlineSpan(textView: TextView, entry: TitleEntry) {
+        // 先清旧 Span 还原干净昵称，避免 view 复用叠加
+        clearInlineSpan(textView)
         val name = textView.text
         val style = TITLE_PRESETS[normalizeTitleStyle(entry.style)]
         val badge = TitleBadgeSpan(
@@ -144,15 +160,16 @@ object ChatTitleTagDown : SwitchFeature(),
 
     /** 私聊昵称不可见时：参考原脚本在昵称父容器注入独立标签。 */
     private fun renderOverlayTag(nick: TextView, entry: TitleEntry) {
+        // 切到 overlay 渲染前同样清理旧 Span，避免昵称文本残留头衔前缀
+        clearInlineSpan(nick)
         val titleView = TitleTagOverlay.getOrCreate(nick, OVERLAY_KEY) { applyTitleStyle(it, entry) } ?: return
         titleView.text = entry.title
         titleView.visibility = View.VISIBLE
     }
 
     private fun hideOverlay(view: View) {
-        val tv = view.tag.reflekt()
-            .firstField { name = "userTV"; superclass() }
-            .get() as? TextView ?: return
+        val tag = view.tag
+        val tv = findUserTvField(tag)?.get(tag) as? TextView ?: return
         TitleTagOverlay.hide(tv, OVERLAY_KEY)
     }
 }

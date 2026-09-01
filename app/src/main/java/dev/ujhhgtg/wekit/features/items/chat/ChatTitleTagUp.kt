@@ -99,23 +99,27 @@ object ChatTitleTagUp : SwitchFeature(),
         }
 
         val tag = view.tag
-        val textView = tag.reflekt()
-            .firstField { name = "userTV"; superclass() }
-            .get() as? TextView ?: return
+        val textView = findUserTvField(tag)?.get(tag) as? TextView ?: return
 
-        val entry = store.entryFor(group, room, wxid)
-        val title = entry?.title?.takeIf { it.isNotBlank() } ?: DEFAULT_TITLE
+        // 无配置时隐藏（与「头衔下」一致），避免所有消息都冒出默认头衔造成"串"的错觉
+        val entry = store.entryFor(group, room, wxid) ?: run {
+            TitleTagOverlay.hide(textView, OVERLAY_KEY)
+            return
+        }
+        if (entry.title.isBlank()) {
+            TitleTagOverlay.hide(textView, OVERLAY_KEY)
+            return
+        }
 
-        val titleView = TitleTagOverlay.getOrCreate(textView, OVERLAY_KEY) { applyTitleStyle(it, entry ?: TitleEntry(DEFAULT_TITLE, 0)) }
+        val titleView = TitleTagOverlay.getOrCreate(textView, OVERLAY_KEY) { applyTitleStyle(it, entry) }
             ?: return
-        titleView.text = title
+        titleView.text = entry.title
         titleView.visibility = View.VISIBLE
     }
 
     private fun hideOverlay(view: View) {
-        val tv = view.tag.reflekt()
-            .firstField { name = "userTV"; superclass() }
-            .get() as? TextView ?: return
+        val tag = view.tag
+        val tv = findUserTvField(tag)?.get(tag) as? TextView ?: return
         TitleTagOverlay.hide(tv, OVERLAY_KEY)
     }
 }

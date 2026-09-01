@@ -150,7 +150,56 @@ class MessageInfo(val instance: Any) {
             return@lazy talker
         }
 
-        return@lazy content.split(':')[0]
+        // 群聊：优先从消息实例直接取发送者（对照原脚本 senderOf：R1() -> P -> field_fromUsername），
+        // content.split(':')[0] 仅兜底——非文本消息（图片/语音/文件）content 是 XML，split 会出垃圾 wxid
+        resolveGroupSenderFromInstance()
+            ?: content.split(':')[0].takeIf { it.isValidGroupSenderWxId() }.orEmpty()
+    }
+
+    /**
+     * 对照原脚本 senderOf 的反射链路：R1() 方法 → P 字段 → field_fromUsername 字段。
+     * 结果带缓存（按类名），避免列表滚动时反复反射遍历造成卡顿。
+     */
+    private fun resolveGroupSenderFromInstance(): String? {
+        val clazz = instance.javaClass
+        // R1()
+        val method = senderReflectMethodCache.getOrPut(clazz.name + "#R1") {
+            runCatching {
+                clazz.getDeclaredMethod("R1").apply { isAccessible = true }
+            }.getOrNull()
+        }
+        if (method != null) {
+            val value = runCatching { method.invoke(instance) as? String }.getOrNull()
+            if (!value.isNullOrEmpty() && value.isValidGroupSenderWxId()) return value
+        }
+        // P / field_fromUsername
+        for (fieldName in listOf("P", "field_fromUsername")) {
+            val field = senderReflectFieldCache.getOrPut(clazz.name + "#" + fieldName) {
+                runCatching {
+                    var c: Class<*>? = clazz
+                    while (c != null) {
+                        try {
+                            return@getOrPut c.getDeclaredField(fieldName).apply { isAccessible = true }
+                        } catch (_: NoSuchFieldException) {
+                            c = c.superclass
+                        }
+                    }
+                    null
+                }.getOrNull()
+            }
+            if (field != null) {
+                val value = runCatching { field.get(instance) as? String }.getOrNull()
+                if (!value.isNullOrEmpty() && value.isValidGroupSenderWxId()) return value
+            }
+        }
+        return null
+    }
+
+    /** 群聊发送者 wxid 合法性校验：过滤 XML / 换行 / 空白 / 过长等垃圾值，防止头衔等按 wxid 查错人。 */
+    private fun String.isValidGroupSenderWxId(): Boolean {
+        if (isEmpty() || length > 64) return false
+        if (any { it == '<' || it == '>' || it == '\n' || it == '\r' || it == ' ' || it == ':' }) return false
+        return all { it.isLetterOrDigit() || it == '_' || it == '-' }
     }
 
     val isSelfSender get() = isSend != 0
@@ -284,6 +333,10 @@ class MessageInfo(val instance: Any) {
     }
 
     companion object {
+        /** 群聊 sender 反射缓存（按 类名#方法/字段名），避免列表滚动时反复反射遍历。 */
+        private val senderReflectMethodCache = java.util.concurrent.ConcurrentHashMap<String, java.lang.reflect.Method?>()
+        private val senderReflectFieldCache = java.util.concurrent.ConcurrentHashMap<String, java.lang.reflect.Field?>()
+
         @Suppress("UNCHECKED_CAST")
         private inline fun <T> getFieldByName(instance: Any, name: String): T {
             return instance.reflekt().getField(name, true) as T
