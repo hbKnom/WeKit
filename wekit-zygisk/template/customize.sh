@@ -147,6 +147,17 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 # KernelSU assigns the WebUI directory's mode and SELinux context itself.
 # Do not include $MODPATH/webroot in a recursive set_perm call.
 
+ui_print "- Fixing module SELinux labels for Zygisk Next"
+# FolkPatch/APatch may label the module directory with an isolated MLS context
+# (e.g. adb_data_file:s0:c139,c257,c512,c768) that zygote cannot read, which
+# makes Zygisk Next fail to load the native loader (avc: denied { read }).
+# Rewrite to the plain adb_data_file:s0 label now; post-fs-data.sh repeats it
+# on every boot as a safety net.
+chcon u:object_r:adb_data_file:s0 "$MODPATH" 2>/dev/null || true
+chcon u:object_r:adb_data_file:s0 "$MODPATH/zygisk" 2>/dev/null || true
+chcon u:object_r:adb_data_file:s0 "$MODPATH/zygisk/arm64-v8a.so" 2>/dev/null || true
+chcon u:object_r:adb_data_file:s0 "$MODPATH/payload" 2>/dev/null || true
+
 OLD_MODULE_DIR=/data/adb/modules/wekit
 OLD_TARGETS_FILE=/data/adb/wekit/injection-targets.tsv
 NEW_STATE_DIR=/data/adb/wekit_zygisk
@@ -190,4 +201,30 @@ if [ -f "$OLD_TARGETS_FILE" ] || [ -d "$OLD_MODULE_DIR" ]; then
     ui_print "- Old module disabled"
   fi
   ui_print "*********************************************************"
+fi
+
+# First install without any targets file: enable WeChat injection by default
+# so the module works right after reboot (same UX as the APK/LSPosed route).
+# An existing targets file (e.g. created by the WebUI) is never overwritten.
+if [ ! -f "$NEW_TARGETS_FILE" ] && [ "$BOOTMODE" ] && command -v pm >/dev/null 2>&1; then
+  ui_print "- No injection targets found, enabling WeChat by default"
+  umask 077
+  mkdir -p "$NEW_STATE_DIR" 2>/dev/null
+  : > "$NEW_TARGETS_FILE" 2>/dev/null || {
+    ui_print "! Unable to write default injection targets"
+    rm -f "$NEW_TARGETS_FILE"
+  }
+  if [ -f "$NEW_TARGETS_FILE" ]; then
+    for uid in $(pm list users 2>/dev/null | sed -n 's/.*UserInfo{\([0-9][0-9]*\):.*/\1/p'); do
+      if pm list packages --user "$uid" 2>/dev/null | grep -qx "package:com.tencent.mm"; then
+        printf '%s\tcom.tencent.mm\t1\n' "$uid" >> "$NEW_TARGETS_FILE"
+        ui_print "  - enabled WeChat for Android user $uid"
+      fi
+    done
+    chmod 600 "$NEW_TARGETS_FILE" 2>/dev/null || true
+    chcon u:object_r:adb_data_file:s0 "$NEW_TARGETS_FILE" 2>/dev/null || true
+    if [ ! -s "$NEW_TARGETS_FILE" ]; then
+      ui_print "! No WeChat install found, module stays disabled"
+    fi
+  fi
 fi
