@@ -1,7 +1,5 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
-import android.os.Handler
-import android.os.Looper
 import android.util.Base64
 import android.view.View
 import androidx.compose.foundation.layout.Column
@@ -133,10 +131,10 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         loadMemberAtLabels()
         WeChatMessageContextMenuApi.addProvider(this)
         installSendHooks()
-        // 微信启动早期可能对类做热修复/替换，延迟重装一次覆盖新 ArtMethod（幂等）
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (isEnabled) reinstallSendHooks("启动延迟重装")
-        }, 5000)
+        // NOTE: the fixed 5s reinstall was removed: every process start it
+        // unhooked+rehooked n1.onClick/s0, churning ART method state and
+        // contributing to the 9/4 native crash storm. Class-replacement is
+        // still self-healed lazily by ensureSendHooksAlive() before each send.
         WeLogger.d(TAG, "群聊自定义艾特已启用，当前样式=${getAtStyleName()}")
     }
 

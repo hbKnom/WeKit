@@ -232,8 +232,14 @@ internal object ArtHookBridgeRuntime {
     @Keep
     @JvmStatic
     fun dispatch(hookId: Long, thisObj: Any?, args: Array<Any?>): Any? {
-        val entry = hooks[hookId]
-            ?: throw IllegalStateException("$TAG: no entry for hookId=$hookId")
+        val entry = hooks[hookId] ?: run {
+            // A WeChat thread may still be inside the trampoline after unhook
+            // retired this id. Never throw here: the exception would unwind
+            // through the bare-jump trampoline and crash ART. Return null so
+            // the host call completes with a type-correct default.
+            WeLogger.w(TAG, "dispatch: no entry for hookId=$hookId (unhooked?), returning null")
+            return null
+        }
         val param = MutableHookParam(entry.member, thisObj, args)
 
         // ── before callbacks ──────────────────────────────────────────────────
@@ -299,8 +305,44 @@ internal object ArtHookBridgeRuntime {
         val finalThrowable = param.throwable
         val finalResult = param.result
         param.clearCallbackState()
-        finalThrowable?.let { throw it }
-        return finalResult
+        if (finalThrowable != null) {
+            // CRITICAL: the native trampoline is a bare jump (no ART stack
+            // frame). Re-throwing here lets the exception unwind through a
+            // frame ART cannot interpret, which crashes StackVisitor /
+            // GC root walking (native SIGSEGV seen on WeChat since zygisk
+            // switch). Swallow instead; callbacks already observed the
+            // throwable via param.throwable, and the host call simply
+            // returns a type-correct default value.
+            return normalizeResult(entry.member, null)
+        }
+        return normalizeResult(entry.member, finalResult)
+    }
+
+    /**
+     * Bridges must hand the host a value matching the original signature.
+     * Callbacks may set an incompatible result (or the original method threw
+     * and we swallowed it), so coerce primitives to safe defaults before the
+     * generated DEX unboxes the return value. Prevents ClassCastException /
+     * NPE escaping the bridge through the bare-jump trampoline.
+     */
+    private fun normalizeResult(member: Member, result: Any?): Any? {
+        val returnType = when (member) {
+            is Method -> member.returnType
+            else -> java.lang.Void.TYPE
+        }
+        if (!returnType.isPrimitive) return result
+        return when (returnType) {
+            java.lang.Void.TYPE -> null
+            java.lang.Integer.TYPE -> (result as? Number)?.toInt() ?: 0
+            java.lang.Long.TYPE -> (result as? Number)?.toLong() ?: 0L
+            java.lang.Boolean.TYPE -> result as? Boolean ?: false
+            java.lang.Byte.TYPE -> (result as? Number)?.toByte() ?: 0
+            java.lang.Character.TYPE -> result as? Char ?: '\u0000'
+            java.lang.Short.TYPE -> (result as? Number)?.toShort() ?: 0
+            java.lang.Float.TYPE -> (result as? Number)?.toFloat() ?: 0f
+            java.lang.Double.TYPE -> (result as? Number)?.toDouble() ?: 0.0
+            else -> result
+        }
     }
 
     // ── Invoke original (from IHookBridge.invokeOriginalMethod) ──────────────
@@ -326,7 +368,14 @@ internal object ArtHookBridgeRuntime {
                 else -> error("unsupported member: $member")
             }
         } catch (e: InvocationTargetException) {
-            throw e.targetException ?: e
+            // Same bare-jump constraint as dispatch(): never let the original
+            // method's exception escape through the trampoline. Callers inside
+            // dispatch callbacks observe failures via param.throwable instead.
+            WeLogger.e(TAG, "swallowed original-method exception from $member", e.targetException ?: e)
+            null
+        } catch (e: Throwable) {
+            WeLogger.e(TAG, "swallowed invokeOriginal failure for $member", e)
+            null
         }
     }
 }

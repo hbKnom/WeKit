@@ -42,16 +42,13 @@ object AutoCleanCache : ClickableFeature() {
         val dataDir = HostInfo.application.filesDir.parentFile!!.toPath()
         val storageDataDir = HostInfo.application.externalCacheDir!!.toPath().parent!!
 
-        paths.add(dataDir / "cache")
+        // NOTE: We deliberately do NOT delete tinker/, tinker_server/,
+        // tinker_temp/, dataDir/cache (contains oat_primary ART image used by
+        // the running process), appbrand/ or liteapp/ while WeChat is alive:
+        // deleting those mid-run corrupts class loading / GC and produced the
+        // 9/4 native crash storm (StackVisitor SIGSEGV). Only log-like and
+        // external-cache paths are safe to remove periodically.
         paths.add(dataDir / "MicroMsg" / "crash")
-        paths.add(dataDir / "appbrand")
-        paths.add(dataDir / "cache" / "appbrand")
-        paths.add(dataDir / "MicroMsg" / "appbrand")
-        paths.add(dataDir / "cache" / "liteapp")
-        paths.add(dataDir / "files" / "liteapp")
-        paths.add(dataDir / "tinker")
-        paths.add(dataDir / "tinker_server")
-        paths.add(dataDir / "tinker_temp")
         paths.add(storageDataDir / "cache")
         paths.add(storageDataDir / "files" / "xlog")
         paths.add(storageDataDir / "files" / "onelog")
