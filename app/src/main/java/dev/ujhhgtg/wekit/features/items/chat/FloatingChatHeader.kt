@@ -263,6 +263,9 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
     /** 每个会话页布局对应的顶部"选择到这里"按钮, inflate 后缓存, 失效则重找。 */
     private val quickSelectUpViews = WeakHashMap<View, View>()
 
+    /** 每个会话页布局对应的"N条新消息"角标, 缓存后每次使用前重新验证特征。 */
+    private val newMsgChipViews = WeakHashMap<View, View>()
+
     /** 每个会话页布局对应的内容区宿主 (包含 ChattingScrollLayout 的那个直接子 View)。 */
     private val contentHosts = WeakHashMap<View, View>()
 
@@ -280,9 +283,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
 
     /** 标题栏来自窗口级 ActionBarContainer 的布局, 边距按 overlay 坐标算, 不再叠加 layout.paddingTop。 */
     private val windowBarHeaders = WeakHashMap<View, Boolean>()
-
-    /** 已输出过内容宿主子 View 诊断日志的布局。 */
-    private val overlayDiagLogged = WeakHashMap<View, Boolean>()
 
     /** 已报过"组内找不到 dim"的 ChatTipsBarGroup。 */
     private val dimWarned = WeakHashMap<View, Boolean>()
@@ -852,6 +852,7 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         suppressTipsBarDimFor(layout)
         applyChatListPadding(layout, header)
         val quickSelectCovered = applyQuickSelectOffset(layout, header)
+        applyNewMsgChipOffset(layout, header)
         val covered = (if (quickSelectCovered) RECONCILE_QUICK_SELECT else 0) or
             if (tipsCovered) RECONCILE_TIPS else 0
         val tracker = layoutTrackers[layout] ?: return covered
@@ -967,7 +968,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 }.getOrDefault(false)
                 if (applied) {
                     windowBarOverlays[header] = true
-                    WeLogger.d(TAG, "floating standalone chatting window action bar in place")
                 }
                 break
             }
@@ -997,7 +997,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         val lp = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height)
         lp.addRule(RelativeLayout.ALIGN_PARENT_TOP)
         root.addView(header, lp)
-        WeLogger.d(TAG, "reparented title bar onto chat root (topOffset=${headerTopOffsets[layout]})")
     }
 
     /** 圆角 / 裁剪 / 阴影 / 暗色浮层, 与悬浮输入框同一套绘制属性; 标题栏和标题区挂件共用。 */
@@ -1024,7 +1023,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         view.clipToOutline = true
         view.elevation = expectedElevation
         headerStyles[view] = style
-        WeLogger.d(TAG, "applied drawing style: corner=${cornerRadiusDp}dp elev=${elevationDp}dp")
     }
 
     private fun applyHeaderStyle(layout: View, header: View) {
@@ -1510,7 +1508,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             group.clipToOutline = true
             group.elevation = elevationDp * density
             tipsBarStyles[group] = style
-            WeLogger.d(TAG, "applied tips bar card style: corner=${cornerRadiusDp}dp elev=${elevationDp}dp")
         }
     }
 
@@ -1569,11 +1566,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 lp.rightMargin = sidePx
                 lp.topMargin = topPx
                 child.requestLayout()
-                WeLogger.d(
-                    TAG,
-                    "styled header-zone card ${child.javaClass.simpleName}: " +
-                        "top=${topPx}px side=${sidePx}px height=${child.height}px"
-                )
             }
         }
     }
@@ -1619,13 +1611,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             titleBottomPx + gapPx).coerceAtLeast(hostTopPx)
         var bottomPx: Int? = null
         var pinnedTipsApplied = false
-        if (overlayDiagLogged.put(layout, true) == null) {
-            val children = (0 until hostGroup.childCount).joinToString(", ") { i ->
-                val c = hostGroup.getChildAt(i)
-                "${c.javaClass.name}[v=${c.visibility} h=${c.height}]"
-            }
-            WeLogger.d(TAG, "content host children: $children")
-        }
         for (i in 0 until hostGroup.childCount) {
             val child = hostGroup.getChildAt(i)
             if (child.visibility != View.VISIBLE) continue
@@ -1647,11 +1632,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 lp.rightMargin = sidePx
                 lp.topMargin = topPx
                 child.requestLayout()
-                WeLogger.d(
-                    TAG,
-                    "floated header-zone overlay ${child.javaClass.simpleName}: " +
-                        "top=${topPx}px side=${sidePx}px height=${child.height}px"
-                )
             }
             val cardHeight = if (isTipsGroup) effectiveTipsBarHeight(child) else child.height
             if (isTipsGroup) tipsBarEffectiveHeights[child] = cardHeight
@@ -1674,11 +1654,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 lp.rightMargin = sidePx
                 lp.topMargin = topPx
                 tracked.requestLayout()
-                WeLogger.d(
-                    TAG,
-                    "floated tracked ChatTipsBarGroup: top=${topPx}px " +
-                        "parent=${tracked.parent?.javaClass?.name} height=${tracked.height}px"
-                )
             }
             val cardHeight = effectiveTipsBarHeight(tracked)
             tipsBarEffectiveHeights[tracked] = cardHeight
@@ -1728,7 +1703,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         for (dim in dims) {
             if (dim.visibility != View.GONE) {
                 dim.visibility = View.GONE
-                WeLogger.d(TAG, "suppressed ChatTipsBarGroup dim layer")
             }
             // 兜底 1: 即使某帧微信把它重新点亮, alpha=0 也保证画不出来
             if (dim.alpha != 0f) dim.alpha = 0f
@@ -1813,7 +1787,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             }
             if (removed == 0) error("no item decoration list found")
             tipsBarOffsetsRemoved[recycler] = true
-            WeLogger.d(TAG, "pinned tips bar native item offsets removed ($removed)")
         }.onFailure {
             WeLogger.w(TAG, "pinned tips bar offset decoration removal failed, keeping native spacing", it)
         }
@@ -2004,7 +1977,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         if (tipsBarRowHooks[recycler] != null) return
         installTipsBarAdapterCountHook(recycler)
         tipsBarRowHooks[recycler] = true
-        WeLogger.d(TAG, "tips bar adapter hook installed")
     }
 
     /**
@@ -2032,7 +2004,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 if (count > 1) result = count
             }
         }
-        WeLogger.d(TAG, "tips bar adapter getItemCount hooked (${adapterClass.name})")
     }
 
     /**
@@ -2381,7 +2352,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             edgeToEdgeApplied[window] = true
             // decorFits 是窗口级总开关；本特性只消费顶部 inset，未启用 Footer 时底部仍由微信保留。
             WindowCompat.setDecorFitsSystemWindows(window, false)
-            WeLogger.d(TAG, "chat status bar edge-to-edge applied")
         }
         runCatching { window.statusBarColor = Color.TRANSPARENT }
         zeroChatLayoutTopPadding(layout)
@@ -2510,7 +2480,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         val target = base + extra
         if (recycler.paddingTop == target) return
         recycler.setPadding(recycler.paddingLeft, target, recycler.paddingRight, recycler.paddingBottom)
-        WeLogger.d(TAG, "chat list top padding: ${recycler.paddingTop} -> $target (extra=$extra)")
     }
 
     private fun applyAnimatedChatListPadding(layout: View, recycler: View) {
@@ -2557,9 +2526,50 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         if (lp.topMargin != marginTop) {
             lp.topMargin = marginTop
             quickSelect.requestLayout()
-            WeLogger.d(TAG, "quick select up view top margin: ${lp.topMargin} -> $marginTop")
         }
         return true
+    }
+
+    /**
+     * 右上角"N条新消息"角标 (HistoryMsgTongue, ss.xml 的 bm4): ChattingContent 直接子 View 里
+     * top|end 的 wrap_content 小浮层, 与"选择到这里"按钮同理, 标题栏悬浮后内容区顶到屏幕
+     * 上方, 角标会落在标题卡背后。这里把处于 top|end 态的角标推到标题卡 (或已悬浮的
+     * 置顶消息卡) 下沿 + 卡片间距。微信的 HistoryMsgTongueComponent 会按状态重设它的
+     * gravity/topMargin, 每帧重算即可覆盖; 角标切到底部态后不再命中特征, 边距交还给微信。
+     */
+    private fun applyNewMsgChipOffset(layout: View, header: View) {
+        if (headerTopOffsets[layout] == null) return
+        val content = chatContent(layout) as? ViewGroup ?: return
+        val chip = newMsgChipView(content, layout) ?: return
+        val density = layout.resources.displayMetrics.density
+        val gapPx = (extraGapDp * density).toInt()
+        val titleBottomPx = statusBarOffset(layout) +
+            header.height + (topGapDp * density).toInt()
+        // 置顶消息卡等悬浮覆盖卡存在时角标排到它们下方, 不与卡片重叠
+        val targetPx = (overlayCardBottoms[layout] ?: titleBottomPx) + gapPx
+        // ChattingScrollLayout 滚动时用 translationY 移动内容区, 要一起算进角标的屏幕位置
+        val contentTopPx = content.offsetTopIn(layout) + content.translationY.roundToInt()
+        val marginTop = (targetPx - contentTopPx).coerceAtLeast(0)
+        val lp = chip.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (lp.topMargin != marginTop) {
+            lp.topMargin = marginTop
+            chip.requestLayout()
+        }
+    }
+
+    private fun newMsgChipView(content: ViewGroup, layout: View): View? {
+        // 角标会随状态切换 gravity (top|end ↔ bottom|end), 缓存命中也要重新验证特征
+        newMsgChipViews[layout]?.takeIf { it.parent === content && it.isNewMsgChip() }
+            ?.let { return it }
+        newMsgChipViews.remove(layout)
+        for (i in 0 until content.childCount) {
+            val child = content.getChildAt(i)
+            if (child.isNewMsgChip()) {
+                newMsgChipViews[layout] = child
+                return child
+            }
+        }
+        return null
     }
 
     private fun chatContent(layout: View): View? {
@@ -2618,6 +2628,24 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             lp.height != ViewGroup.LayoutParams.WRAP_CONTENT
         ) return false
         return lp.topMargin > 0
+    }
+
+    /**
+     * 结构特征: 内容区直接子 View 里 top|end 的 wrap_content LinearLayout (ss.xml 的 bm4),
+     * 内含 TextView。8.0.65–8.0.77 的聊天布局里它是该位置唯一的这类子 View
+     * (bk8 是 match_parent 宽, bm2 是 bottom|right)。
+     */
+    @SuppressLint("RtlHardcoded")
+    private fun View.isNewMsgChip(): Boolean {
+        val lp = layoutParams as? FrameLayout.LayoutParams ?: return false
+        val topRight = Gravity.TOP or Gravity.RIGHT
+        val topEnd = Gravity.TOP or Gravity.END
+        if (lp.gravity != topRight && lp.gravity != topEnd) return false
+        if (lp.width != ViewGroup.LayoutParams.WRAP_CONTENT ||
+            lp.height != ViewGroup.LayoutParams.WRAP_CONTENT
+        ) return false
+        if (this !is LinearLayout) return false
+        return allViews.any { it is TextView }
     }
 
     private fun View.chatRecycler(): View? {
@@ -2702,7 +2730,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         contentHosts.remove(layout)
         overlayCardBottoms.remove(layout)
         windowBarHeaders.remove(layout)
-        overlayDiagLogged.remove(layout)
         reparentBlocked.remove(layout)
         lookupWarned.remove(layout)
         header?.let {
@@ -2785,7 +2812,6 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         tipsBarGroupLayouts.clear()
         windowBarOverlays.clear()
         windowBarHeaders.clear()
-        overlayDiagLogged.clear()
         dimWarned.clear()
         tipsBarDims.clear()
         tipsBarRecyclers.clear()

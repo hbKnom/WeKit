@@ -5,6 +5,7 @@ package dev.ujhhgtg.wekit.features.api.ui
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Bundle
@@ -76,6 +77,9 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
     override val descriptionRes = R.string.feature_we_moments_api_description
 
     private const val TAG = "WeMomentsApi"
+    /** Source bits checked by the host's SnsInfo.isDeadSource(), including timeline and albums. */
+    const val ACTIVE_SOURCE_MASK = 270
+    const val AD_SOURCE_FLAG = 32
     private const val SNS_VIDEO_SCENE_TIMELINE_OFFLINE = 31
     private const val SNS_VIDEO_SCENE_FINISH_REMAINING = 36
     private const val FALLBACK_VIDEO_CREATE_TIME = 1
@@ -93,7 +97,7 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
 
         companion object {
             @JvmSynthetic
-            internal fun repost(
+            fun repost(
                 success: Boolean,
                 sent: Boolean,
                 message: String,
@@ -196,7 +200,7 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
             )
         }
     }
-    internal val methodGetSnsInfoStorage by dexMethod {
+    val methodGetSnsInfoStorage by dexMethod {
         searchPackages("com.tencent.mm.plugin.sns.model")
         matcher {
             modifiers = Modifier.STATIC
@@ -979,6 +983,19 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
     fun getOwnerWxId(context: WeMomentsContextMenuApi.MomentsContext): String? =
         getOwnerWxId(context.snsInfo)
 
+    fun getCreateTimeSeconds(snsInfo: Any): Long =
+        (normalizeSnsInfo(snsInfo)!!.reflekt().getField("field_createTime", true) as Int).toLong()
+
+    /** Queries the database owned by SnsInfoStorage; the caller must close the cursor. */
+    fun rawQuerySnsInfo(sql: String, args: Array<String> = emptyArray()): Cursor {
+        val storage = methodGetSnsInfoStorage.method.invoke(null)!!
+        return storage.reflekt().firstMethod {
+            name = "rawQuery"
+            parameters(String::class, Array<String>::class)
+            superclass()
+        }.invoke(sql, args) as Cursor
+    }
+
     fun getSnsInfoBySnsId(snsId: Long): Any? {
         if (snsId == 0L) return null
         return runCatching {
@@ -1590,66 +1607,66 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
         return try {
             if (!content.hasLivePhoto) {
                 return repostResult(
-                    false,
-                    false,
-                    "这条朋友圈不包含实况图片!",
-                    R.string.moments_repost_no_live_photo,
+                    success = false,
+                    sent = false,
+                    message = "这条朋友圈不包含实况图片!",
+                    messageRes = R.string.moments_repost_no_live_photo,
                 )
             }
 
             ensureImagePathsCached(content.mediaList, content.nativeMediaList)
                 ?: return repostResult(
-                    false,
-                    false,
-                    "图片下载失败或超时!",
-                    R.string.moments_repost_image_download_failed,
+                    success = false,
+                    sent = false,
+                    message = "图片下载失败或超时!",
+                    messageRes = R.string.moments_repost_image_download_failed,
                 )
             if (!ensureLivePhotoVideosCached(content)) {
                 return repostResult(
-                    false,
-                    false,
-                    "实况视频下载失败或超时, 请稍后重试!",
-                    R.string.moments_repost_live_photo_video_download_failed,
+                    success = false,
+                    sent = false,
+                    message = "实况视频下载失败或超时, 请稍后重试!",
+                    messageRes = R.string.moments_repost_live_photo_video_download_failed,
                 )
             }
 
             val resolved = resolveMediaItems(content)
                 ?: return repostResult(
-                    false,
-                    false,
-                    "未找到本地缓存的图片!",
-                    R.string.moments_repost_image_cache_missing,
+                    success = false,
+                    sent = false,
+                    message = "未找到本地缓存的图片!",
+                    messageRes = R.string.moments_repost_image_cache_missing,
                 )
             if (resolved.degradedLivePhotos) {
                 return repostResult(
-                    false,
-                    false,
-                    "实况未缓存, 请先播放一次后再试!",
-                    R.string.moments_repost_live_photo_cache_missing,
+                    success = false,
+                    sent = false,
+                    message = "实况未缓存, 请先播放一次后再试!",
+                    messageRes = R.string.moments_repost_live_photo_cache_missing,
                 )
             }
 
             val editorMedia = prepareGalleryEditorMedia(activity, resolved.items)
                 ?: return repostResult(
-                    false,
-                    false,
-                    "实况保存到相册失败!",
-                    R.string.moments_repost_live_photo_save_failed,
+                    success = false,
+                    sent = false,
+                    message = "实况保存到相册失败!",
+                    messageRes = R.string.moments_repost_live_photo_save_failed,
                 )
 
             if (openMomentMixedMediaEditorFromAlbumResult(activity, text, editorMedia, source)) {
                 repostResult(
-                    true,
-                    false,
-                    "已打开编辑界面",
-                    R.string.moments_repost_editor_opened,
+                    success = true,
+                    sent = false,
+                    message = "已打开编辑界面",
+                    messageRes = R.string.moments_repost_editor_opened,
                 )
             } else {
                 repostResult(
-                    false,
-                    false,
-                    "实况图片自动选择失败!",
-                    R.string.moments_repost_live_photo_select_failed,
+                    success = false,
+                    sent = false,
+                    message = "实况图片自动选择失败!",
+                    messageRes = R.string.moments_repost_live_photo_select_failed,
                 )
             }
         } catch (e: Exception) {
@@ -2383,10 +2400,10 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
     fun quickRepost(snsInfo: Any?, nativeTimeline: Any? = null): ActionResult {
         val content = getMomentContent(snsInfo, nativeTimeline)
             ?: return repostResult(
-                false,
-                false,
-                "无法解析朋友圈内容",
-                R.string.moments_repost_parse_failed,
+                success = false,
+                sent = false,
+                message = "无法解析朋友圈内容",
+                messageRes = R.string.moments_repost_parse_failed,
             )
         return quickRepost(content)
     }
@@ -2395,34 +2412,43 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
      * 一键转发, 但在转发前先强制把图片/视频从 CDN 缓存到本地 (相当于自动点开一次), 避免转发后空白。
      * [nativeTimeline] 可显式传入, 否则从 [snsInfo] 反射解析。
      */
-    suspend fun quickRepostEnsuringCached(snsInfo: Any?, nativeTimeline: Any? = null): ActionResult {
+    suspend fun quickRepostEnsuringCached(
+        snsInfo: Any?,
+        nativeTimeline: Any? = null,
+        shouldSend: () -> Boolean = { true }
+    ): ActionResult {
         val content = getMomentContent(snsInfo, nativeTimeline)
             ?: return repostResult(
-                false,
-                false,
-                "无法解析朋友圈内容",
-                R.string.moments_repost_parse_failed,
+                success = false,
+                sent = false,
+                message = "无法解析朋友圈内容",
+                messageRes = R.string.moments_repost_parse_failed,
             )
-        return quickRepostEnsuringCached(content)
+        return quickRepostEnsuringCached(content, shouldSend)
     }
 
-    suspend fun quickRepostEnsuringCached(content: MomentContent): ActionResult {
+    suspend fun quickRepostEnsuringCached(
+        content: MomentContent,
+        shouldSend: () -> Boolean = { true }
+    ): ActionResult {
+        if (!shouldSend()) return ActionResult(success = true, sent = false, message = "automation stopped")
         val text = content.contentText
         return try {
             when (content.type) {
                 15, 5 -> { // 视频
                     val video = ensureVideoPaths(HostInfo.application, content)
                         ?: return repostResult(
-                            false,
-                            false,
-                            "视频下载失败或超时",
-                            R.string.moments_repost_video_download_failed,
+                            success = false,
+                            sent = false,
+                            message = "视频下载失败或超时",
+                            messageRes = R.string.moments_repost_video_download_failed,
                         )
+                    if (!shouldSend()) return ActionResult(success = true, sent = false, message = "automation stopped")
                     val ok = postTextAndVideo(HostInfo.application, text, video.videoPath, video.thumbPath)
                     if (ok) {
-                        repostResult(true, true, "已加入发送队列", R.string.moments_repost_queued)
+                        repostResult(success = true, sent = true, message = "已加入发送队列", messageRes = R.string.moments_repost_queued)
                     } else {
-                        repostResult(false, false, "转发失败", R.string.moments_repost_failed)
+                        repostResult(success = false, sent = false, message = "转发失败", messageRes = R.string.moments_repost_failed)
                     }
                 }
 
@@ -2431,29 +2457,34 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
                         // 实况相册: 先把静态封面图缓存到位 (实况视频缺失时会自动退化为静态图)
                         ensureImagePathsCached(content.mediaList, content.nativeMediaList)
                             ?: return repostResult(
-                                false,
-                                false,
-                                "图片下载失败或超时",
-                                R.string.moments_repost_image_download_failed,
+                                success = false,
+                                sent = false,
+                                message = "图片下载失败或超时",
+                                messageRes = R.string.moments_repost_image_download_failed,
                             )
+                        if (!shouldSend()) return ActionResult(success = true, sent = false, message = "automation stopped")
                         return quickRepost(content)
                     }
                     val paths = ensureImagePathsCached(content.mediaList, content.nativeMediaList)
                         ?: return repostResult(
-                            false,
-                            false,
-                            "图片下载失败或超时",
-                            R.string.moments_repost_image_download_failed,
+                            success = false,
+                            sent = false,
+                            message = "图片下载失败或超时",
+                            messageRes = R.string.moments_repost_image_download_failed,
                         )
+                    if (!shouldSend()) return ActionResult(success = true, sent = false, message = "automation stopped")
                     val ok = postTextAndImages(text, paths)
                     if (ok) {
-                        repostResult(true, true, "已加入发送队列", R.string.moments_repost_queued)
+                        repostResult(success = true, sent = true, message = "已加入发送队列", messageRes = R.string.moments_repost_queued)
                     } else {
-                        repostResult(false, false, "转发失败", R.string.moments_repost_failed)
+                        repostResult(success = false, sent = false, message = "转发失败", messageRes = R.string.moments_repost_failed)
                     }
                 }
 
-                else -> quickRepost(content)
+                else -> {
+                    if (!shouldSend()) return ActionResult(success = true, sent = false, message = "automation stopped")
+                    quickRepost(content)
+                }
             }
         } catch (e: Exception) {
             WeLogger.e(TAG, "quickRepostEnsuringCached failed", e)
@@ -2511,19 +2542,19 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
     fun quickRepostCardMoment(content: MomentContent): ActionResult {
         val nativeContentObj = content.nativeContentObj
             ?: return repostResult(
-                false,
-                false,
-                "无法解析卡片内容!",
-                R.string.moments_repost_card_parse_failed,
+                success = false,
+                sent = false,
+                message = "无法解析卡片内容!",
+                messageRes = R.string.moments_repost_card_parse_failed,
             )
 
         return try {
             val cloned = cloneNativeContentObj(nativeContentObj)
                 ?: return repostResult(
-                    false,
-                    false,
-                    "卡片内容克隆失败!",
-                    R.string.moments_repost_card_clone_failed,
+                    success = false,
+                    sent = false,
+                    message = "卡片内容克隆失败!",
+                    messageRes = R.string.moments_repost_card_clone_failed,
                 )
 
             // 用源内容类型构造 helper, 使 commit 走对应的分支; ctor 也会把该类型写入 ContentObj.type。
@@ -2535,10 +2566,10 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
                 .firstField { type { timelineObjectClass.isAssignableFrom(it) }; superclass() }
             val helperTimeline = timelineField.get()
                 ?: return repostResult(
-                    false,
-                    false,
-                    "无法获取转发容器!",
-                    R.string.moments_repost_container_unavailable,
+                    success = false,
+                    sent = false,
+                    message = "无法获取转发容器!",
+                    messageRes = R.string.moments_repost_container_unavailable,
                 )
             helperTimeline.reflekt().firstField { name = "ContentObj"; superclass() }.set(cloned)
 
@@ -2548,9 +2579,9 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
             val localId = methodCommit.method.invoke(helper) as Int
             WeLogger.i(TAG, "quickRepostCardMoment: type=${content.type}, localId=$localId")
             if (localId > 0) {
-                repostResult(true, true, "已加入发送队列", R.string.moments_repost_queued)
+                repostResult(success = true, sent = true, message = "已加入发送队列", messageRes = R.string.moments_repost_queued)
             } else {
-                repostResult(false, false, "转发失败!", R.string.moments_repost_failed)
+                repostResult(success = false, sent = false, message = "转发失败!", messageRes = R.string.moments_repost_failed)
             }
         } catch (e: Exception) {
             WeLogger.e(TAG, "quickRepostCardMoment failed", e)
@@ -2824,28 +2855,28 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
                     if (content.hasLivePhoto) {
                         val resolved = resolveMediaItems(content)
                             ?: return repostResult(
-                                false,
-                                false,
-                                "未找到本地缓存的图片",
-                                R.string.moments_repost_image_cache_missing,
+                                success = false,
+                                sent = false,
+                                message = "未找到本地缓存的图片",
+                                messageRes = R.string.moments_repost_image_cache_missing,
                             )
                         val sent = postTextAndMixedMedia(text, resolved.items)
                         if (sent && resolved.degradedLivePhotos) {
                             return repostResult(
-                                true,
-                                true,
-                                "已加入发送队列 (部分实况视频未下载, 已按静态图转发)",
-                                R.string.moments_repost_queued_static_live_photos,
+                                success = true,
+                                sent = true,
+                                message = "已加入发送队列 (部分实况视频未下载, 已按静态图转发)",
+                                messageRes = R.string.moments_repost_queued_static_live_photos,
                             )
                         }
                         sent
                     } else {
                         val paths = prepareImagePaths(content.mediaList, content.nativeMediaList)
                             ?: return repostResult(
-                                false,
-                                false,
-                                "未找到本地缓存的图片",
-                                R.string.moments_repost_image_cache_missing,
+                                success = false,
+                                sent = false,
+                                message = "未找到本地缓存的图片",
+                                messageRes = R.string.moments_repost_image_cache_missing,
                             )
                         postTextAndImages(text, paths)
                     }
@@ -2856,10 +2887,10 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
                     val thumbPath = fetchVideoThumbPath(content.nativeMediaList)
                     if (videoPath == null || thumbPath == null) {
                         return repostResult(
-                            false,
-                            false,
-                            "未找到本地缓存的视频, 请播放一次后再转发",
-                            R.string.moments_repost_video_cache_missing,
+                            success = false,
+                            sent = false,
+                            message = "未找到本地缓存的视频, 请播放一次后再转发",
+                            messageRes = R.string.moments_repost_video_cache_missing,
                         )
                     }
                     postTextAndVideo(HostInfo.application, text, videoPath, thumbPath)
@@ -2869,9 +2900,9 @@ object WeMomentsApi : ApiFeature(), IResolveDex {
             }
 
             if (ok) {
-                repostResult(true, true, "已加入发送队列", R.string.moments_repost_queued)
+                repostResult(success = true, sent = true, message = "已加入发送队列", messageRes = R.string.moments_repost_queued)
             } else {
-                repostResult(false, false, "转发失败", R.string.moments_repost_failed)
+                repostResult(success = false, sent = false, message = "转发失败", messageRes = R.string.moments_repost_failed)
             }
         } catch (e: Exception) {
             WeLogger.e(TAG, "quickRepost failed", e)

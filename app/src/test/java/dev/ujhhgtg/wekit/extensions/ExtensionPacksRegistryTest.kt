@@ -14,8 +14,8 @@ class ExtensionPacksRegistryTest {
         assertEquals(
             listOf(
                 "script-deps",
-                "monet-generator",
                 "cloudflared",
+                "python-runtime",
                 "archlinux-arm64",
                 "llama-native",
                 "qwen3.8-4b-distill",

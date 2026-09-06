@@ -61,7 +61,7 @@ import java.nio.file.Path
 import kotlin.math.roundToInt
 
 @Composable
-internal fun HomeSidePanelImageCard(
+fun HomeSidePanelImageCard(
     card: ImageCardConfig,
     imageFile: Path?,
     editMode: Boolean,

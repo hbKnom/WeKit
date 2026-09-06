@@ -1,10 +1,10 @@
 package dev.ujhhgtg.wekit.features.items.beautify.home_screen_panel
 
+import kotlin.io.path.moveTo
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
 import java.io.InputStream
-import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.UUID
@@ -20,7 +20,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
-internal sealed interface HomeSidePanelImageImportResult {
+sealed interface HomeSidePanelImageImportResult {
     data class Success(
         val assetId: String,
         val file: Path,
@@ -34,10 +34,10 @@ internal sealed interface HomeSidePanelImageImportResult {
     data class Failure(val error: Throwable) : HomeSidePanelImageImportResult
 }
 
-internal class HomeSidePanelImageAssetStore(
+class HomeSidePanelImageAssetStore(
     private val root: Path = KnownPaths.moduleAssets / "home_side_panel" / "images",
 ) {
-    internal data class PreparedCommit(
+    data class PreparedCommit(
         val sessionId: String,
         val promotedAssetIds: Set<String>,
         val orphanedAssetIds: Set<String>,
@@ -195,7 +195,7 @@ internal class HomeSidePanelImageAssetStore(
     }
 
     private fun moveAtomically(source: Path, destination: Path) {
-        Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE)
+        source.moveTo(destination, StandardCopyOption.ATOMIC_MOVE)
     }
 
     private fun formalPartial(assetId: String): Path = root / ".$assetId.part"

@@ -1,7 +1,5 @@
 # AGENTS.md
 
-The following instructions are for non-Claude models. If you are Claude, ignore those and go read CLAUDE.md.
-
 ## Superpowers
 
 - All Superpowers workflow artifacts for WeKit (plans, specs/designs, SDD ledgers and
@@ -15,7 +13,7 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
 ```bash
 ./x build           # debug (uses same signing as release)
 ./x build --release # release (with optimization on)
-./x zygisk build    # standard arm64-v8a APK + arm64 Zygisk module ZIP
+./x run --zygisk    # build the dual-format APK and install it as a Zygisk module
 # (./x is alias to `cargo xtask` which orchestrates the build process)
 ```
 
@@ -25,6 +23,9 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
 - **When working in a Git worktree, work directly on `dev` unless the user explicitly requests
   another branch or isolated history.** This is because commits made on a detached worktree are not automatically
   transferred by Codex's “local checkout” action and can appear to be lost.
+- Every standard/legacy debug/release APK is dual-format: install normally as an APK, or rename
+  to `.zip` and install through a root manager. Module files enter the APK before AGP signs it;
+  never modify or repack the signed output. There is no separate `zygisk build` command.
 - JDK 21
 - **Gradle does NOT build the Rust native lib.** `./gradlew assemble*` only packages whatever
   prebuilt `libwekit_native.so` already sits in `app/src/main/jniLibs/<abi>/`. Compiling
@@ -33,7 +34,7 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
   a stale native lib. Requires a Rust toolchain + the Android NDK and its Rust targets;
   `./x configure` regenerates `wekit-native/.cargo/config.toml` from the local NDK and is invoked
   automatically by the build tasks.
-- `./x build --native-only` rebuilds just the native lib into `jniLibs/`
+- `./x build --native-only` prepares both the application and Zygisk native libs in `jniLibs/`
 - AGP 9, Gradle version catalog in `gradle/libs.versions.toml`
 
 ## Project Structure
@@ -47,7 +48,7 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
 - `libs/common/stubs/` — compileOnly stubs for WeChat and Android hidden classes
 - `buildSrc/` — custom Gradle tasks: `GenerateMethodHashesTask` (`IResolveDex` `resolveDex` method MD5 cache), `GenerateNewFeaturesTask` (Kotlin source files added within 30 days of the HEAD commit → `NewFeatures.ADDED_AT_BY_SOURCE_KEY`; KSP joins source keys to discovered features for the 新功能 pseudo-category)
 - `xtask/` — build orchestration behind `./x`: native-lib compilation + NDK linker config, APK
-  assembly via Gradle, and Zygisk module packaging/flashing
+  assembly/signing via Gradle, and Zygisk installation of that same APK
 
 ## Entry Points & Architecture
 
@@ -71,8 +72,11 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
 
 - Use `./x dex-test` to run the same `IResolveDex`/DexKit resolution steps used by
   `DexCacheManager.kt` against WeChat APKs on the Linux desktop. Test only the supported host
-  range **8.0.65–8.0.77**; APKs outside that range are useful for investigation but must not be
+  range **8.0.65–8.0.78**; APKs outside that range are useful for investigation but must not be
   treated as compatibility gates for the project.
+- Add `--workers 4` to exercise the same shared batch scheduler as local Android resolution.
+  Use `--workers 1` for its serial comparison; omitting the option preserves per-feature runs.
+  Batch runs initialize/reset all selected roots before starting workers and report after joining.
 - Test each supported APK version separately, including separate normal and Google Play APKs
   when both are available. Each APK runs in its own JVM worker and must carry its own version code,
   version name, build tag, and Google Play metadata.
@@ -175,8 +179,12 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
 ## Key Conventions
 
 - Package namespace: `dev.ujhhgtg.wekit`
+- `app` is an application module, not a library and cannot be consumed by other projects. Do not
+  use the `internal` visibility modifier in Kotlin production sources under `app/src/main`; use
+  Kotlin's default implicit `public` visibility instead, because `internal` provides no meaningful
+  boundary there.
 - Min SDK 28, target SDK 37, compile SDK 37
-- Target: WeChat `com.tencent.mm`, versions 8.0.65–8.0.77. Current host info in `HostInfo`
+- Target: WeChat `com.tencent.mm`, versions 8.0.65–8.0.78. Current host info in `HostInfo`
 - Process targeting via `TargetProcesses`: override `startup()` to check
   `TargetProcesses.isInMain` / `TargetProcesses.currentType`. Default: main process only.
 - Device behavior still requires manual testing on real WeChat; desktop JVM tests cover Dex
@@ -189,7 +197,7 @@ The following instructions are for non-Claude models. If you are Claude, ignore 
   report "feature does not undo its changes in `onDisable`" as a bug.
 - `allowFailure` on `dexMethod`/`dexClass`/`dexField` is ONLY for structures whose existence
   differs across supported WeChat versions (present in old, absent in new, or vice versa). If a
-  declared Dex resolution is expected to succeed on every supported version (8.0.65–8.0.77), do
+  declared Dex resolution is expected to succeed on every supported version, do
   NOT set `allowFailure`: a resolution failure must fail that feature loudly instead of silently
   degrading to a no-op.
 - JVM reflection over host classes should go through `reflekt` (`libs/common/reflekt/`) by
