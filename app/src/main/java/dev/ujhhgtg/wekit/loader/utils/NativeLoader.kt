@@ -56,6 +56,12 @@ object NativeLoader {
         zygiskPayload = ZygiskPayload(apk, appDataDir)
     }
 
+    /** The module APK used as the class path for standalone child processes. */
+    @JvmStatic
+    fun bootstrapApk(): File = synchronized(nativeLoadLock) {
+        zygiskPayload?.apk ?: File(StartupInfo.modulePath)
+    }
+
     fun init(hostCtx: Context) {
         synchronized(nativeLoadLock) {
             if (zygiskPayload == null) {

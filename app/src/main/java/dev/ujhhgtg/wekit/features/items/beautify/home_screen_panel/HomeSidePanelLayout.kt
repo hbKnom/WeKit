@@ -23,13 +23,13 @@ internal object UuidHomeSidePanelIdGenerator : HomeSidePanelIdGenerator {
 }
 
 @Serializable
-internal data class HomeSidePanelLayout(
+data class HomeSidePanelLayout(
     val version: Int = HOME_SIDE_PANEL_LAYOUT_VERSION,
     val cards: List<HomeSidePanelCardConfig>,
 )
 
 @Serializable
-internal enum class HomeSidePanelActionKind {
+enum class HomeSidePanelActionKind {
     ADD_FRIEND,
     SCAN,
     MOMENTS,
@@ -44,7 +44,7 @@ internal enum class HomeSidePanelActionKind {
 }
 
 @Serializable
-internal enum class HomeSidePanelCardType {
+enum class HomeSidePanelCardType {
     DATE_TIME,
     WEATHER,
     WALLET,
@@ -57,7 +57,7 @@ internal enum class HomeSidePanelCardType {
 }
 
 @Serializable
-internal data class HomeSidePanelActionConfig(
+data class HomeSidePanelActionConfig(
     val id: String,
     val kind: HomeSidePanelActionKind,
 )
@@ -72,7 +72,7 @@ internal sealed class HomeSidePanelCardConfig {
 
 @Serializable
 @SerialName("date_time")
-internal data class DateTimeCardConfig(
+data class DateTimeCardConfig(
     override val id: String,
     val showLunarCalendar: Boolean = false,
 ) : HomeSidePanelCardConfig() {
@@ -82,7 +82,7 @@ internal data class DateTimeCardConfig(
 
 @Serializable
 @SerialName("weather")
-internal data class WeatherCardConfig(
+data class WeatherCardConfig(
     override val id: String,
     val city: WeatherCity,
 ) : HomeSidePanelCardConfig() {
@@ -92,7 +92,7 @@ internal data class WeatherCardConfig(
 
 @Serializable
 @SerialName("wallet")
-internal data class WalletCardConfig(
+data class WalletCardConfig(
     override val id: String,
     val hideBalanceByDefault: Boolean = false,
 ) : HomeSidePanelCardConfig() {
@@ -102,7 +102,7 @@ internal data class WalletCardConfig(
 
 @Serializable
 @SerialName("hitokoto")
-internal data class HitokotoCardConfig(
+data class HitokotoCardConfig(
     override val id: String,
     val settings: HitokotoSettings = HitokotoSettings(),
 ) : HomeSidePanelCardConfig() {
@@ -111,7 +111,7 @@ internal data class HitokotoCardConfig(
 }
 
 @Serializable
-internal enum class HomeSidePanelImageScaleMode {
+enum class HomeSidePanelImageScaleMode {
     CROP,
     FIT,
     FILL_BOUNDS,
@@ -120,7 +120,7 @@ internal enum class HomeSidePanelImageScaleMode {
 
 @Serializable
 @SerialName("image")
-internal data class ImageCardConfig(
+data class ImageCardConfig(
     override val id: String,
     val imageAssetId: String? = null,
     val imageWidthPx: Int? = null,
@@ -134,7 +134,7 @@ internal data class ImageCardConfig(
 
 @Serializable
 @SerialName("horizontal_actions")
-internal data class HorizontalActionsCardConfig(
+data class HorizontalActionsCardConfig(
     override val id: String,
     val actions: List<HomeSidePanelActionConfig>,
 ) : HomeSidePanelCardConfig() {
@@ -144,7 +144,7 @@ internal data class HorizontalActionsCardConfig(
 
 @Serializable
 @SerialName("vertical_actions")
-internal data class VerticalActionsCardConfig(
+data class VerticalActionsCardConfig(
     override val id: String,
     val actions: List<HomeSidePanelActionConfig>,
 ) : HomeSidePanelCardConfig() {
@@ -154,7 +154,7 @@ internal data class VerticalActionsCardConfig(
 
 @Serializable
 @SerialName("music")
-internal data class MusicCardConfig(
+data class MusicCardConfig(
     override val id: String,
 ) : HomeSidePanelCardConfig() {
     @Transient
@@ -163,7 +163,7 @@ internal data class MusicCardConfig(
 
 @Serializable
 @SerialName("calendar")
-internal data class CalendarCardConfig(
+data class CalendarCardConfig(
     override val id: String,
     val showLunarCalendar: Boolean = true,
 ) : HomeSidePanelCardConfig() {
@@ -171,7 +171,7 @@ internal data class CalendarCardConfig(
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.CALENDAR
 }
 
-internal class InvalidHomeSidePanelLayoutException(message: String) : IllegalArgumentException(message)
+class InvalidHomeSidePanelLayoutException(message: String) : IllegalArgumentException(message)
 
 internal fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
     if (layout.version != HOME_SIDE_PANEL_LAYOUT_VERSION) {
@@ -280,7 +280,7 @@ internal object HomeSidePanelLayoutCodec {
     }
 }
 
-internal data class LegacyHomeSidePanelSnapshot(
+data class LegacyHomeSidePanelSnapshot(
     val weatherCity: WeatherCity,
     val hideWalletBalance: Boolean,
     val hitokotoSettings: HitokotoSettings,
