@@ -8,17 +8,17 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonClassDiscriminator
 import java.util.UUID
 
-internal const val HOME_SIDE_PANEL_LAYOUT_VERSION = 1
-internal const val HOME_SIDE_PANEL_IMAGE_MIN_HEIGHT_DP = 80
-internal const val HOME_SIDE_PANEL_IMAGE_MAX_HEIGHT_DP = 800
-internal const val HOME_SIDE_PANEL_IMAGE_HEIGHT_STEP_DP = 8
-internal const val HOME_SIDE_PANEL_IMAGE_MAX_ASPECT_RATIO = 100
+const val HOME_SIDE_PANEL_LAYOUT_VERSION = 1
+const val HOME_SIDE_PANEL_IMAGE_MIN_HEIGHT_DP = 80
+const val HOME_SIDE_PANEL_IMAGE_MAX_HEIGHT_DP = 800
+const val HOME_SIDE_PANEL_IMAGE_HEIGHT_STEP_DP = 8
+const val HOME_SIDE_PANEL_IMAGE_MAX_ASPECT_RATIO = 100
 
-internal fun interface HomeSidePanelIdGenerator {
+fun interface HomeSidePanelIdGenerator {
     fun nextId(): String
 }
 
-internal object UuidHomeSidePanelIdGenerator : HomeSidePanelIdGenerator {
+object UuidHomeSidePanelIdGenerator : HomeSidePanelIdGenerator {
     override fun nextId(): String = UUID.randomUUID().toString()
 }
 
@@ -65,7 +65,7 @@ data class HomeSidePanelActionConfig(
 @Serializable
 @OptIn(ExperimentalSerializationApi::class)
 @JsonClassDiscriminator("cardType")
-internal sealed class HomeSidePanelCardConfig {
+sealed class HomeSidePanelCardConfig {
     abstract val id: String
     abstract val type: HomeSidePanelCardType
 }
@@ -173,7 +173,7 @@ data class CalendarCardConfig(
 
 class InvalidHomeSidePanelLayoutException(message: String) : IllegalArgumentException(message)
 
-internal fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
+fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
     if (layout.version != HOME_SIDE_PANEL_LAYOUT_VERSION) {
         throw InvalidHomeSidePanelLayoutException("Unsupported layout version: ${layout.version}")
     }
@@ -234,14 +234,14 @@ internal fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
     }
 }
 
-internal fun isHomeSidePanelImageAspectRatioSupported(width: Int, height: Int): Boolean {
+fun isHomeSidePanelImageAspectRatioSupported(width: Int, height: Int): Boolean {
     if (width <= 0 || height <= 0) return false
     val longer = maxOf(width, height).toLong()
     val shorter = minOf(width, height).toLong()
     return longer <= shorter * HOME_SIDE_PANEL_IMAGE_MAX_ASPECT_RATIO
 }
 
-internal fun HomeSidePanelLayout.imageAssetIds(): Set<String> = cards
+fun HomeSidePanelLayout.imageAssetIds(): Set<String> = cards
     .filterIsInstance<ImageCardConfig>()
     .mapNotNullTo(linkedSetOf(), ImageCardConfig::imageAssetId)
 
@@ -255,7 +255,7 @@ private fun validateActionIds(actions: List<HomeSidePanelActionConfig>) {
     }
 }
 
-internal object HomeSidePanelLayoutCodec {
+object HomeSidePanelLayoutCodec {
 
     fun encode(layout: HomeSidePanelLayout): String {
         validateHomeSidePanelLayout(layout)
@@ -294,7 +294,7 @@ data class LegacyHomeSidePanelSnapshot(
     }
 }
 
-internal sealed interface HomeSidePanelLayoutLoad {
+sealed interface HomeSidePanelLayoutLoad {
     val layout: HomeSidePanelLayout
 
     data class Stored(override val layout: HomeSidePanelLayout) : HomeSidePanelLayoutLoad
@@ -306,7 +306,7 @@ internal sealed interface HomeSidePanelLayoutLoad {
     ) : HomeSidePanelLayoutLoad
 }
 
-internal fun defaultHomeSidePanelLayout(
+fun defaultHomeSidePanelLayout(
     legacy: LegacyHomeSidePanelSnapshot,
     idGenerator: HomeSidePanelIdGenerator = UuidHomeSidePanelIdGenerator,
 ): HomeSidePanelLayout = HomeSidePanelLayout(
