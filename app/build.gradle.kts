@@ -294,7 +294,6 @@ dependencies {
     implementation(libs.mmkv)
 
     implementation(project(":libs:common:bsh"))
-    implementation(project(":libs:monet-generator-api"))
 
     compileOnly(libs.legacyxposed.api)
     compileOnly(libs.libxposed.api)
@@ -351,7 +350,7 @@ dependencies {
 
     testImplementation(libs.junit.jupiter)
     testImplementation(project(":libs:common:stubs"))
-    testImplementation(project(":extensions:monet-generator"))
+
     testImplementation(libs.legacyxposed.api)
     testImplementation(libs.libxposed.api)
     testImplementation(libs.sqlite.jdbc)
