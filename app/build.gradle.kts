@@ -279,6 +279,7 @@ dependencies {
     implementation(libs.miuix.blur)
     implementation(libs.miuix.shader)
     implementation(libs.miuix.nav)
+    implementation(libs.scripta.editor)
     implementation(libs.materialkolor)
     implementation(libs.coil)
     implementation(libs.coil.compose)
