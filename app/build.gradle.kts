@@ -53,6 +53,10 @@ android {
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WeKit\"")
         buildConfigField("long", "BUILD_TIMESTAMP", "${System.currentTimeMillis()}L")
+        buildConfigField("long", "PYTHON_SYNC_HOOK_BUDGET_MS", "${libs.versions.pythonRuntimeSyncHookBudgetMs.get()}L")
+        buildConfigField("long", "PYTHON_TASK_DRAIN_TIMEOUT_MS", "${libs.versions.pythonRuntimeTaskDrainTimeoutMs.get()}L")
+        buildConfigField("long", "PYTHON_MAX_MANIFEST_BYTES", "${libs.versions.pythonRuntimeMaxManifestBytes.get()}L")
+        buildConfigField("long", "PYTHON_MAX_PLUGIN_FILE_BYTES", "${libs.versions.pythonRuntimeMaxPluginFileBytes.get()}L")
     }
 
     splits {
@@ -258,6 +262,7 @@ ksp {
 }
 
 dependencies {
+    implementation(project(":libs:python-runtime-api"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.dynamicanimation)
