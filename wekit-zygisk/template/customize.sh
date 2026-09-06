@@ -151,12 +151,18 @@ ui_print "- Fixing module SELinux labels for Zygisk Next"
 # FolkPatch/APatch may label the module directory with an isolated MLS context
 # (e.g. adb_data_file:s0:c139,c257,c512,c768) that zygote cannot read, which
 # makes Zygisk Next fail to load the native loader (avc: denied { read }).
-# Rewrite to the plain adb_data_file:s0 label now; post-fs-data.sh repeats it
-# on every boot as a safety net.
-chcon u:object_r:adb_data_file:s0 "$MODPATH" 2>/dev/null || true
-chcon u:object_r:adb_data_file:s0 "$MODPATH/zygisk" 2>/dev/null || true
-chcon u:object_r:adb_data_file:s0 "$MODPATH/zygisk/arm64-v8a.so" 2>/dev/null || true
-chcon u:object_r:adb_data_file:s0 "$MODPATH/payload" 2>/dev/null || true
+# The plain adb_data_file:s0 label is readable, but newer FolkPatch/APatch
+# sepolicy does NOT grant zygote { execute } on adb_data_file, so dlopen of
+# zygisk/arm64-v8a.so fails (avc: denied { execute }) and every target process
+# is left without the module ("open module N ... not preloaded").
+# Try the Magisk-ecosystem label magisk_file first (zygote has read+execute on
+# it there); fall back to adb_data_file:s0 which pairs with sepolicy.rule
+# (allow zygote adb_data_file file execute). post-fs-data.sh repeats this on
+# every boot as a safety net.
+for path in "$MODPATH" "$MODPATH/zygisk" "$MODPATH/zygisk/arm64-v8a.so" "$MODPATH/payload"; do
+  chcon u:object_r:magisk_file:s0 "$path" 2>/dev/null || \
+  chcon u:object_r:adb_data_file:s0 "$path" 2>/dev/null || true
+done
 
 OLD_MODULE_DIR=/data/adb/modules/wekit
 OLD_TARGETS_FILE=/data/adb/wekit/injection-targets.tsv
