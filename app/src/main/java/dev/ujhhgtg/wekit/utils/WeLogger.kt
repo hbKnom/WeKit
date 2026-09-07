@@ -4,6 +4,7 @@ import android.util.Log
 import dev.ujhhgtg.wekit.BuildConfig
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
 import dev.ujhhgtg.wekit.utils.fs.createDirsSafe
+import java.io.File
 import java.io.FileWriter
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -25,6 +26,16 @@ object WeLogger {
     private const val RESERVED_IMPORTANT_CAPACITY = 128
     private const val BATCH_SIZE = 64
     private const val FLUSH_TIMEOUT_MILLIS = 3000L
+
+    /**
+     * Per-day rotated log cap. A single daily file may otherwise grow unbounded
+     * (a cloned WeChat with host-log redirection can produce tens of MB in hours),
+     * blowing up storage and making the in-app log viewer unable to render.
+     * When [MAX_FILE_BYTES] is exceeded we rotate to `wekit-<date>.<seq>.log`
+     * siblings and keep the newest [MAX_ROTATED_FILES] files.
+     */
+    private const val MAX_FILE_BYTES = 4L * 1024 * 1024   // 4 MiB per file
+    private const val MAX_ROTATED_FILES = 6               // keep the newest 6 files per day
 
     private val timestampFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
     private val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd")
@@ -54,15 +65,31 @@ object WeLogger {
 
     private var writer: FileWriter? = null
     private var currentLogDate: LocalDate? = null
+    // Name of the file `writer` is appending to (e.g. wekit-2026-09-07.log or a .N sibling).
+    private var currentLogFile: File? = null
 
     // ========== File Logging Internals ==========
 
     private fun getOrRotateWriter(logDate: LocalDate): FileWriter? {
-        if (writer != null && currentLogDate == logDate) return writer
+        if (writer != null && currentLogDate == logDate && currentLogFile != null &&
+            currentLogFile!!.length() < MAX_FILE_BYTES
+        ) {
+            return writer
+        }
 
-        writer?.runCatching { close() }
-        writer = null
-        currentLogDate = null
+        // A writer for the same date exists but the current file exceeded the cap:
+        // rotate it (rename to a numbered sibling) and start a fresh file. Also cover
+        // the date-change case by closing any previous writer.
+        if (currentLogFile != null && currentLogDate == logDate && currentLogFile!!.length() >= MAX_FILE_BYTES) {
+            runCatching { writer?.flush() }
+            rotateOversized(logDate)
+            writer?.runCatching { close() }
+            writer = null
+        } else {
+            writer?.runCatching { close() }
+            writer = null
+            currentLogDate = null
+        }
 
         val logsDir = runCatching {
             (KnownPaths.moduleData / "logs").createDirsSafe()
@@ -71,20 +98,47 @@ object WeLogger {
         // Clean up logs older than 3 days during rotation/initialization
         deleteOldLogs(logsDir)
 
-        val logPath = logsDir / "wekit-${dateFmt.format(logDate)}.log"
+        val logPath = logsDir.resolve("wekit-${dateFmt.format(logDate)}.log")
 
         return runCatching {
             FileWriter(logPath.toFile(), true).also {
                 writer = it
                 currentLogDate = logDate
+                currentLogFile = logPath.toFile()
             }
         }.getOrNull()
+    }
+
+    /**
+     * When the current daily log exceeds [MAX_FILE_BYTES], rename it to
+     * `wekit-<date>.<seq>.log` (next free seq) and prune siblings above
+     * [MAX_ROTATED_FILES] so a runaway day cannot eat the disk or the viewer.
+     */
+    private fun rotateOversized(logDate: LocalDate) {
+        val f = currentLogFile ?: return
+        runCatching {
+            var seq = 1
+            val dir = f.parentFile
+            while (File(dir, "wekit-${dateFmt.format(logDate)}.$seq.log").exists()) seq++
+            val target = File(dir, "wekit-${dateFmt.format(logDate)}.$seq.log")
+            if (f.renameTo(target)) {
+                // prune oldest siblings of the same day past the cap
+                val sameDay = dir.listFiles { _, name ->
+                    name.startsWith("wekit-${dateFmt.format(logDate)}.")
+                } ?: return@runCatching
+                sameDay.sortedByDescending { it.lastModified() }
+                    .drop(MAX_ROTATED_FILES)
+                    .forEach { it.delete() }
+            }
+        }
     }
 
     private fun deleteOldLogs(logsDir: java.nio.file.Path) {
         runCatching {
             val thresholdDate = LocalDate.now().minusDays(3)
-            val logFileRegex = Regex("""wekit-(\d{4}-\d{2}-\d{2})\.log""")
+            // Match both the base daily file and rotated siblings: wekit-YYYY-MM-DD.log
+            // and wekit-YYYY-MM-DD.<seq>.log
+            val logFileRegex = Regex("""wekit-(\d{4}-\d{2}-\d{2})(\.\d+)?\.log""")
 
             logsDir.toFile().listFiles()?.forEach { file ->
                 val match = logFileRegex.matchEntire(file.name)
@@ -240,14 +294,15 @@ object WeLogger {
         get() = runCatching { (KnownPaths.moduleData / "logs").createDirsSafe() }.getOrNull()
 
     /**
-     * All run-log files (`wekit-yyyy-MM-dd.log`), newest first. Flushes the active writer first so
-     * the current day's file reflects the latest entries before the UI reads it.
+     * All run-log files (`wekit-yyyy-MM-dd.log` and rotated `wekit-yyyy-MM-dd.<seq>.log`
+     * siblings), newest first. Flushes the active writer first so the current day's file
+     * reflects the latest entries before the UI reads it.
      */
     val allLogFiles: List<java.nio.file.Path>
         get() {
             flush()
             val dir = logsDir ?: return emptyList()
-            val regex = Regex("""wekit-\d{4}-\d{2}-\d{2}\.log""")
+            val regex = Regex("""wekit-\d{4}-\d{2}-\d{2}(\.\d+)?\.log""")
             return runCatching {
                 dir.toFile().listFiles()
                     ?.filter { it.isFile && regex.matches(it.name) }

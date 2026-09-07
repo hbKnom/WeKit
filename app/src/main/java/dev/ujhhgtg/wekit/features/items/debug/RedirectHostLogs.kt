@@ -35,6 +35,39 @@ object RedirectHostLogs : ClickableFeature() {
     private const val TAG = "RedirectHostLogs"
     private const val KEY_PREFIX = "redirect_"
 
+    /**
+     * Safety gate against a host-log storm. WeChat can emit tens of thousands of
+     * xlog lines per minute (SignalAnrTracer, ContactStorage, remote-scene jobs…);
+     * when host-log redirection is enabled, blindly forwarding every one blows up
+     * the WeKit log file in minutes, spools CPU/IO, and can crash the app. Forward
+     * at most [MAX_PER_TAG_PER_SEC] lines per tag per second — the storm is dropped,
+     * the useful signal still reaches the log.
+     */
+    private const val MAX_PER_TAG_PER_SEC = 30
+
+    private data class Bucket(val windowStartMillis: Long, val count: Int)
+
+    private val throttles = object : java.util.LinkedHashMap<String, Bucket>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bucket>): Boolean = size > 128
+    }
+
+    /** Returns true when this (tag, now) may be forwarded, and records the hit. */
+    private fun shouldForward(tag: String, nowMillis: Long): Boolean {
+        val window = 1000L
+        return synchronized(throttles) {
+            val existing = throttles[tag]
+            if (existing == null || nowMillis - existing.windowStartMillis >= window) {
+                throttles[tag] = Bucket(nowMillis, 1)
+                true
+            } else if (existing.count < MAX_PER_TAG_PER_SEC) {
+                throttles[tag] = existing.copy(count = existing.count + 1)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
     override fun onEnable() {
         Log::class.reflekt().apply {
             if (getBoolOrFalse("${KEY_PREFIX}v"))
@@ -43,8 +76,9 @@ object RedirectHostLogs : ClickableFeature() {
                     parameterCount = 3
                     modifiers(Modifiers.STATIC)
                 }.hookBefore {
+                    val tag = args[0] as? String ?: return@hookBefore
+                    if (!shouldForward(tag, System.currentTimeMillis())) return@hookBefore
                     runCatching {
-                        val tag = args[0] as String
                         var formatString = args[1] as String
                         formatString = formatString.format(*(args[2] as Array<*>))
                         WeLogger.v(TAG, "[V] [$tag] $formatString")
@@ -57,8 +91,9 @@ object RedirectHostLogs : ClickableFeature() {
                     parameterCount = 3
                     modifiers(Modifiers.STATIC)
                 }.hookBefore {
+                    val tag = args[0] as? String ?: return@hookBefore
+                    if (!shouldForward(tag, System.currentTimeMillis())) return@hookBefore
                     runCatching {
-                        val tag = args[0] as String
                         var formatString = args[1] as String
                         formatString = formatString.format(*(args[2] as Array<*>))
                         WeLogger.d(TAG, "[D] [$tag] $formatString")
@@ -71,8 +106,9 @@ object RedirectHostLogs : ClickableFeature() {
                     parameterCount = 3
                     modifiers(Modifiers.STATIC)
                 }.hookBefore {
+                    val tag = args[0] as? String ?: return@hookBefore
+                    if (!shouldForward(tag, System.currentTimeMillis())) return@hookBefore
                     runCatching {
-                        val tag = args[0] as String
                         var formatString = args[1] as String
                         formatString = formatString.format(*(args[2] as Array<*>))
                         WeLogger.i(TAG, "[I] [$tag] $formatString")
@@ -85,8 +121,9 @@ object RedirectHostLogs : ClickableFeature() {
                     parameterCount = 3
                     modifiers(Modifiers.STATIC)
                 }.hookBefore {
+                    val tag = args[0] as? String ?: return@hookBefore
+                    if (!shouldForward(tag, System.currentTimeMillis())) return@hookBefore
                     runCatching {
-                        val tag = args[0] as String
                         var formatString = args[1] as String
                         formatString = formatString.format(*(args[2] as Array<*>))
                         WeLogger.w(TAG, "[W] [$tag] $formatString")
@@ -99,8 +136,9 @@ object RedirectHostLogs : ClickableFeature() {
                     parameterCount = 3
                     modifiers(Modifiers.STATIC)
                 }.hookBefore {
+                    val tag = args[0] as? String ?: return@hookBefore
+                    if (!shouldForward(tag, System.currentTimeMillis())) return@hookBefore
                     runCatching {
-                        val tag = args[0] as String
                         var formatString = args[1] as String
                         formatString = formatString.format(*(args[2] as Array<*>))
                         WeLogger.e(TAG, "[E] [$tag] $formatString")
