@@ -20,16 +20,16 @@ object MonetModulePackager {
         require(versionCode >= 0)
         require(sdkInt >= 31)
         output.parentFile?.mkdirs()
-        // Multi-user (e.g. cloned WeChat on user 999) scoped-storage quirk: when the
-        // target zip already exists, opening a fresh ZipOutputStream over it can fail
-        // with FileNotFoundException: EEXIST because the media/FUSE layer refuses to
-        // overwrite an existing file owned by the storage holder. Always delete first
-        // so generation is idempotent across the primary and cloned WeChat apps.
-        if (output.exists() && !output.delete()) {
-            // Tolerate delete failure (e.g. transient lock); the overwrite below will
-            // surface the real error if it is genuinely unwritable.
-            output.deleteOnExit()
-        }
+        // Scoped-storage / multi-user (e.g. cloned WeChat on user 999) quirk:
+        // opening a fresh ZipOutputStream directly over an existing target can fail
+        // with FileNotFoundException: EEXIST, because the media/FUSE layer refuses to
+        // overwrite an inode owned by the storage holder (unlink + reopen is equally
+        // unreliable). The robust pattern is to write to a sibling temp file in the
+        // SAME directory, then atomically rename() over the target — rename replaces
+        // the destination inode without touching its open/flags, so it works even
+        // where delete+create does not.
+        val tmp = File(output.parentFile, ".${output.name}.tmp-${Thread.currentThread().id}-${System.nanoTime()}")
+        var published = false
         val selected = overlays.filter(Overlay::installInitially)
         val base = selected.filterNot { it.packageName == SOLID_TAB_PACKAGE || it.packageName == BLUR_TAB_PACKAGE }
         val selectedTab = selected.single { it.packageName == SOLID_TAB_PACKAGE || it.packageName == BLUR_TAB_PACKAGE }
@@ -38,7 +38,7 @@ object MonetModulePackager {
         val initialFiles = selected.joinToString(" ") { it.file.name }
         val tabStyle = if (selectedTab.packageName == BLUR_TAB_PACKAGE) "blur" else "solid"
         val scope = if (options.userScope == MonetUserScope.ALL) "all" else "current"
-        ZipOutputStream(output.outputStream().buffered()).use { zip ->
+        ZipOutputStream(tmp.outputStream().buffered()).use { zip ->
             fun add(name: String, text: String) = add(zip, name, text.toByteArray())
             add(
                 "module.prop",
@@ -62,6 +62,25 @@ object MonetModulePackager {
             overlays.forEach { overlay ->
                 add(zip, "files/${overlay.file.name}", overlay.file.readBytes())
             }
+        }
+        // Publish atomically. rename() replaces the destination without requiring
+        // delete+create permissions on it, which is exactly what scoped storage
+        // refuses for the primary/clone storage-holder on a second run.
+        if (tmp.renameTo(output)) {
+            published = true
+        } else {
+            // rename rejected (some FUSE/MediaProvider layers do not permit it);
+            // fall back to a byte-copy which is also idempotent for our own file.
+            published = runCatching {
+                tmp.copyTo(output, overwrite = true)
+                true
+            }.getOrDefault(false)
+            tmp.delete()
+        }
+        if (!published) {
+            // Nothing was produced — surface a clear error instead of a silent,
+            // confusing empty success.
+            throw java.io.IOException("failed to publish module zip at ${output.absolutePath}")
         }
     }
 

@@ -15,6 +15,7 @@ import android.widget.TextView
 import androidx.compose.ui.graphics.toArgb
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.toClass
+import dev.ujhhgtg.wekit.BuildConfig
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.core.ApiFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
@@ -64,6 +65,10 @@ object MonetEngine : ApiFeature() {
             WeLogger.i(TAG, "apply-to-wechat off, not recoloring")
             return
         }
+        // Diagnostic breadcrumb so per-user logs can be matched to the exact build
+        // that produced them (cloned WeChat sometimes runs a stale payload until
+        // the device is fully rebooted).
+        WeLogger.i(TAG, "monet onEnable build=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) uid-owner=${Process.myUid() / 100000}")
         if (MonetEngineModuleGenerator.isEnabled && isPrimaryUserProcess()) {
             // Primary user (id 0) is where the generated RRO module is reliably
             // wired up, so let the static overlay do the recoloring there. On a
