@@ -20,6 +20,16 @@ object MonetModulePackager {
         require(versionCode >= 0)
         require(sdkInt >= 31)
         output.parentFile?.mkdirs()
+        // Multi-user (e.g. cloned WeChat on user 999) scoped-storage quirk: when the
+        // target zip already exists, opening a fresh ZipOutputStream over it can fail
+        // with FileNotFoundException: EEXIST because the media/FUSE layer refuses to
+        // overwrite an existing file owned by the storage holder. Always delete first
+        // so generation is idempotent across the primary and cloned WeChat apps.
+        if (output.exists() && !output.delete()) {
+            // Tolerate delete failure (e.g. transient lock); the overwrite below will
+            // surface the real error if it is genuinely unwritable.
+            output.deleteOnExit()
+        }
         val selected = overlays.filter(Overlay::installInitially)
         val base = selected.filterNot { it.packageName == SOLID_TAB_PACKAGE || it.packageName == BLUR_TAB_PACKAGE }
         val selectedTab = selected.single { it.packageName == SOLID_TAB_PACKAGE || it.packageName == BLUR_TAB_PACKAGE }
@@ -68,16 +78,33 @@ restore_overlays() {
   . "$config"
   if [ "$USER_SCOPE" = all ]; then
     users="$(cmd user list 2>/dev/null | sed -n 's/.*UserInfo{\([0-9][0-9]*\):.*/\1/p')"
+    # A cloned/secondary WeChat (user 999) is normally present; make sure at least
+    # the generating user is included even if `cmd user list` does not surface the
+    # clone profile on some OEM ROMs.
+    case " $users " in *" $CURRENT_USER "*) ;; *) users="$users $CURRENT_USER" ;; esac
   else
     users="$CURRENT_USER"
   fi
   result=0
   for user in $users; do
+    # `cmd overlay enable --user` will fail if the overlay package is not yet
+    # registered for that user, or if OMS still needs the previous state settled.
+    # Don't gate on `pm path` (which is unreliable across users) — attempt the
+    # enable directly, retrying a few times, and surface failures for diagnostics.
     for package in $OVERLAY_PACKAGES; do
-      pm path "$package" >/dev/null 2>&1 || continue
-      cmd overlay enable --user "$user" "$package" >/dev/null 2>&1 || result=1
+      enabled=0
+      attempt=0
+      while [ $enabled -ne 1 ] && [ $attempt -lt 5 ]; do
+        if cmd overlay enable --user "$user" "$package" >/dev/null 2>&1; then
+          enabled=1
+        else
+          attempt=$((attempt + 1))
+          sleep 1
+        fi
+      done
+      [ $enabled -eq 1 ] || result=1
     done
-    am force-stop --user "$user" com.tencent.mm >/dev/null 2>&1 || result=1
+    am force-stop --user "$user" com.tencent.mm >/dev/null 2>&1 || true
   done
   return $result
 }

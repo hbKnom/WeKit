@@ -9,6 +9,16 @@ object MonetModuleGenerator {
             listener.onEvent(MonetGenerationEvent.Progress(stage, detail, completed, total))
         }
 
+        // Scrub stale intermediaries from a previous run (especially after a failed
+        // or interrupted generation on the cloned WeChat / multi-user profile, where
+        // rewriting an existing file can itself hit EEXIST). Clean first so overlay
+        // build/sign always starts from a blank slate — keeps re-generation idempotent
+        // and avoids unbounded junk piling up in the module cache.
+        runCatching {
+            request.workDir.mkdirs()
+            request.workDir.listFiles()?.forEach { it.delete() }
+        }
+
         progress(MonetGenerationStage.LOADING_APKS, "读取微信资源 APK", 0, request.sourceApkPaths.size)
         val graph = MonetApkResourceGraphLoader.load(
             request.sourceApkPaths.map(::File),

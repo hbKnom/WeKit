@@ -7,6 +7,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
+import android.os.Process
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -63,8 +64,13 @@ object MonetEngine : ApiFeature() {
             WeLogger.i(TAG, "apply-to-wechat off, not recoloring")
             return
         }
-        if (MonetEngineModuleGenerator.isEnabled) {
-            WeLogger.i(TAG, "module generator enabled, leaving WeChat recoloring to the RRO module")
+        if (MonetEngineModuleGenerator.isEnabled && isPrimaryUserProcess()) {
+            // Primary user (id 0) is where the generated RRO module is reliably
+            // wired up, so let the static overlay do the recoloring there. On a
+            // cloned/secondary WeChat (e.g. user 999) the RRO overlay may not be
+            // registered for that user on every ROM — fall through to the runtime
+            // hooks below as a bulletproof fallback so cloned WeChat still recolors.
+            WeLogger.i(TAG, "module generator enabled on primary user, leaving recoloring to the RRO module")
             return
         }
 
@@ -130,6 +136,14 @@ object MonetEngine : ApiFeature() {
             }
         }
     }
+
+    /**
+     * True when this WeChat process runs under the *primary* (owner) Android user.
+     * A cloned/secondary WeChat runs in another user (e.g. 999) where the generated
+     * RRO module may not be registered by every ROM's overlay manager.
+     */
+    private fun isPrimaryUserProcess(): Boolean =
+        Process.myUid() / 100000 == 0
 
     /** Whether [this] drawable's fill is WeChat's brand green (checks common state-list wrappers). */
     private fun Drawable.hasBrandGreen(): Boolean = when (this) {
