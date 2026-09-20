@@ -126,8 +126,8 @@ object MonetStructureMatcher {
         if (resourceTotal > 0) onProgress(0, resourceTotal, "扫描资源特征与引用关系")
         requiredByType.forEach { (type, required) ->
             nodesByType.getValue(type).forEach { node ->
-                calculateEvidence(node, graph).forEach { token ->
-                    if (token in required) idsByToken.getOrPut(token, ::linkedSetOf).add(node.id)
+                calculateEvidence(node, graph, required).forEach { token ->
+                    idsByToken.getOrPut(token, ::linkedSetOf).add(node.id)
                 }
                 scanned++
                 // Resource scans can be large; avoid flooding the main-thread event queue.
@@ -140,19 +140,22 @@ object MonetStructureMatcher {
         val noticeCardColors = graph.noticeCardColors()
         val initialCandidates = MONET_RULES.associateWith { rule ->
             onProgress(matched, MONET_RULES.size, "匹配角色候选：${rule.id}")
+            // Reuse the type-indexed node list built for the evidence scan instead of rebuilding it
+            // for every rule (hundreds of rules × tens of thousands of resources).
+            val nodesOfType = nodesByType.getValue(rule.type)
             val baseline = COLOR_BASELINES[rule.id]
             val colorCandidates = baseline?.let { expected ->
-                graph.nodes(rule.type).filterTo(linkedSetOf()) { node ->
+                nodesOfType.filterTo(linkedSetOf()) { node ->
                     node.values.associate { it.qualifiers to ((it.value as? MonetResourceValue.Literal)?.data ?: Long.MIN_VALUE) } == expected
                 }.mapTo(linkedSetOf(), MonetResourceNode::id)
             }
             val selectorCandidates = COLOR_SELECTOR_BASELINES[rule.id]?.let { expected ->
-                graph.nodes(rule.type).filterTo(linkedSetOf()) { node ->
+                nodesOfType.filterTo(linkedSetOf()) { node ->
                     graph.xmlTrees(node.id).any { it.containsLiteralColor(expected) }
                 }.mapTo(linkedSetOf(), MonetResourceNode::id)
             }
             val structural = if (rule.requiredEvidence.isEmpty()) {
-                graph.nodes(rule.type).mapTo(linkedSetOf(), MonetResourceNode::id)
+                nodesOfType.mapTo(linkedSetOf(), MonetResourceNode::id)
             } else {
                 rule.requiredEvidence.map { idsByToken[it].orEmpty() }
                     .reduce { result, ids -> result.intersect(ids) }
@@ -185,7 +188,7 @@ object MonetStructureMatcher {
             } else if (static != null && (structural.isEmpty() || static.any { it in structural })) {
                 static.intersect(structural).takeIf { it.isNotEmpty() } ?: static
             } else if (rule.requiredEvidence.isEmpty()) {
-                selectorCandidates?.takeIf { it.isNotEmpty() } ?: colorCandidates?.takeIf { it.isNotEmpty() } ?: graph.nodes(rule.type).mapTo(linkedSetOf(), MonetResourceNode::id)
+                selectorCandidates?.takeIf { it.isNotEmpty() } ?: colorCandidates?.takeIf { it.isNotEmpty() } ?: nodesOfType.mapTo(linkedSetOf(), MonetResourceNode::id)
             } else {
                 selectorCandidates?.takeIf { it.isNotEmpty() }?.let { structural.intersect(it).takeIf { it.isNotEmpty() } ?: it }
                     ?: colorCandidates?.takeIf { it.isNotEmpty() }?.let { colors ->
@@ -381,75 +384,119 @@ object MonetStructureMatcher {
         }
     }
 
-    private class EvidenceMemo {
-        val local = HashMap<Int, Set<String>>()
-        val usage = HashMap<Int, Set<String>>()
-        val combined = HashMap<Int, Set<String>>()
+    /**
+     * Evidence token sink that drops everything the caller will not look up.
+     *
+     * Evidence strings are extremely verbose (a single layout contributes an entry per element and
+     * per attribute, plus the `child:`/`sibling:`/`context:` neighbourhood expansions), so it is
+     * kept out of memory entirely: materialising them per resource exhausted the host heap
+     * (`OutOfMemoryError` at the 512 MB process limit) while only a few hundred tokens are ever
+     * queried. `null` keeps every token and is used by [evidence] for one-off lookups.
+     */
+    private class FilteredEvidenceSink(private val accepted: Set<String>?) : AbstractMutableSet<String>() {
+        private val kept = linkedSetOf<String>()
+
+        override val size: Int get() = kept.size
+
+        override fun add(element: String): Boolean =
+            (accepted == null || element in accepted) && kept.add(element)
+
+        override fun iterator(): MutableIterator<String> = kept.iterator()
+
+        override fun remove(element: String): Boolean = kept.remove(element)
+
+        override fun clear() = kept.clear()
     }
 
-    private val evidenceMemos = java.util.Collections.synchronizedMap(
-        java.util.WeakHashMap<MonetResourceGraph, EvidenceMemo>(),
-    )
+    /** Prefixes every token with [prefix] before handing it to [delegate], without allocating it. */
+    private class PrefixedEvidenceSink(
+        private val prefix: String,
+        private val delegate: MutableSet<String>,
+    ) : AbstractMutableSet<String>() {
+        override val size: Int get() = delegate.size
 
-    private fun memoFor(graph: MonetResourceGraph): EvidenceMemo = synchronized(evidenceMemos) {
-        evidenceMemos.getOrPut(graph) { EvidenceMemo() }
+        override fun add(element: String): Boolean = delegate.add(prefix + element)
+
+        override fun iterator(): MutableIterator<String> = delegate.iterator()
+
+        override fun remove(element: String): Boolean = delegate.remove(element)
+
+        override fun clear() = delegate.clear()
     }
 
-    fun evidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = calculateEvidence(node, graph)
+    fun evidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
+        FilteredEvidenceSink(null).also { computeEvidence(node, graph, it) }
 
-    private fun calculateEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
-        memoFor(graph).combined.getOrPut(node.id) { computeEvidence(node, graph) }
+    /** Evidence of [node] restricted to [accepted]; nothing else is ever allocated. */
+    private fun calculateEvidence(
+        node: MonetResourceNode,
+        graph: MonetResourceGraph,
+        accepted: Set<String>,
+    ): Set<String> = FilteredEvidenceSink(accepted).also { computeEvidence(node, graph, it) }
 
-    private fun computeEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
-        addAll(localEvidence(node, graph))
-        addAll(usageEvidence(node, graph))
+    private fun computeEvidence(
+        node: MonetResourceNode,
+        graph: MonetResourceGraph,
+        sink: MutableSet<String>,
+    ) {
+        computeLocalEvidence(node, graph, sink)
+        computeUsageEvidence(node, graph, sink)
         graph.outgoing(node.id).mapNotNull(graph::node).forEach { child ->
-            localEvidence(child, graph).forEach { add("child:${child.key.type}:$it") }
+            computeLocalEvidence(child, graph, PrefixedEvidenceSink("child:${child.key.type}:", sink))
             graph.outgoing(child.id).mapNotNull(graph::node).forEach { grandchild ->
-                localEvidence(grandchild, graph).forEach {
-                    add("child:${child.key.type}:${grandchild.key.type}:$it")
-                }
+                computeLocalEvidence(
+                    grandchild,
+                    graph,
+                    PrefixedEvidenceSink("child:${child.key.type}:${grandchild.key.type}:", sink),
+                )
             }
         }
         (-2..2).filter { it != 0 }.forEach { offset ->
             graph.node(node.id + offset)?.takeIf { it.key.type == node.key.type }?.let { neighbor ->
-                localEvidence(neighbor, graph).forEach { add("adjacent:$offset:$it") }
+                computeLocalEvidence(neighbor, graph, PrefixedEvidenceSink("adjacent:$offset:", sink))
             }
         }
         graph.incoming(node.id).mapNotNull(graph::node).forEach { owner ->
-            localEvidence(owner, graph).forEach { add("context:${owner.key.type}:$it") }
-            usageEvidence(owner, graph).forEach { add("context:${owner.key.type}:$it") }
+            val context = PrefixedEvidenceSink("context:${owner.key.type}:", sink)
+            computeLocalEvidence(owner, graph, context)
+            computeUsageEvidence(owner, graph, context)
             graph.outgoing(owner.id).filter { it != node.id }.mapNotNull(graph::node).forEach { sibling ->
-                localEvidence(sibling, graph).forEach { add("sibling:${owner.key.type}:${sibling.key.type}:$it") }
+                computeLocalEvidence(
+                    sibling,
+                    graph,
+                    PrefixedEvidenceSink("sibling:${owner.key.type}:${sibling.key.type}:", sink),
+                )
             }
         }
     }
 
-    private fun localEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
-        memoFor(graph).local.getOrPut(node.id) { computeLocalEvidence(node, graph) }
-
-    private fun computeLocalEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
+    private fun computeLocalEvidence(
+        node: MonetResourceNode,
+        graph: MonetResourceGraph,
+        sink: MutableSet<String>,
+    ) {
         node.values.forEach { configured ->
-            add("config:${configured.qualifiers}:${configured.value.evidence(graph)}")
+            sink += "config:${configured.qualifiers}:${configured.value.evidence(graph)}"
         }
         val trees = graph.xmlTrees(node.id)
-        trees.forEach { it.collectEvidence("", graph, this) }
-        trees.forEach { it.collectSimpleEvidence("", graph, this) }
-        graph.outgoing(node.id).mapNotNull(graph::node).forEach { add("outgoing:${it.key.type}") }
+        trees.forEach { it.collectEvidence("", graph, sink) }
+        trees.forEach { it.collectSimpleEvidence("", graph, sink) }
+        graph.outgoing(node.id).mapNotNull(graph::node).forEach { sink += "outgoing:${it.key.type}" }
     }
 
-    private fun usageEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
-        memoFor(graph).usage.getOrPut(node.id) { computeUsageEvidence(node, graph) }
-
-    private fun computeUsageEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
+    private fun computeUsageEvidence(
+        node: MonetResourceNode,
+        graph: MonetResourceGraph,
+        sink: MutableSet<String>,
+    ) {
         graph.incoming(node.id).mapNotNull(graph::node).forEach { owner ->
-            add("incoming:${owner.key.type}")
+            sink += "incoming:${owner.key.type}"
             owner.values.forEach { configured ->
-                configured.value.collectUsage(node.id, "owner:${owner.key.type}", graph, this)
+                configured.value.collectUsage(node.id, "owner:${owner.key.type}", graph, sink)
             }
             graph.xmlTrees(owner.id).forEach { tree ->
-                tree.collectUsage(node.id, "", owner.key.type, graph, this)
-                tree.collectSimpleUsage(node.id, "", owner.key.type, this)
+                tree.collectUsage(node.id, "", owner.key.type, graph, sink)
+                tree.collectSimpleUsage(node.id, "", owner.key.type, sink)
             }
         }
     }
