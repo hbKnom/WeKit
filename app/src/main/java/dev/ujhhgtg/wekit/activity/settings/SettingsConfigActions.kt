@@ -10,6 +10,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipEntry
 import java.security.MessageDigest
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.File
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
 import dev.ujhhgtg.wekit.preferences.SqlitePrefsImpl

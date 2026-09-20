@@ -24,6 +24,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
+import kotlin.io.path.ExperimentalPathApi
 
 /**
  * Dex 缓存管理器
@@ -75,6 +76,7 @@ object DexCacheManager {
     }
 
     /** Keeps the active version plus the most recently modified others up to the retention cap. */
+    @OptIn(ExperimentalPathApi::class)
     private fun pruneOldVersions(keep: String) {
         if (!cacheRoot.exists()) return
         val directories = cacheRoot.listDirectoryEntries()
@@ -188,6 +190,7 @@ object DexCacheManager {
     }
 
     /** Explicit user action ("reset dex cache"): wipes every host version's cache. */
+    @OptIn(ExperimentalPathApi::class)
     fun clearAllCache() {
         if (cacheRoot.exists()) {
             cacheRoot.listDirectoryEntries().forEach { path ->
