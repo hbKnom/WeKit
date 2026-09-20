@@ -378,25 +378,23 @@ const LZMA_PATHS: &[&std::ffi::CStr] = &[
     c"/system/lib/liblzma.so.5",
 ];
 
-fn lzma_probe_callback(
+unsafe extern "C" fn lzma_probe_callback(
     info: *mut libc::dl_phdr_info,
     _size: usize,
     data: *mut c_void,
 ) -> i32 {
-    unsafe {
-        if info.is_null() {
-            return 0;
-        }
-        let name = (*info).dlpi_name;
-        if name.is_null() {
-            return 0;
-        }
-        let cstr = std::ffi::CStr::from_ptr(name);
-        if let Ok(path) = cstr.to_str() {
-            if path.contains("liblzma") {
-                let out = &mut *(data as *mut Vec<String>);
-                out.push(path.to_owned());
-            }
+    if info.is_null() {
+        return 0;
+    }
+    let name = (*info).dlpi_name;
+    if name.is_null() {
+        return 0;
+    }
+    let cstr = std::ffi::CStr::from_ptr(name);
+    if let Ok(path) = cstr.to_str() {
+        if path.contains("liblzma") {
+            let out = &mut *(data as *mut Vec<String>);
+            out.push(path.to_owned());
         }
     }
     0
