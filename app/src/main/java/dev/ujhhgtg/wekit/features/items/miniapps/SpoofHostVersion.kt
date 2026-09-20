@@ -23,11 +23,17 @@ object SpoofHostVersion : SwitchFeature(), IResolveDex {
         // Upstream 09-12: also stop the official "please update WeChat" page from hijacking the
         // mini-program container. WeChat funnels it through its private URL opener; blanking the
         // url makes it a no-op while leaving every other private open untouched.
-        methodPrivateOpenUrl.hookBefore {
-            val json = args.getOrNull(1) as? JSONObject ?: return@hookBefore
-            val url = json.optString("url")
-            if (UPDATE_URLS.any { url.matchesUpdateUrl(it) }) {
-                json.put("url", "")
+        //
+        // Optional delegate: on a host build whose private opener cannot be located the feature
+        // keeps working with only the launch-container hook above instead of failing resolution
+        // for the whole feature.
+        if (!methodPrivateOpenUrl.isPlaceholder) {
+            methodPrivateOpenUrl.hookBefore {
+                val json = args.getOrNull(1) as? JSONObject ?: return@hookBefore
+                val url = json.optString("url")
+                if (UPDATE_URLS.any { url.matchesUpdateUrl(it) }) {
+                    json.put("url", "")
+                }
             }
         }
     }
@@ -40,9 +46,19 @@ object SpoofHostVersion : SwitchFeature(), IResolveDex {
         "https://szsupport.weixin.qq.com/update",
     )
 
-    private val methodPrivateOpenUrl by dexMethod {
+    /**
+     * The private URL opener of the mini-program container.
+     *
+     * Only the trailing `(JSONObject, int)` pair is pinned: the leading parameter is the JsApi
+     * context whose obfuscated class name changes between host builds (it happens to be
+     * `com.tencent.mm.plugin.appbrand.jsapi.l` on 8.0.65 ~ 8.0.78, but that is not part of any
+     * contract), so requiring it made resolution fail. The descriptor shape
+     * `(jsapi context, JSONObject, int) -> void` plus the three strings is stable across every
+     * host version we have descriptors for.
+     */
+    private val methodPrivateOpenUrl by dexMethod(allowFailure = true) {
         matcher {
-            paramTypes("org.json.JSONObject", "int")
+            paramTypes(null, "org.json.JSONObject", "int")
             returnType = "void"
             usingEqStrings("private_openUrl", "rawUrl", "geta8key_open_webview_appid")
         }
