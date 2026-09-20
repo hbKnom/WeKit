@@ -53,6 +53,7 @@ import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.IconButton
 import dev.ujhhgtg.wekit.ui.content.TextButton
+import dev.ujhhgtg.wekit.ui.utils.QrCodeScannerIcon
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.features.api.ui.WeHomeScreenPopupMenuApi
 import dev.ujhhgtg.wekit.utils.HostInfo
@@ -111,7 +112,7 @@ object QrCodeRecord : ClickableFeature(), IResolveDex, WeHomeScreenPopupMenuApi.
             WeHomeScreenPopupMenuApi.MenuItem(
                 HOME_MENU_ITEM_ID,
                 localizedSystemString(R.string.qr_code_record_home_menu_title),
-                MaterialIcons.QrCodeScanner,
+                QrCodeScannerIcon,
             ) {
                 LauncherUI.getInstance()?.let { activity ->
                     activity.runOnUiThread { showRecordsDialog(activity) }
