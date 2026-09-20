@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.tencent.mm.plugin.profile.ui.ContactInfoUI
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
@@ -47,6 +48,15 @@ object WeContactHeaderApi : ApiFeature(), IResolveDex {
     fun removeProvider(provider: Provider) {
         providers.remove(provider)
     }
+
+    /**
+     * True when `activity` is one of the screens whose header renders the provider rows.
+     *
+     * Providers that also publish the same value through [WeContactPrefsScreenApi] use this to
+     * avoid printing it twice on a single screen: the header is the canonical spot there, while
+     * screens that render no header (the chatroom detail list) keep their list row.
+     */
+    fun showsHeaderOn(activity: Activity): Boolean = activity is ContactInfoUI
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onEnable() {

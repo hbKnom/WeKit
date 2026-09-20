@@ -16,6 +16,12 @@ import dev.ujhhgtg.wekit.utils.android.showToast
  *
  * Upstream 09-12 widened this from "profile header only" to also inject a tappable row into the
  * contact / chatroom detail list, with tap-to-copy.
+ *
+ * That widening shows the same value twice on the friend profile screen: once in the header row
+ * injected by [WeContactHeaderApi] and once as a list row. The list row is therefore skipped on
+ * [com.tencent.mm.plugin.profile.ui.ContactInfoUI] (the header already covers it there; long-pressing the header row still copies
+ * through the host's own popup) and kept everywhere the host renders no header, i.e. the chatroom
+ * detail screen.
  */
 object ShowWxIdInContactDetails : SwitchFeature(),
     WeContactHeaderApi.Provider,
@@ -36,6 +42,9 @@ object ShowWxIdInContactDetails : SwitchFeature(),
     )
 
     override fun getContactInfoItem(activity: Activity): List<WeContactPrefsScreenApi.PreferenceItem> {
+        // The friend profile screen already shows this value in the header row injected by
+        // [WeContactHeaderApi]; listing it underneath again duplicates it on one screen.
+        if (WeContactHeaderApi.showsHeaderOn(activity)) return emptyList()
         val wxId = wxIdText(activity) ?: return emptyList()
         return listOf(
             WeContactPrefsScreenApi.PreferenceItem(

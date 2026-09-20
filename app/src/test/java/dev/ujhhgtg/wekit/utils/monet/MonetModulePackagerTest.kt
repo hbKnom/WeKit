@@ -33,11 +33,19 @@ class MonetModulePackagerTest {
                 setOf(
                     "module.prop", "customize.sh", "config.conf", "common.sh", "action.sh", "service.sh",
                     "boot-completed.sh", "META-INF/com/google/android/update-binary",
-                    "META-INF/com/google/android/updater-script", "files/Base.apk",
-                    "files/MonetWeChatSolidTab.apk", "files/MonetWeChatBlurTab.apk",
+                    "META-INF/com/google/android/updater-script", "files/Base.apk.bin",
+                    "files/MonetWeChatSolidTab.apk.bin", "files/MonetWeChatBlurTab.apk.bin",
                 ),
                 zip.entries().asSequence().map { it.name }.toSet(),
             )
+            // The staged payloads are module payloads, never packages to install by hand: Android
+            // 11+ rejects a non-preloaded overlay that is signed with a different certificate than
+            // its target (and WeChat declares no <overlay android:targetName>), so opening one of
+            // them from the zip can only ever fail. They must not carry an .apk name.
+            val stagedNames = zip.entries().asSequence().map { it.name }.toList()
+            assertFalse(stagedNames.any { it.endsWith(".apk") }, "payloads must be staged as .apk.bin: $stagedNames")
+            val common = zip.getInputStream(zip.getEntry("common.sh")).bufferedReader().readText()
+            assertTrue("files/\$name.apk.bin" in common)
             val moduleProp = zip.getInputStream(zip.getEntry("module.prop")).bufferedReader().readText()
             assertTrue("name=微信莫奈引擎 (WeKit)" in moduleProp)
             assertTrue("version=8.0.77 (3100)" in moduleProp)
@@ -49,6 +57,8 @@ class MonetModulePackagerTest {
             assertTrue("export MODULE_HOT_INSTALL_REQUEST=true" in customize)
             assertTrue("system/priv-app/\$name" in customize)
             assertTrue("system/product/overlay" in customize)
+            assertTrue("files/\$name.bin" in customize)
+            assertTrue("name=\"\${name%.apk.bin}\"" in customize)
             val scripts = listOf("common.sh", "action.sh", "service.sh", "boot-completed.sh").joinToString { name ->
                 zip.getInputStream(zip.getEntry(name)).bufferedReader().readText()
             }

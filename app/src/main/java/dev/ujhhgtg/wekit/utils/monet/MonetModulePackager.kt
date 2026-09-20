@@ -60,7 +60,7 @@ object MonetModulePackager {
             add("service.sh", $$"#!/system/bin/sh\nMODDIR=${0%/*}\nsh \"$MODDIR/boot-completed.sh\"\n")
             add("boot-completed.sh", BOOT_SCRIPT)
             overlays.forEach { overlay ->
-                add(zip, "files/${overlay.file.name}", overlay.file.readBytes())
+                add(zip, "files/${overlay.file.name}$PAYLOAD_SUFFIX", overlay.file.readBytes())
             }
         }
         // Publish atomically. rename() replaces the destination without requiring
@@ -151,7 +151,9 @@ select_tab_overlay() {
       ;;
     *) return 1 ;;
   esac
-  source="$MODDIR/files/$name.apk"
+  # Payloads are staged as "<name>.apk.bin" (see MonetModulePackager.PAYLOAD_SUFFIX): they are
+  # module payloads and must never be installed by hand.
+  source="$MODDIR/files/$name.apk.bin"
   [ -f "$source" ] || return 1
   if [ "$(getprop ro.build.version.sdk)" -ge 34 ]; then
     rm -rf "$MODDIR/system/priv-app/MonetWeChatSolidTab" "$MODDIR/system/priv-app/MonetWeChatBlurTab"
@@ -211,11 +213,13 @@ ui_print "温馨提示:"
 ui_print "- 若正在使用 KernelSU 或 APatch 及其衍生版, 请在「超级用户」中选择「微信」, 关闭「卸载模块」选项。"
 ui_print "- 无须禁用「默认卸载模块」。"
 ui_print "- 若仍不生效, 请尝试给予「微信」Root 权限。"
+ui_print "- 包内 files/*.apk.bin 为模块载荷, 请勿单独安装 (系统不允许跨签名安装 Overlay)。"
+ui_print "- 切换底栏样式: 在 KernelSU/APatch 中对本模块点「操作」按钮, 切换后重启系统。"
 
 install_static_overlay() {
   apk="$1"
   name="${apk##*/}"
-  name="${name%.apk}"
+  name="${name%.apk.bin}"
   if [ "$(getprop ro.build.version.sdk)" -ge 34 ]; then
     target="$MODPATH/system/priv-app/$name"
     mkdir -p "$target" || return 1
@@ -229,7 +233,7 @@ install_static_overlay() {
 
  . "$MODPATH/config.conf"
 for name in $INITIAL_OVERLAY_FILES; do
-  apk="$MODPATH/files/$name"
+  apk="$MODPATH/files/$name.bin"
   [ -f "$apk" ] || abort "! 缺少 Overlay APK。"
   install_static_overlay "$apk" || abort "! 安装 ${apk##*/} 失败。"
 done
@@ -293,4 +297,19 @@ restore_overlays
 
     private const val SOLID_TAB_PACKAGE = "monet.solidtab.com.tencent.mm"
     private const val BLUR_TAB_PACKAGE = "monet.blurtab.com.tencent.mm"
+
+    /**
+     * Suffix every staged overlay payload carries inside the module zip.
+     *
+     * RRO APKs are only installable while *preloaded*: Android 11+ rejects a non-preloaded overlay
+     * that is signed with a different certificate than its target and declares no
+     * `<overlay android:targetName>` (AOSP `InstallPackageHelper#assertOverlayIsValid`,
+     * `INTERNAL_ERROR_OVERLAY_SIGNATURE1`). WeChat is signed by Tencent and exposes no overlayable
+     * for these theme resources, so a payload APK opened from the zip always dies with
+     * "INSTALL_FAILED_INTERNAL_ERROR: Scanning Failed.: Overlay ... and target ... signed with
+     * different certificates". Staging them as `<name>.apk.bin` keeps file managers from offering
+     * that dead end — the root manager is the only supported way in. Keep this in sync with the
+     * `.bin` paths in [COMMON_SCRIPT] / [CUSTOMIZE_SCRIPT].
+     */
+    private const val PAYLOAD_SUFFIX = ".bin"
 }
