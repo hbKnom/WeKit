@@ -16,9 +16,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlin.io.path.deleteIfExists
-import kotlin.io.path.lastModifiedTime
 import kotlin.io.path.isDirectory
 import kotlin.io.path.deleteRecursively
+import kotlin.io.path.getLastModifiedTime
 import kotlin.io.path.div
 import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
@@ -81,7 +81,7 @@ object DexCacheManager {
         if (!cacheRoot.exists()) return
         val directories = cacheRoot.listDirectoryEntries()
             .filter { it.isDirectory() && it.fileName.toString() != keep }
-            .sortedByDescending { it.lastModifiedTime() }
+            .sortedByDescending { it.getLastModifiedTime().toMillis() }
         directories.drop(MAX_RETAINED_VERSIONS - 1).forEach { stale ->
             stale.deleteRecursively()
             WeLogger.i(TAG, "pruned stale dex cache for host version ${stale.fileName}")

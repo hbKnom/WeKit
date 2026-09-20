@@ -115,7 +115,9 @@ object QrCodeRecord : ClickableFeature(), IResolveDex, WeHomeScreenPopupMenuApi.
                 QrCodeScannerIcon,
             ) {
                 LauncherUI.getInstance()?.let { activity ->
-                    activity.runOnUiThread { showRecordsDialog(activity) }
+                    (activity as ComponentActivity).runOnUiThread {
+                        showRecordsDialog(activity as ComponentActivity)
+                    }
                 }
             },
         )

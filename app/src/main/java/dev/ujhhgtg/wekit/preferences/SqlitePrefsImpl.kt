@@ -234,7 +234,7 @@ class SqlitePrefsImpl(@Suppress("UNUSED_PARAMETER") name: String) : WePrefs() {
         return this
     }
 
-    override fun save() = commit()
+    override fun save(): Unit { commit() }
 
     override fun commit(): Boolean = true
 
