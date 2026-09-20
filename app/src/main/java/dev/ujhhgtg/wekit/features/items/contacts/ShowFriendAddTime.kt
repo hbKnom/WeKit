@@ -25,9 +25,9 @@ import java.util.Locale
  *
  * That widening shows the same value twice on the friend profile screen: once in the header row
  * injected by [WeContactHeaderApi] and once as a list row. The list row is therefore skipped on
- * [com.tencent.mm.plugin.profile.ui.ContactInfoUI] (the header already covers it there;
- * long-pressing the header row still copies through the host's own popup) and kept everywhere the
- * host renders no header, i.e. the chatroom detail screen.
+ * the friend profile (the header already covers it there; long-pressing the header row still
+ * copies through the host's own popup) and kept everywhere the host renders no header, i.e. the
+ * chatroom detail screen.
  */
 object ShowFriendAddTime : SwitchFeature(),
     WeContactHeaderApi.Provider,

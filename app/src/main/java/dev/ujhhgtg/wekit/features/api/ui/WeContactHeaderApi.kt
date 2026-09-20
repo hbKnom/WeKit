@@ -8,7 +8,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.tencent.mm.plugin.profile.ui.ContactInfoUI
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
@@ -31,6 +30,9 @@ object WeContactHeaderApi : ApiFeature(), IResolveDex {
 
     private val providers = CopyOnWriteArrayList<Provider>()
     private const val ROW_TAG = "wekit_contact_header_row"
+
+    /** Friend profile screen; the only screen that binds [bindHeader]'s host preference. */
+    private const val FRIEND_PROFILE_ACTIVITY = "com.tencent.mm.plugin.profile.ui.ContactInfoUI"
 
     private val bindHeader by dexMethod {
         matcher {
@@ -55,8 +57,21 @@ object WeContactHeaderApi : ApiFeature(), IResolveDex {
      * Providers that also publish the same value through [WeContactPrefsScreenApi] use this to
      * avoid printing it twice on a single screen: the header is the canonical spot there, while
      * screens that render no header (the chatroom detail list) keep their list row.
+     *
+     * The comparison walks the name of the concrete class instead of using an `is
+     * com.tencent.mm.plugin.profile.ui.ContactInfoUI` check, because the host types only exist as
+     * compile-only stubs here (they are not Activity subclasses at compile time, which makes such
+     * a check a hard "always false" compiler error) and a subclass on the host side must still
+     * match.
      */
-    fun showsHeaderOn(activity: Activity): Boolean = activity is ContactInfoUI
+    fun showsHeaderOn(activity: Activity): Boolean {
+        var clazz: Class<*>? = activity.javaClass
+        while (clazz != null) {
+            if (clazz.name == FRIEND_PROFILE_ACTIVITY) return true
+            clazz = clazz.superclass
+        }
+        return false
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onEnable() {
