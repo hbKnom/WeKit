@@ -381,9 +381,26 @@ object MonetStructureMatcher {
         }
     }
 
+    private class EvidenceMemo {
+        val local = HashMap<Int, Set<String>>()
+        val usage = HashMap<Int, Set<String>>()
+        val combined = HashMap<Int, Set<String>>()
+    }
+
+    private val evidenceMemos = java.util.Collections.synchronizedMap(
+        java.util.WeakHashMap<MonetResourceGraph, EvidenceMemo>(),
+    )
+
+    private fun memoFor(graph: MonetResourceGraph): EvidenceMemo = synchronized(evidenceMemos) {
+        evidenceMemos.getOrPut(graph) { EvidenceMemo() }
+    }
+
     fun evidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = calculateEvidence(node, graph)
 
-    private fun calculateEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
+    private fun calculateEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
+        memoFor(graph).combined.getOrPut(node.id) { computeEvidence(node, graph) }
+
+    private fun computeEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
         addAll(localEvidence(node, graph))
         addAll(usageEvidence(node, graph))
         graph.outgoing(node.id).mapNotNull(graph::node).forEach { child ->
@@ -408,16 +425,23 @@ object MonetStructureMatcher {
         }
     }
 
-    private fun localEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
+    private fun localEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
+        memoFor(graph).local.getOrPut(node.id) { computeLocalEvidence(node, graph) }
+
+    private fun computeLocalEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
         node.values.forEach { configured ->
             add("config:${configured.qualifiers}:${configured.value.evidence(graph)}")
         }
-        graph.xmlTrees(node.id).forEach { it.collectEvidence("", graph, this) }
-        graph.xmlTrees(node.id).forEach { it.collectSimpleEvidence("", graph, this) }
+        val trees = graph.xmlTrees(node.id)
+        trees.forEach { it.collectEvidence("", graph, this) }
+        trees.forEach { it.collectSimpleEvidence("", graph, this) }
         graph.outgoing(node.id).mapNotNull(graph::node).forEach { add("outgoing:${it.key.type}") }
     }
 
-    private fun usageEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
+    private fun usageEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> =
+        memoFor(graph).usage.getOrPut(node.id) { computeUsageEvidence(node, graph) }
+
+    private fun computeUsageEvidence(node: MonetResourceNode, graph: MonetResourceGraph): Set<String> = HashSet<String>().apply {
         graph.incoming(node.id).mapNotNull(graph::node).forEach { owner ->
             add("incoming:${owner.key.type}")
             owner.values.forEach { configured ->

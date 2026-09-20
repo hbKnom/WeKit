@@ -354,16 +354,98 @@ type LzmaDecodeFn = unsafe extern "C" fn(
     out_size: usize,
 ) -> u32;
 
+/// Candidate sonames / absolute paths for the system XZ library.
+///
+/// Some devices do not expose a bare `liblzma.so` in the linker namespace that the injected
+/// process sees, which used to abort Zygisk mode entirely. We therefore probe several sonames,
+/// then well-known absolute locations, and finally reuse the path of an already-loaded
+/// `liblzma*.so` reported by `dl_iterate_phdr`.
+const LZMA_NAMES: &[&std::ffi::CStr] = &[
+    c"liblzma.so",
+    c"liblzma.so.5",
+    c"liblzma.so.5.2",
+    c"liblzma.so.5.2.5",
+    c"liblzma.so.5.4",
+    c"liblzma.so.5.6",
+];
+
+const LZMA_PATHS: &[&std::ffi::CStr] = &[
+    c"/system/lib64/liblzma.so",
+    c"/system/lib/liblzma.so",
+    c"/apex/com.android.runtime/lib64/liblzma.so",
+    c"/apex/com.android.runtime/lib/liblzma.so",
+    c"/system/lib64/liblzma.so.5",
+    c"/system/lib/liblzma.so.5",
+];
+
+fn lzma_probe_callback(
+    info: *mut libc::dl_phdr_info,
+    _size: usize,
+    data: *mut c_void,
+) -> i32 {
+    unsafe {
+        if info.is_null() {
+            return 0;
+        }
+        let name = (*info).dlpi_name;
+        if name.is_null() {
+            return 0;
+        }
+        let cstr = std::ffi::CStr::from_ptr(name);
+        if let Ok(path) = cstr.to_str() {
+            if path.contains("liblzma") {
+                let out = &mut *(data as *mut Vec<String>);
+                out.push(path.to_owned());
+            }
+        }
+    }
+    0
+}
+
+fn dlopen_lzma() -> *mut c_void {
+    unsafe {
+        for name in LZMA_NAMES {
+            let h = libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+            if !h.is_null() {
+                return h;
+            }
+        }
+        for path in LZMA_PATHS {
+            let h = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+            if !h.is_null() {
+                return h;
+            }
+        }
+        // Last resort: reuse the path of an lzma library that is already mapped.
+        let mut loaded: Vec<String> = Vec::new();
+        libc::dl_iterate_phdr(
+            Some(lzma_probe_callback),
+            &mut loaded as *mut _ as *mut c_void,
+        );
+        for path in loaded {
+            if let Ok(cpath) = std::ffi::CString::new(path) {
+                let h = libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                if !h.is_null() {
+                    return h;
+                }
+            }
+        }
+        std::ptr::null_mut()
+    }
+}
+
 fn load_lzma() -> Option<LzmaDecodeFn> {
     static FN: OnceLock<Option<LzmaDecodeFn>> = OnceLock::new();
     *FN.get_or_init(|| unsafe {
-        let h = libc::dlopen(c"liblzma.so".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        let h = dlopen_lzma();
         if h.is_null() {
+            loge!("Zygisk: no usable liblzma found for XZ decompression");
             return None;
         }
         // Intentionally leak handle so fn ptr stays valid for process lifetime
         let sym = libc::dlsym(h, c"lzma_stream_buffer_decode".as_ptr());
         if sym.is_null() {
+            loge!("Zygisk: liblzma is missing lzma_stream_buffer_decode");
             return None;
         }
         Some(std::mem::transmute::<*mut c_void, LzmaDecodeFn>(sym))

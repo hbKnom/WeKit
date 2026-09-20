@@ -1,6 +1,9 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
 import android.content.Context
+import android.view.MotionEvent
+import android.view.View
+import com.tencent.mm.ui.base.CustomViewPager
 import androidx.activity.ComponentActivity
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.Animatable
@@ -9,6 +12,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -45,6 +50,8 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -101,6 +108,7 @@ import dev.ujhhgtg.wekit.ui.utils.setLifecycleOwner
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.ui.utils.theme.InjectedUiTheme
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
@@ -108,6 +116,9 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.luckypray.dexkit.DexKitBridge
 import java.lang.reflect.Field
+import java.lang.ref.WeakReference
+import android.os.Handler
+import android.os.Looper
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier as ReflectModifier
 import java.util.Collections
@@ -152,8 +163,167 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
     private val groupingBackend: GroupingBackend
         get() = GroupingBackend.from(groupingBackendValue)
 
-    private var equalWidthTabs by WePrefs.prefOption("conversation_grouping_equal_width_tabs", false)
-    private val equalWidthTabsState by lazy { mutableStateOf(equalWidthTabs) }
+    /**
+     * Tab bar layout style. Mirrors upstream `conversation_grouping_tab_style` (Int).
+     * 0 = floating island (浮动岛), 1 = full-width bar (全宽度标签栏).
+     */
+    private enum class TabStyle(val value: Int) {
+        FLOATING(0),
+        FULL_WIDTH(1);
+
+        companion object {
+            fun from(value: Int): TabStyle = entries.firstOrNull { it.value == value } ?: FLOATING
+        }
+    }
+
+    private var tabStyleValue by WePrefs.prefOption("conversation_grouping_tab_style", TabStyle.FLOATING.value)
+    private val tabStyleState by lazy { mutableStateOf(TabStyle.from(tabStyleValue)) }
+
+    private var pinTabsValue by WePrefs.prefOption("conversation_grouping_pin_tabs", true)
+    private val pinTabsState by lazy { mutableStateOf(pinTabsValue) }
+
+    private var tabShowUnreadValue by WePrefs.prefOption("conversation_grouping_show_unread", true)
+    private val tabShowUnreadState by lazy { mutableStateOf(tabShowUnreadValue) }
+
+    private var tabIncludeOfficialUnreadValue by
+        WePrefs.prefOption("conversation_grouping_include_official_unread", false)
+    private val tabIncludeOfficialUnreadState by lazy { mutableStateOf(tabIncludeOfficialUnreadValue) }
+
+    private var tabRememberScrollValue by WePrefs.prefOption("conversation_grouping_remember_scroll_state", false)
+    private val tabRememberScrollState by lazy { mutableStateOf(tabRememberScrollValue) }
+
+    private var tabTakeOverSwipeValue by
+        WePrefs.prefOption("conversation_grouping_take_over_horizontal_scroll", true)
+    private val tabTakeOverSwipeState by lazy { mutableStateOf(tabTakeOverSwipeValue) }
+    // ----------------------------------------------------------------------------------------------
+    // Horizontal swipe takeover (接管横向滑动)
+    // ----------------------------------------------------------------------------------------------
+    private const val SWIPE_TAKEOVER_TAG = "ConversationGrouping.Swipe"
+    private const val SWIPE_TOUCH_SLOP_DP = 24f
+
+    private val customViewPagerDispatchTouch by lazy {
+        CustomViewPager::class.java.getDeclaredMethod("dispatchTouchEvent", MotionEvent::class.java)
+    }
+
+    // Shared with the injected tab bar so a swipe can move the visible selection too.
+    @Volatile
+    private var selectedGroupIdState: MutableState<String>? = null
+    @Volatile
+    private var groupsState: MutableState<List<ChatGroup>>? = null
+
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+    private var swipeConsumed = false
+
+    private fun switchToAdjacentGroup(direction: Int): Boolean {
+        val groups = loadGroups()
+        if (groups.size <= 1) return false
+        val ids = groups.map { it.id }
+        val currentId = selectedGroupIdState?.value ?: activeAdapterGroup.id
+        val current = ids.indexOf(currentId).takeIf { it >= 0 } ?: 0
+        val target = current + direction
+        // At the edges we deliberately hand the gesture back to WeChat (page / side panel).
+        if (target !in ids.indices) return false
+        val nextId = ids[target]
+        selectedGroupIdState?.value = nextId
+        selectTab(nextId)
+        return true
+    }
+
+    // ----------------------------------------------------------------------------------------------
+    // Scroll memory (记忆滑动状态)
+    // ----------------------------------------------------------------------------------------------
+    private val scrollPositions = ConcurrentHashMap<String, Int>()
+    @Volatile
+    private var lastConversationRecycler = WeakReference<View>(null)
+
+    private fun recyclerViewFirstVisible(view: View): Int? = runCatching {
+        val lm = view.javaClass.getMethod("getLayoutManager").invoke(view) ?: return null
+        lm.javaClass.getMethod("findFirstVisibleItemPosition").invoke(lm) as Int
+    }.getOrNull()
+
+    private fun recyclerViewScrollTo(view: View, position: Int) {
+        runCatching {
+            val lm = view.javaClass.getMethod("getLayoutManager").invoke(view) ?: return
+            lm.javaClass.getMethod("scrollToPosition", Int::class.javaPrimitiveType).invoke(lm, position)
+        }.onFailure { WeLogger.w(TAG, "restore scroll position failed", it) }
+    }
+
+    // ----------------------------------------------------------------------------------------------
+    // Pinned tabs (固定分组标签): keep the tab row glued under the title bar while scrolling.
+    // ----------------------------------------------------------------------------------------------
+    @Volatile
+    private var tabsHeaderView = WeakReference<View>(null)
+
+    private fun applyTabsPin(recycler: View?) {
+        val header = tabsHeaderView.get() ?: return
+        if (!pinTabsState.value) {
+            header.translationY = 0f
+            return
+        }
+        if (recycler == null) return
+        // The header is the first child of the list; when it scrolls past the top edge,
+        // translate it back down so it visually sticks under the title bar.
+        val top = header.top
+        header.translationY = if (top < 0) (-top).toFloat() else 0f
+    }
+
+    private fun hookScrollMemory() {
+        if (WeConversationListViewApi.methodRecyclerOnScrolled.isPlaceholder) return
+        WeConversationListViewApi.methodRecyclerOnScrolled.hookAfter {
+            val recycler = args.getOrNull(0) as? View ?: return@hookAfter
+            lastConversationRecycler = WeakReference(recycler)
+            applyTabsPin(recycler)
+            if (!tabRememberScrollValue) return@hookAfter
+            recyclerViewFirstVisible(recycler)?.let { scrollPositions[activeAdapterGroup.id] = it }
+        }
+    }
+
+    private fun restoreScrollPosition(groupId: String?) {
+        if (!tabRememberScrollValue) return
+        val target = scrollPositions[groupId ?: ALL_TAB_ID] ?: return
+        if (target <= 0) return
+        Handler(Looper.getMainLooper()).postDelayed({
+            lastConversationRecycler.get()?.let { recyclerViewScrollTo(it, target) }
+        }, 120)
+    }
+
+    private fun hookHorizontalSwipeTakeover() {
+        customViewPagerDispatchTouch.hookBeforeDirectly {
+            if (!tabTakeOverSwipeState.value) return@hookBeforeDirectly
+            val event = args.getOrNull(0) as? MotionEvent ?: return@hookBeforeDirectly
+            val view = thisObject as? View ?: return@hookBeforeDirectly
+            val slop = SWIPE_TOUCH_SLOP_DP * view.resources.displayMetrics.density
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    swipeStartX = event.x
+                    swipeStartY = event.y
+                    swipeConsumed = false
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (swipeConsumed) {
+                        result = true
+                        return@hookBeforeDirectly
+                    }
+                    val dx = event.x - swipeStartX
+                    val dy = event.y - swipeStartY
+                    if (kotlin.math.abs(dx) > slop && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                        swipeConsumed = true
+                        if (switchToAdjacentGroup(if (dx < 0) 1 else -1)) {
+                            result = true
+                        }
+                    }
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (swipeConsumed) result = true
+                    swipeConsumed = false
+                }
+            }
+        }
+    }
+
 
     private val groupTabHorizontalPadding = 16.dp
 
@@ -230,6 +400,9 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 // out of the Composable.
                 val selectedGroupIdState = mutableStateOf(ALL_TAB_ID)
                 val groupsState = mutableStateOf(loadGroups())
+                // Expose to the swipe hook so a horizontal gesture can drive the same selection.
+                this@ConversationGrouping.selectedGroupIdState = selectedGroupIdState
+                this@ConversationGrouping.groupsState = groupsState
                 setContent {
                     InjectedUiTheme {
                         val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
@@ -296,10 +469,13 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 }
             }
             WeConversationListViewApi.addHeaderView(mainUi, composeView)
+            tabsHeaderView = WeakReference(composeView)
         }
         if (groupingBackend == GroupingBackend.ADAPTER_FILTER) {
             WeConversationListViewApi.addPositionProvider(adapterPositionProvider)
         }
+        hookHorizontalSwipeTakeover()
+        hookScrollMemory()
     }
 
     override fun onDisable() {
@@ -530,6 +706,53 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         return itemFields(item).unreadCounts.sumOf { (it.get(item) as? Number)?.toInt() ?: 0 }
     }
 
+    /**
+     * Snapshot of (username -> total unread) from WeChat's conversation table, used to render
+     * per-group unread badges on the tabs.
+     */
+    private fun conversationUnreadSnapshot(): Map<String, Int> = runCatching {
+        val result = HashMap<String, Int>()
+        WeDatabaseApi.rawQuery(
+            "SELECT username, unReadCount, unReadMuteCount FROM rconversation",
+        ).use { cursor ->
+            val usernameIndex = cursor.getColumnIndex("username")
+            val unreadIndex = cursor.getColumnIndex("unReadCount")
+            val muteIndex = cursor.getColumnIndex("unReadMuteCount")
+            if (usernameIndex < 0) return@use
+            while (cursor.moveToNext()) {
+                val username = cursor.getString(usernameIndex) ?: continue
+                val unread = (if (unreadIndex >= 0) cursor.getInt(unreadIndex) else 0) +
+                    (if (muteIndex >= 0) cursor.getInt(muteIndex) else 0)
+                if (unread > 0) result[username] = (result[username] ?: 0) + unread
+            }
+        }
+        result
+    }.getOrElse {
+        WeLogger.w(TAG, "failed to read conversation unread snapshot", it)
+        emptyMap()
+    }
+
+    private fun usernameMatchesGroup(username: String, group: ChatGroup): Boolean =
+        when (group.type) {
+            GroupType.PRESET_UNREAD -> true
+            GroupType.PRESET_GROUPS -> username.endsWith("@chatroom")
+            GroupType.PRESET_FRIENDS -> !username.endsWith("@chatroom") && !username.startsWith("gh_")
+            GroupType.PRESET_OFFICIALS -> username.startsWith("gh_")
+            GroupType.MANUAL, GroupType.SQL -> group.members.contains(username)
+        }
+
+    private fun groupUnreadCount(group: ChatGroup, snapshot: Map<String, Int>): Int {
+        if (!tabShowUnreadState.value) return 0
+        if (isAllTab(group.id)) return snapshot.values.sum()
+        val includeOfficials = tabIncludeOfficialUnreadState.value
+        var total = 0
+        for ((username, unread) in snapshot) {
+            if (!includeOfficials && username.startsWith("gh_")) continue
+            if (usernameMatchesGroup(username, group)) total += unread
+        }
+        return total
+    }
+
     private fun itemFields(item: Any): AdapterItemFields =
         adapterItemFields.getOrPut(item.javaClass) {
             val fields = generateSequence(item.javaClass as Class<*>?) { it.superclass }
@@ -562,23 +785,85 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                             ) {
                                 item {
                                     RadioButtonWidget(
-                                        title = stringResource(R.string.conversation_grouping_tab_layout_content),
-                                        description = stringResource(R.string.conversation_grouping_tab_layout_content_description),
-                                        selected = !equalWidthTabsState.value,
+                                        title = stringResource(R.string.conversation_grouping_tab_style_floating),
+                                        selected = tabStyleState.value == TabStyle.FLOATING,
                                         onClick = {
-                                            equalWidthTabs = false
-                                            equalWidthTabsState.value = false
+                                            tabStyleValue = TabStyle.FLOATING.value
+                                            tabStyleState.value = TabStyle.FLOATING
                                         },
                                     )
                                 }
                                 item {
                                     RadioButtonWidget(
-                                        title = stringResource(R.string.conversation_grouping_tab_layout_equal),
-                                        description = stringResource(R.string.conversation_grouping_tab_layout_equal_description),
-                                        selected = equalWidthTabsState.value,
+                                        title = stringResource(R.string.conversation_grouping_tab_style_full_width),
+                                        selected = tabStyleState.value == TabStyle.FULL_WIDTH,
                                         onClick = {
-                                            equalWidthTabs = true
-                                            equalWidthTabsState.value = true
+                                            tabStyleValue = TabStyle.FULL_WIDTH.value
+                                            tabStyleState.value = TabStyle.FULL_WIDTH
+                                        },
+                                    )
+                                }
+                                item {
+                                    SwitchWidget(
+                                        title = stringResource(R.string.conversation_grouping_pin_tabs),
+                                        description = stringResource(R.string.conversation_grouping_pin_tabs_description),
+                                        checked = pinTabsState.value,
+                                        onCheckedChange = {
+                                            pinTabsValue = it
+                                            pinTabsState.value = it
+                                        },
+                                    )
+                                }
+                                item {
+                                    SwitchWidget(
+                                        title = stringResource(R.string.conversation_grouping_remember_scroll_state),
+                                        description = stringResource(R.string.conversation_grouping_remember_scroll_state_description),
+                                        checked = tabRememberScrollState.value,
+                                        onCheckedChange = {
+                                            tabRememberScrollValue = it
+                                            tabRememberScrollState.value = it
+                                        },
+                                    )
+                                }
+                                item {
+                                    SwitchWidget(
+                                        title = stringResource(R.string.conversation_grouping_take_over_horizontal_scroll),
+                                        description = stringResource(R.string.conversation_grouping_take_over_horizontal_scroll_description),
+                                        checked = tabTakeOverSwipeState.value,
+                                        onCheckedChange = {
+                                            tabTakeOverSwipeValue = it
+                                            tabTakeOverSwipeState.value = it
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        item {
+                            SegmentedColumn(
+                                title = stringResource(R.string.conversation_grouping_unread_title),
+                                contentPadding = PaddingValues(0.dp),
+                                titlePadding = PaddingValues(start = 16.dp, top = 8.dp, bottom = 8.dp),
+                            ) {
+                                item {
+                                    SwitchWidget(
+                                        title = stringResource(R.string.conversation_grouping_show_unread),
+                                        description = stringResource(R.string.conversation_grouping_show_unread_description),
+                                        checked = tabShowUnreadState.value,
+                                        onCheckedChange = {
+                                            tabShowUnreadValue = it
+                                            tabShowUnreadState.value = it
+                                        },
+                                    )
+                                }
+                                item {
+                                    SwitchWidget(
+                                        title = stringResource(R.string.conversation_grouping_include_official_unread),
+                                        description = stringResource(R.string.conversation_grouping_include_official_unread_description),
+                                        enabled = tabShowUnreadState.value,
+                                        checked = tabIncludeOfficialUnreadState.value,
+                                        onCheckedChange = {
+                                            tabIncludeOfficialUnreadValue = it
+                                            tabIncludeOfficialUnreadState.value = it
                                         },
                                     )
                                 }
@@ -668,6 +953,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         }
         clearAdapterCaches()
         refreshConversations(groupingBackend)
+        restoreScrollPosition(groupId)
     }
 
     private fun refreshConversations(backend: GroupingBackend) {
@@ -918,6 +1204,16 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         containerColor: Color = if (isSystemInDarkTheme()) Color(0xFF111111) else Color(0xFFEDEDED),
     ) {
         val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
+        // Per-group unread badges: refreshed whenever the tab set / selection / toggle changes.
+        val unreadSnapshot by produceState(
+            initialValue = emptyMap<String, Int>(),
+            groups,
+            selectedGroupId,
+            tabShowUnreadState.value,
+            tabIncludeOfficialUnreadState.value,
+        ) {
+            value = if (tabShowUnreadState.value) conversationUnreadSnapshot() else emptyMap()
+        }
         var menuForGroupId by remember { mutableStateOf<String?>(null) }
         // Sort (edit) mode: long-press a tab to drag-reorder.
         var sortMode by remember { mutableStateOf(false) }
@@ -958,8 +1254,10 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                                 GroupTab(
                                     label = label,
                                     selected = selectedGroupId == group.id,
+                                    unread = groupUnreadCount(group, unreadSnapshot),
                                     onClick = { onTabSelected(group.id) },
-                                    onLongClick = { menuForGroupId = group.id }
+                                    onLongClick = { menuForGroupId = group.id },
+                                    floating = tabStyleState.value == TabStyle.FLOATING,
                                 )
 
                                 DropdownMenu(
@@ -1035,7 +1333,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 }
                 val selectedTabIndex = orderedGroups.indexOfFirst { it.id == selectedGroupId }
                     .coerceAtLeast(0)
-                if (equalWidthTabsState.value) {
+                if (tabStyleState.value == TabStyle.FULL_WIDTH) {
                     PrimaryTabRow(
                         selectedTabIndex = selectedTabIndex,
                         modifier = Modifier.fillMaxWidth(),
@@ -1230,7 +1528,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                             }
                         )
                     },
-                contentPadding = PaddingValues(horizontal = if (equalWidthTabsState.value) 0.dp else 12.dp),
+                contentPadding = PaddingValues(horizontal = if (tabStyleState.value == TabStyle.FULL_WIDTH) 0.dp else 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1252,7 +1550,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                         selected = selectedGroupId == group.id,
                         modifier = Modifier
                             .then(
-                                if (equalWidthTabsState.value) Modifier.width(maxWidth / groups.size)
+                                if (tabStyleState.value == TabStyle.FULL_WIDTH) Modifier.width(maxWidth / groups.size)
                                 else Modifier.widthIn(min = 48.dp)
                             )
                             .zIndex(if (dragging || settling) 1f else 0f)
@@ -1297,10 +1595,14 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         selected: Boolean,
         onClick: () -> Unit,
         onLongClick: () -> Unit,
+        unread: Int = 0,
+        floating: Boolean = false,
     ) {
         GroupTabContent(
             label = label,
             selected = selected,
+            unread = unread,
+            floating = floating,
             modifier = Modifier
                 .fillMaxWidth()
                 .semantics { this.selected = selected }
@@ -1317,21 +1619,66 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         label: String,
         selected: Boolean,
         modifier: Modifier = Modifier,
+        unread: Int = 0,
+        floating: Boolean = false,
     ) {
-        Box(
-            modifier = modifier
-                .heightIn(min = 48.dp)
-                .padding(horizontal = groupTabHorizontalPadding, vertical = 12.dp),
-            contentAlignment = Alignment.Center,
-        ) {
+        val labelColor = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        val labelRow: @Composable () -> Unit = {
             Text(
                 text = label,
-                color = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = labelColor,
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (unread > 0) {
+                Box(
+                    modifier = Modifier
+                        .padding(start = 4.dp)
+                        .background(MaterialTheme.colorScheme.error, RoundedCornerShape(percent = 50))
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (unread > 99) "99+" else unread.toString(),
+                        color = MaterialTheme.colorScheme.onError,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Box(
+            modifier = modifier
+                .heightIn(min = 48.dp)
+                .padding(
+                    horizontal = if (floating) 4.dp else groupTabHorizontalPadding,
+                    vertical = 12.dp,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (floating) {
+                // Floating-island style: a rounded pill that lights up when selected.
+                Box(
+                    modifier = Modifier
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                            else Color.Transparent,
+                            RoundedCornerShape(percent = 50),
+                        )
+                        .padding(horizontal = groupTabHorizontalPadding, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        labelRow()
+                    }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    labelRow()
+                }
+            }
         }
     }
 

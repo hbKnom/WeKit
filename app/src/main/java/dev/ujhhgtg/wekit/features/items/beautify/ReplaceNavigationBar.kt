@@ -6,6 +6,12 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.widget.ImageView
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.foundation.Image
+import androidx.core.graphics.drawable.toBitmap
 import android.view.ViewGroup
 import android.widget.AbsListView
 import android.widget.FrameLayout
@@ -81,6 +87,7 @@ import com.tencent.mm.ui.mogic.WxViewPager
 import dev.ujhhgtg.reflekt.firstMethod
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.toClass
+import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
@@ -135,6 +142,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
     )
 
     private var useFloating by prefOption("nav_bar_use_floating", true)
+    private var useWechatIcons by prefOption("nav_bar_use_wechat_icons", false)
     private var autoHideOnScroll by prefOption("nav_bar_auto_hide_on_scroll", false)
     private var useBackdrop by prefOption("nav_bar_use_backdrop", true)
     private var animatePageChange by prefOption("nav_bar_animate_page_change", true)
@@ -355,6 +363,10 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
             val viewParent = viewPager.parent as ViewGroup
             val bottomTabViewGroup = viewParent.getChildAt(1) as ViewGroup
 
+            // Sample the original tab bar's icon drawables before we clear its children, so
+            // "use WeChat native icons" has real bitmaps to render.
+            if (useWechatIcons) sampleWechatTabIcons(thisObject!!)
+
             // WeChat's original bottom tab (LauncherUIBottomTabView) is kept alive — we only
             // clear its children below — so its own OnClickListener (an `f8`/`r8` instance)
             // survives with its double-tap state machine and the LiveData event it fires.
@@ -538,16 +550,26 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                                         }
                                                     }
                                                 ) {
-                                                    Crossfade(
-                                                        targetState = showFilled,
-                                                        animationSpec = tween(200),
-                                                        label = "navIcon"
-                                                    ) { filled ->
-                                                        Icon(
-                                                            imageVector = if (filled) item.filled else item.outlined,
+                                                    val wechatIcon = wechatTabIcons.value[item.wechatIndex]
+                                                    if (useWechatIcons && wechatIcon != null) {
+                                                        Image(
+                                                            bitmap = wechatIcon,
                                                             contentDescription = label,
-                                                            tint = tint
+                                                            colorFilter = ColorFilter.tint(tint),
+                                                            modifier = Modifier.size(24.dp),
                                                         )
+                                                    } else {
+                                                        Crossfade(
+                                                            targetState = showFilled,
+                                                            animationSpec = tween(200),
+                                                            label = "navIcon"
+                                                        ) { filled ->
+                                                            Icon(
+                                                                imageVector = if (filled) item.filled else item.outlined,
+                                                                contentDescription = label,
+                                                                tint = tint
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             },
@@ -680,15 +702,24 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                                     }
                                                 }
                                             ) {
-                                                Crossfade(
-                                                    targetState = isSelected,
-                                                    animationSpec = tween(200),
-                                                    label = "navIconFloating"
-                                                ) { selected ->
-                                                    Icon(
-                                                        imageVector = if (selected) item.filled else item.outlined,
-                                                        contentDescription = label
+                                                val wechatIconFloating = wechatTabIcons.value[item.wechatIndex]
+                                                if (useWechatIcons && wechatIconFloating != null) {
+                                                    Image(
+                                                        bitmap = wechatIconFloating,
+                                                        contentDescription = label,
+                                                        modifier = Modifier.size(24.dp),
                                                     )
+                                                } else {
+                                                    Crossfade(
+                                                        targetState = isSelected,
+                                                        animationSpec = tween(200),
+                                                        label = "navIconFloating"
+                                                    ) { selected ->
+                                                        Icon(
+                                                            imageVector = if (selected) item.filled else item.outlined,
+                                                            contentDescription = label
+                                                        )
+                                                    }
                                                 }
                                             }
                                         },
@@ -841,6 +872,40 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
 
     // True while the bar should be hidden by the conversation-list scroll auto-hide.
     private val barScrollHiddenState = mutableStateOf(false)
+    // ----------------------------------------------------------------------------------------------
+    // Native (WeChat) tab icons (nav_bar_use_wechat_icons)
+    // ----------------------------------------------------------------------------------------------
+    private val wechatTabIcons = mutableStateOf<Map<Int, ImageBitmap>>(emptyMap())
+
+    private fun findImageView(view: View): ImageView? {
+        if (view is ImageView) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findImageView(view.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Snapshot the original bottom tab bar's icon drawables before it is hidden, so the replacement
+     * bar can render WeChat's own icons in "native icon" mode.
+     */
+    private fun sampleWechatTabIcons(mainUi: Any) {
+        runCatching {
+            val viewPager = mainUi.reflekt().firstFieldOrNull { name = "mViewPager" }
+                ?.get() as? WxViewPager ?: return
+            val parent = viewPager.parent as? ViewGroup ?: return
+            val bottomTabViewGroup = parent.getChildAt(1) as? ViewGroup ?: return
+            val result = HashMap<Int, ImageBitmap>()
+            for (i in 0 until bottomTabViewGroup.childCount) {
+                val image = findImageView(bottomTabViewGroup.getChildAt(i)) ?: continue
+                val drawable = image.drawable ?: continue
+                result[i] = drawable.toBitmap().asImageBitmap()
+            }
+            if (result.isNotEmpty()) wechatTabIcons.value = result
+        }.onFailure { WeLogger.w("ReplaceNavigationBar", "sample native tab icons failed", it) }
+    }
 
     // Conversation-list scroll tracking, mirroring NagramXF's DialogsActivity logic:
     // direction is derived from the first visible item's position/top delta, and the
@@ -909,6 +974,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
             var useFloatingInput by remember { mutableStateOf(useFloating) }
             var autoHideOnScrollInput by remember { mutableStateOf(autoHideOnScroll) }
             var useBackdropInput by remember { mutableStateOf(useBackdrop) }
+            var useWechatIconsInput by remember { mutableStateOf(useWechatIcons) }
             var animatePageChangeInput by remember { mutableStateOf(animatePageChange) }
             var showFinderBadgeInput by remember { mutableStateOf(showFinderBadge) }
             var hideLabelsInput by remember { mutableStateOf(hideLabels) }
@@ -983,6 +1049,14 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                         useBackdropInput = it
                                         useBackdrop = it
                                     },
+                                )
+                            }
+                            item {
+                                SwitchWidget(
+                                    iconPlaceholder = false,
+                                    title = stringResource(R.string.nav_use_wechat_icons),
+                                    checked = useWechatIconsInput,
+                                    onCheckedChange = { useWechatIconsInput = it; useWechatIcons = it },
                                 )
                             }
                             item(animatedVisibility = useFloatingInput && useBackdropInput) {

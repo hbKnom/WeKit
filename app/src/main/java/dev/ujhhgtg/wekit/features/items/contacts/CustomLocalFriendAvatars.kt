@@ -20,6 +20,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +33,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
+import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.net.toUri
@@ -266,8 +270,17 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
             methodMvvmLoadAvatar2,
             methodFeatureAvatarSimple1,
             methodPluginsdkLoadAvatar
-        ).forEach {
-            it.method.hookBefore {
+        ).forEach { handle ->
+            handle.method.hookBefore {
+                val conversationSurface = handle === methodConversationAvatar ||
+                    handle === methodMvvmLoadAvatar1 ||
+                    handle === methodMvvmLoadAvatar2
+                val allowed = if (conversationSurface) {
+                    isScopeEnabled(AvatarScope.CONVERSATION) || isScopeEnabled(AvatarScope.CHAT)
+                } else {
+                    anyLoaderScopeEnabled()
+                }
+                if (!allowed) return@hookBefore
                 val imageView = args.getOrNull(0) as? ImageView ?: return@hookBefore
 //            var wxId = args.getOrNull(1) as? String ?: return@hookBefore
                 val wxId = args.getOrNull(1) as? String ?: return@hookBefore
@@ -286,6 +299,7 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
         }
 
         methodHdGallerySetUsername.hookBefore {
+            if (!isScopeEnabled(AvatarScope.PROFILE)) return@hookBefore
             val username = args.getOrNull(0) as? String ?: return@hookBefore
             val gallery = thisObject
             if (applyCustomHdAvatar(gallery, username)) {
@@ -332,6 +346,37 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
     }
 
     override fun onClick(context: ComponentActivity) {
+        showAvatarEntryDialog(context)
+    }
+
+    private fun showAvatarEntryDialog(context: ComponentActivity) {
+        showComposeDialog(context) {
+            SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
+                item {
+                    BaseWidget(
+                        iconPlaceholder = false,
+                        title = stringResource(R.string.contacts_custom_avatar_manage),
+                        onClick = {
+                            onDismiss()
+                            showAvatarManager(context)
+                        },
+                    )
+                }
+                item {
+                    BaseWidget(
+                        iconPlaceholder = false,
+                        title = stringResource(R.string.contacts_custom_avatar_scopes),
+                        onClick = {
+                            onDismiss()
+                            showAvatarScopes(context)
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    private fun showAvatarManager(context: ComponentActivity) {
         showComposeDialog(context) {
             val clearedMessage = stringResource(R.string.contacts_custom_avatar_cleared)
             CustomAvatarManagerDialog(
@@ -351,7 +396,88 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
         }
     }
 
+    private fun showAvatarScopes(context: ComponentActivity) {
+        showComposeDialog(context) {
+            var scopes by remember { mutableStateOf(avatarScopes) }
+            AlertDialogContent(
+                title = { Text(stringResource(R.string.contacts_custom_avatar_scopes)) },
+                text = {
+                    SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
+                        AvatarScope.entries.forEach { scope ->
+                            item(key = scope.key) {
+                                SwitchWidget(
+                                    iconPlaceholder = false,
+                                    title = stringResource(scope.labelRes()),
+                                    checked = scope.key in scopes,
+                                    onCheckedChange = { on ->
+                                        scopes = if (on) scopes + scope.key else scopes - scope.key
+                                        avatarScopes = scopes
+                                    },
+                                )
+                            }
+                        }
+                        item(key = "shortcut_hint") {
+                            Text(
+                                text = stringResource(R.string.contacts_custom_avatar_shortcut_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onDismiss) { Text(stringResource(R.string.dialog_close)) }
+                },
+            )
+        }
+    }
+
+    private fun AvatarScope.labelRes(): Int = when (this) {
+        AvatarScope.CHAT -> R.string.contacts_custom_avatar_scope_chat
+        AvatarScope.CONTACTS -> R.string.contacts_custom_avatar_scope_contacts
+        AvatarScope.CONVERSATION -> R.string.contacts_custom_avatar_scope_conversation
+        AvatarScope.MOMENTS -> R.string.contacts_custom_avatar_scope_moments
+        AvatarScope.NOTIFICATIONS -> R.string.contacts_custom_avatar_scope_notifications
+        AvatarScope.OTHER -> R.string.contacts_custom_avatar_scope_other
+        AvatarScope.PROFILE -> R.string.contacts_custom_avatar_scope_profile
+        AvatarScope.SHORTCUTS -> R.string.contacts_custom_avatar_scope_shortcuts
+    }
+
     private var roundAvatarRadiusFactor by prefOption("custom_avatar_round_radius", 0.5f)
+
+    // ----------------------------------------------------------------------------------------------
+    // Effective scopes (生效范围) — upstream 09-12 lets the custom avatar be limited to specific
+    // WeChat surfaces instead of replacing every avatar everywhere.
+    // ----------------------------------------------------------------------------------------------
+    enum class AvatarScope(val key: String) {
+        CHAT("chat"),
+        CONTACTS("contacts"),
+        CONVERSATION("conversation"),
+        MOMENTS("moments"),
+        NOTIFICATIONS("notifications"),
+        OTHER("other"),
+        PROFILE("profile"),
+        SHORTCUTS("shortcuts"),
+    }
+
+    private var avatarScopes by prefOption(
+        "custom_avatar_scopes",
+        AvatarScope.entries.mapTo(mutableSetOf()) { it.key },
+    )
+
+    private fun isScopeEnabled(scope: AvatarScope): Boolean = scope.key in avatarScopes
+
+    /** The generic avatar loaders are shared by several surfaces, so any of these enables them. */
+    private fun anyLoaderScopeEnabled(): Boolean = listOf(
+        AvatarScope.CHAT,
+        AvatarScope.CONTACTS,
+        AvatarScope.MOMENTS,
+        AvatarScope.OTHER,
+        AvatarScope.PROFILE,
+    ).any(::isScopeEnabled)
+
+    /** Bumped whenever the avatar set changes so surfaces that cache by username refresh. */
+    private var avatarRevision by prefOption("custom_avatar_revision", 0)
 
     private fun effectiveRadiusFactor(loaderRadiusFactor: Float): Float {
         return if (RoundAvatars.isEnabled) roundAvatarRadiusFactor else loaderRadiusFactor
@@ -570,11 +696,13 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
 
     private fun setAvatar(wxId: String, uri: String) {
         avatarMap = avatarMap + (wxId to uri)
+        avatarRevision += 1
         clearBitmapCaches()
     }
 
     fun removeAvatar(wxId: String) {
         avatarMap = avatarMap - wxId
+        avatarRevision += 1
         clearBitmapCaches()
     }
 

@@ -1,5 +1,7 @@
 package dev.ujhhgtg.wekit.agent.model
 
+import io.ktor.client.plugins.DefaultRequest
+import dev.ujhhgtg.wekit.BuildConfig
 import dev.ujhhgtg.wekit.agent.data.WeAgentRepository
 import dev.ujhhgtg.wekit.agent.data.entity.ModelEntity
 import dev.ujhhgtg.wekit.agent.data.entity.ModelProviderEntity
@@ -38,6 +40,14 @@ object ModelProviderManager {
             requestTimeoutMillis = 600_000
             socketTimeoutMillis = 600_000
             connectTimeoutMillis = 30_000
+        }
+        // Upstream 09-19: WeAgent now sends the headers gateways expect. opencode (and several
+        // other OpenAI-compatible proxies) refuse to open an SSE stream unless the request
+        // advertises `Accept: text/event-stream`, and some reject requests without a User-Agent
+        // outright. Clients may still override these per request.
+        install(DefaultRequest) {
+            header(HttpHeaders.UserAgent, "WeKit/${BuildConfig.VERSION_NAME}")
+            header(HttpHeaders.Accept, "text/event-stream, application/json")
         }
     }
 

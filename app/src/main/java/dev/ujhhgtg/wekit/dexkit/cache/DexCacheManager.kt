@@ -16,6 +16,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlin.io.path.deleteIfExists
+import kotlin.io.path.lastModifiedTime
+import kotlin.io.path.isDirectory
+import kotlin.io.path.deleteRecursively
 import kotlin.io.path.div
 import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
@@ -35,21 +38,52 @@ object DexCacheManager {
     private const val CACHE_DIR_NAME = "dex_cache"
     private const val CACHE_FILE_SUFFIX = ".json"
     private const val KEY_HOST_VERSION = "host_version"
+    private const val UNVERSIONED = "unversioned"
 
-    private val cacheDir: Path by lazy {
+    private const val MAX_RETAINED_VERSIONS = 3
+
+    private val cacheRoot: Path by lazy {
         (KnownPaths.moduleData / CACHE_DIR_NAME).createDirsSafe()
     }
 
+    @Volatile
+    private var activeVersion: String? = null
+
+    /**
+     * Dex caches live in a per-host-version directory.
+     *
+     * Upstream 09-19 stopped wiping every version's cache when WeChat updates: switching between
+     * WeChat versions (or downgrading) now reuses the matching cache directory, and only stale
+     * versions beyond [MAX_RETAINED_VERSIONS] are pruned.
+     */
+    private val cacheDir: Path
+        get() = cacheRoot / (activeVersion ?: UNVERSIONED)
+
     fun init(currentVer: String) {
         val cachedVer = WePrefs.getString(KEY_HOST_VERSION)
+        activeVersion = currentVer
         if (cachedVer != currentVer) {
-            WeLogger.i(TAG, "host version changed: $cachedVer -> $currentVer, resetting all cache")
-            clearAllCache()
+            WeLogger.i(TAG, "host version changed: $cachedVer -> $currentVer, keeping per-version caches")
             Preferences.noDexResolve = false
             WeLogger.i(TAG, "disabling NO_DEX_RESOLVE due to host version change")
+            runCatching { pruneOldVersions(keep = currentVer) }
+                .onFailure { WeLogger.w(TAG, "failed to prune old dex caches", it) }
         }
 
         WePrefs.putString(KEY_HOST_VERSION, currentVer)
+        cacheDir.createDirsSafe()
+    }
+
+    /** Keeps the active version plus the most recently modified others up to the retention cap. */
+    private fun pruneOldVersions(keep: String) {
+        if (!cacheRoot.exists()) return
+        val directories = cacheRoot.listDirectoryEntries()
+            .filter { it.isDirectory() && it.fileName.toString() != keep }
+            .sortedByDescending { it.lastModifiedTime() }
+        directories.drop(MAX_RETAINED_VERSIONS - 1).forEach { stale ->
+            stale.deleteRecursively()
+            WeLogger.i(TAG, "pruned stale dex cache for host version ${stale.fileName}")
+        }
     }
 
     /**
@@ -153,10 +187,16 @@ object DexCacheManager {
         getCacheFile(path).deleteIfExists()
     }
 
+    /** Explicit user action ("reset dex cache"): wipes every host version's cache. */
     fun clearAllCache() {
-        cacheDir.listDirectoryEntries().forEach { path ->
-            path.deleteIfExists()
+        if (cacheRoot.exists()) {
+            cacheRoot.listDirectoryEntries().forEach { path ->
+                runCatching {
+                    if (path.isDirectory()) path.deleteRecursively() else path.deleteIfExists()
+                }
+            }
         }
+        cacheDir.createDirsSafe()
         WeLogger.i(TAG, "all cache cleared")
     }
 

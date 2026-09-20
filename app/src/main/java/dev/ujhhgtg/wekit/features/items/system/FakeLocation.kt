@@ -27,6 +27,7 @@ import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
+import dev.ujhhgtg.wekit.utils.TargetProcess
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.getTopMostActivity
 import dev.ujhhgtg.wekit.utils.android.showToast
@@ -42,6 +43,10 @@ object FakeLocation : ClickableFeature(), IResolveDex {
     override val nameRes = R.string.feature_fake_location_name
     override val categoryIds = listOf(FeatureCategoryIds.SYSTEM_PRIVACY)
     override val descriptionRes = R.string.feature_fake_location_description
+
+    // Upstream 09-12: mini-programs read the location inside the AppBrand process, so the spoof
+    // has to be installed there too (requires a WeChat restart, hence the description hint).
+    override val targetProcesses = setOf(TargetProcess.MAIN, TargetProcess.APPBRAND)
 
     private val methodListener by dexMethod {
         matcher {

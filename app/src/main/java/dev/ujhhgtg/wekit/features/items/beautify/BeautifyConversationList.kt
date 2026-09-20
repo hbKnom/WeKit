@@ -26,8 +26,6 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.TextButton
-import dev.ujhhgtg.wekit.ui.content.m3.DropDownMenuWidget
-import dev.ujhhgtg.wekit.ui.content.m3.DropdownOption
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.dpToPx
@@ -49,6 +47,9 @@ private enum class ConversationListPreset(
     PINNED_GROUPED_CARD(14, 10, 4, 0xFFF7FAF9.toInt(), 0xFF252827.toInt()),
     COMPACT_ROUNDED(10, 6, 2, 0xFFF9FBFA.toInt(), 0xFF272928.toInt()),
     MINIMAL_LIST(6, 0, 0, 0xFFFCFCFC.toInt(), 0xFF232323.toInt()),
+    // Upstream 09-19 "floating island": pinned / non-pinned conversations rendered as
+    // separate rounded islands (radius 20dp, 12dp horizontal inset, 8dp gap).
+    ISLAND(20, 12, 8, 0xFFF7FAF9.toInt(), 0xFF252827.toInt()),
 }
 
 object BeautifyConversationList : ClickableFeature() {
@@ -60,16 +61,12 @@ object BeautifyConversationList : ClickableFeature() {
 
     private const val TAG = "BeautifyConversationList"
 
-    private var presetName by prefOption(
-        "beautify_conversation_list_preset",
-        ConversationListPreset.NO_LAYOUT.name,
-    )
+    private var layoutEnabled by prefOption("beautify_conversation_list_layout_enabled", true)
     private var highlightUnreadEnabled by prefOption("beautify_conversation_list_highlight_unread", false)
-    private var hideDividersEnabled by prefOption("beautify_conversation_list_hide_dividers", false)
+    private var hideDividersEnabled by prefOption("beautify_conversation_list_hide_dividers", true)
 
     private val selectedPreset: ConversationListPreset
-        get() = ConversationListPreset.entries.firstOrNull { it.name == presetName }
-            ?: ConversationListPreset.COMFORT_CARD
+        get() = if (layoutEnabled) ConversationListPreset.ISLAND else ConversationListPreset.NO_LAYOUT
 
     private enum class GroupPosition { SINGLE, FIRST, MIDDLE, LAST }
 
@@ -124,7 +121,7 @@ object BeautifyConversationList : ClickableFeature() {
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            var preset by remember { mutableStateOf(selectedPreset) }
+            var layoutEnabledInput by remember { mutableStateOf(layoutEnabled) }
             var highlightUnread by remember { mutableStateOf(highlightUnreadEnabled) }
             var hideDividers by remember { mutableStateOf(hideDividersEnabled) }
 
@@ -139,38 +136,22 @@ object BeautifyConversationList : ClickableFeature() {
                 title = { Text(stringResource(R.string.beautify_conversation_list_title)) },
                 text = {
                     SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
-                        item(key = "preset") {
-                            DropDownMenuWidget(
+                        item(key = "layout") {
+                            SwitchWidget(
                                 iconPlaceholder = false,
-                                title = stringResource(R.string.beautify_conversation_preset),
-                                description = null,
-                                value = preset,
-                                options = ConversationListPreset.entries.map { entry ->
-                                    DropdownOption(
-                                        entry,
-                                        when (entry) {
-                                            ConversationListPreset.NO_LAYOUT -> stringResource(R.string.beautify_conversation_no_layout)
-                                            ConversationListPreset.COMFORT_CARD -> stringResource(R.string.beautify_conversation_comfort_card)
-                                            ConversationListPreset.PINNED_GROUPED_CARD -> stringResource(R.string.beautify_conversation_pinned_grouped)
-                                            ConversationListPreset.COMPACT_ROUNDED -> stringResource(R.string.beautify_conversation_compact_rounded)
-                                            ConversationListPreset.MINIMAL_LIST -> stringResource(R.string.beautify_conversation_minimal)
-                                        },
-                                    )
-                                },
-                                onValueChange = { entry ->
-                                    preset = entry
-                                    if (entry == ConversationListPreset.NO_LAYOUT) highlightUnread = false
-                                    presetName = entry.name
-                                    applyChanges(
-                                        highlight = entry != ConversationListPreset.NO_LAYOUT && highlightUnread,
-                                        dividers = hideDividers,
-                                    )
+                                title = stringResource(R.string.beautify_conversation_layout),
+                                description = stringResource(R.string.beautify_conversation_layout_summary),
+                                checked = layoutEnabledInput,
+                                onCheckedChange = {
+                                    layoutEnabledInput = it
+                                    layoutEnabled = it
+                                    applyChanges(highlight = highlightUnread, dividers = hideDividers)
                                 },
                             )
                         }
                         item(
                             key = "highlight_unread",
-                            animatedVisibility = preset != ConversationListPreset.NO_LAYOUT,
+                            animatedVisibility = layoutEnabledInput,
                         ) {
                             SwitchWidget(
                                 iconPlaceholder = false,
@@ -224,7 +205,8 @@ object BeautifyConversationList : ClickableFeature() {
             return
         }
 
-        val grouped = preset == ConversationListPreset.PINNED_GROUPED_CARD
+        val grouped = preset == ConversationListPreset.PINNED_GROUPED_CARD ||
+            preset == ConversationListPreset.ISLAND
         val groupPosition = if (grouped) groupPosition(conversation, context) else GroupPosition.SINGLE
         val pinned = if (grouped) isPinnedConversation(conversation) else false
         val nextPinned = if (grouped) context.nextConversation?.let(::isPinnedConversation) else null
@@ -288,7 +270,9 @@ object BeautifyConversationList : ClickableFeature() {
         val isDark = context.isDarkMode
         val card = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            if (preset == ConversationListPreset.PINNED_GROUPED_CARD) {
+            if (preset == ConversationListPreset.PINNED_GROUPED_CARD ||
+                preset == ConversationListPreset.ISLAND
+            ) {
                 setCornerRadii(cornerRadii(context, preset.rowRadiusDp, groupPosition))
             } else {
                 cornerRadius = preset.rowRadiusDp.dpToPx(context).toFloat()

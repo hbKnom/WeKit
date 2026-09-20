@@ -38,19 +38,19 @@ object NoCloseVideoPlayerOnClick : SwitchFeature(), IResolveDex {
 
                 val activity = activityField.get(thisObject) as Activity
 
-                if (!::viewStateField.isInitialized) {
-                    viewStateField = activity.reflekt()
-                        .firstField {
-                            type { !it.isBuiltin }
-                        }.self
-                }
-
-                val viewState = viewStateField.get(activity)
-
-                // this doesn't actually inherit HeroSeekBarView
-                val expandableSeekBar = (viewState.reflekt()
-                    .firstFieldOrNull { type = "com.tencent.mm.pluginsdk.ui.seekbar.ExpandableHeroSeekBarView" }
-                    ?: return@hookBefore).get()!!
+                // The expandable seek bar does NOT inherit HeroSeekBarView, and on newer WeChat
+                // builds it is no longer reachable by guessing a declared field type (both the
+                // old view-state field pick and the old seek-bar field pick silently failed).
+                // Resolve it by value instead, walking a couple of levels through plain holders.
+                val expandableSeekBar = findExpandableSeekBar(activity)
+                    ?: run {
+                        if (!::viewStateField.isInitialized) {
+                            viewStateField = activity.reflekt()
+                                .firstField { type { !it.isBuiltin } }.self
+                        }
+                        findExpandableSeekBar(viewStateField.get(activity))
+                    }
+                    ?: return@hookBefore
 
                 if (!::getToggleBtnMethod.isInitialized) {
                     getToggleBtnMethod = expandableSeekBar.reflekt()
@@ -65,6 +65,32 @@ object NoCloseVideoPlayerOnClick : SwitchFeature(), IResolveDex {
             // always consume
             result = false
         }
+    }
+
+    private fun isExpandableSeekBar(candidate: Any?): Boolean =
+        candidate != null && candidate.javaClass.name.contains("ExpandableHeroSeekBar")
+
+    /**
+     * Finds the expandable seek bar inside [root] by inspecting field *values* rather than
+     * declared types. View subtrees are not walked (the bar is held by a plain controller
+     * object, not by the view hierarchy we are inspecting).
+     */
+    private fun findExpandableSeekBar(root: Any?, depth: Int = 0): Any? {
+        if (root == null || depth > 3) return null
+        val fields = runCatching { root.reflekt().fields { superclass = true } }.getOrNull()
+            ?: return null
+
+        for (field in fields) {
+            val value = runCatching { field.get() }.getOrNull() ?: continue
+            if (isExpandableSeekBar(value)) return value
+        }
+
+        for (field in fields) {
+            val value = runCatching { field.get() }.getOrNull() ?: continue
+            if (value is android.view.View) continue
+            findExpandableSeekBar(value, depth + 1)?.let { return it }
+        }
+        return null
     }
 
     private val methodVideoOnTouchListenerOnTouch by dexMethod {

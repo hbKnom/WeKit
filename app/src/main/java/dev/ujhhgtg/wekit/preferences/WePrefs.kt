@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.preferences
 
 import android.content.SharedPreferences
 import kotlin.properties.ReadWriteProperty
+import dev.ujhhgtg.wekit.utils.WeLogger
 import kotlin.reflect.KProperty
 
 @Suppress("unused")
@@ -55,7 +56,37 @@ abstract class WePrefs protected constructor() : SharedPreferences, SharedPrefer
     companion object {
         const val PREFS_NAME = "wekit_prefs"
 
-        val default by lazy { MmkvPrefsImpl(PREFS_NAME) }
+        /**
+         * Upstream 09-19 moved the module key/value store into the unified SQLite database.
+         * [MmkvPrefsImpl] is kept around purely so [migrateFromMmkv] can read the legacy store
+         * once and copy it over.
+         */
+        val default by lazy {
+            SqlitePrefsImpl(PREFS_NAME).also { migrateFromMmkv(it) }
+        }
+
+        private const val MIGRATION_FLAG = "storage_migrated_to_sqlite"
+
+        /**
+         * One-time copy of every MMKV entry into SQLite. Cheap when the legacy store is absent
+         * (fresh installs) and idempotent afterwards thanks to [MIGRATION_FLAG].
+         */
+        private fun migrateFromMmkv(target: WePrefs) {
+            if (target.getBoolean(MIGRATION_FLAG, false)) return
+            runCatching {
+                val legacy = MmkvPrefsImpl(PREFS_NAME)
+                val legacyValues = legacy.getAll()
+                for ((key, value) in legacyValues) {
+                    if (value == null || key == MIGRATION_FLAG) continue
+                    runCatching { target.putObject(key, value) }
+                        .onFailure { WeLogger.w("WePrefs", "failed to migrate key $key", it) }
+                }
+                if (legacyValues.isNotEmpty()) {
+                    WeLogger.i("WePrefs", "migrated ${legacyValues.size} MMKV entries into SQLite")
+                }
+            }.onFailure { WeLogger.w("WePrefs", "MMKV migration skipped", it) }
+            target.putBoolean(MIGRATION_FLAG, true)
+        }
 
         fun getBoolOrFalse(key: String): Boolean {
             return default.getBoolOrFalse(key)

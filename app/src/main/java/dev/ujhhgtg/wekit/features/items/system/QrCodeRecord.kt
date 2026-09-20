@@ -1,5 +1,6 @@
 package dev.ujhhgtg.wekit.features.items.system
 
+import com.tencent.mm.ui.LauncherUI
 import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
@@ -33,6 +34,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import com.composables.icons.materialsymbols.outlinedfilled.Qr_code_scanner
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Content_copy
 import com.composables.icons.materialsymbols.outlined.Globe
@@ -52,6 +54,9 @@ import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.IconButton
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
+import dev.ujhhgtg.wekit.features.api.ui.WeHomeScreenPopupMenuApi
+import dev.ujhhgtg.wekit.utils.HostInfo
+import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
@@ -62,7 +67,7 @@ import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
 import kotlinx.serialization.Serializable
 import org.luckypray.dexkit.DexKitBridge
 
-object QrCodeRecord : ClickableFeature(), IResolveDex {
+object QrCodeRecord : ClickableFeature(), IResolveDex, WeHomeScreenPopupMenuApi.IMenuItemsProvider {
 
     override val technicalId = "二维码扫描记录"
     override val nameRes = R.string.feature_qr_code_record_name
@@ -70,19 +75,71 @@ object QrCodeRecord : ClickableFeature(), IResolveDex {
     override val descriptionRes = R.string.feature_qr_code_record_description
 
     private const val TAG = "QrCodeRecord"
+    private const val HOME_MENU_ITEM_ID = 0xbdb47
 
     @Serializable
-    data class QrRecord(val url: String, val time: Long)
+    data class QrRecord(
+        val url: String,
+        val time: Long,
+        // Extra scan metadata kept so a record can be replayed through WeChat's own
+        // scan-result pipeline (see openInWeChat). Defaults keep old records readable.
+        val codeType: Int = 0,
+        val codeVersion: Int = 0,
+    )
 
     private val records = mutableListOf<QrRecord>()
     private const val KEY_RECORDS = "qr_code_records"
     private var prefRecords by prefOption(KEY_RECORDS, nul<String>())
+    private var showInHomeMenu by prefOption("qr_code_record_home_menu_enabled", false)
     private var loaded = false
 
     override fun onEnable() {
         methodQBarString.hookBefore {
             val rawUrl = args[1] as? String? ?: return@hookBefore
             handleUrl(rawUrl)
+        }
+        WeHomeScreenPopupMenuApi.addProvider(this)
+    }
+
+    override fun onDisable() {
+        WeHomeScreenPopupMenuApi.removeProvider(this)
+    }
+
+    override fun getMenuItems(param: HookParam): List<WeHomeScreenPopupMenuApi.MenuItem> {
+        if (!showInHomeMenu) return emptyList()
+        return listOf(
+            WeHomeScreenPopupMenuApi.MenuItem(
+                HOME_MENU_ITEM_ID,
+                localizedSystemString(R.string.qr_code_record_home_menu_title),
+                MaterialIcons.QrCodeScanner,
+            ) {
+                LauncherUI.getInstance()?.let { activity ->
+                    activity.runOnUiThread { showRecordsDialog(activity) }
+                }
+            },
+        )
+    }
+
+    /**
+     * Replay a recorded scan through WeChat's own scan-result pipeline, so friend / group /
+     * payment QR codes behave exactly as if they had just been scanned.
+     */
+    private fun openInWeChat(activity: ComponentActivity, record: QrRecord) {
+        runCatching {
+            val intent = Intent().apply {
+                setClassName(
+                    HostInfo.packageName,
+                    "com.tencent.mm.plugin.webview.stub.WebviewScanImageActivity",
+                )
+                putExtra("key_string_for_scan", record.url)
+                putExtra("key_codetype_for_scan", record.codeType)
+                putExtra("key_codeversion_for_scan", record.codeVersion)
+                putExtra("dev.ujhhgtg.wekit.qr_code_record_replay", true)
+            }
+            activity.startActivity(intent)
+        }.onFailure {
+            WeLogger.e(TAG, "failed to open QR result in WeChat", it)
+            showToast(activity, localizedSystemString(R.string.qr_code_record_open_failed))
         }
     }
 
@@ -97,7 +154,9 @@ object QrCodeRecord : ClickableFeature(), IResolveDex {
         saveRecords()
     }
 
-    override fun onClick(context: ComponentActivity) {
+    override fun onClick(context: ComponentActivity) = showRecordsDialog(context)
+
+    private fun showRecordsDialog(context: ComponentActivity) {
         if (!loaded) {
             loadRecords()
             loaded = true
@@ -167,6 +226,15 @@ object QrCodeRecord : ClickableFeature(), IResolveDex {
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.End
                                     ) {
+                                        IconButton({ openInWeChat(context, record) }) {
+                                            Icon(
+                                                imageVector = MaterialSymbols.OutlinedFilled.Qr_code_scanner,
+                                                contentDescription = stringResource(
+                                                    R.string.system_qr_code_record_native_open
+                                                ),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                         IconButton({
                                             copyToClipboard(context, record.url)
                                             showToast(
