@@ -3983,7 +3983,7 @@
     <string name="contacts_custom_avatar_manage">Manage avatars</string>
     <string name="contacts_custom_avatar_scopes">Apply to</string>
     <string name="contacts_custom_avatar_scope_chat">Chat messages</string>
-    <string name="contacts_custom_avatar_scope_contacts">Contacts & contact picker</string>
+    <string name="contacts_custom_avatar_scope_contacts">Contacts &amp; contact picker</string>
     <string name="contacts_custom_avatar_scope_conversation">Conversation list</string>
     <string name="contacts_custom_avatar_scope_moments">Moments</string>
     <string name="contacts_custom_avatar_scope_notifications">Notifications</string>
