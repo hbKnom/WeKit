@@ -3967,7 +3967,7 @@
     <string name="conversation_grouping_pin_tabs">Pin group tabs</string>
     <string name="conversation_grouping_pin_tabs_description">Pin group tabs below the title bar while scrolling up</string>
     <string name="conversation_grouping_remember_scroll_state">Remember scroll state</string>
-    <string name="conversation_grouping_remember_scroll_state_description">Remember and restore each group's vertical scroll position when switching</string>
+    <string name="conversation_grouping_remember_scroll_state_description">Remember and restore each group\'s vertical scroll position when switching</string>
     <string name="conversation_grouping_take_over_horizontal_scroll">Take over horizontal swipe</string>
     <string name="conversation_grouping_take_over_horizontal_scroll_description">Swipe horizontally to switch adjacent groups; hand back to WeChat when swiping past the edge</string>
     <string name="conversation_grouping_floating_recommend_title">Floating island recommended</string>
