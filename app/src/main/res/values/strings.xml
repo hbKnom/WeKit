@@ -3991,4 +3991,76 @@
     <string name="contacts_custom_avatar_scope_profile">Profile pages</string>
     <string name="contacts_custom_avatar_scope_shortcuts">Home-screen shortcuts</string>
     <string name="contacts_custom_avatar_shortcut_hint">Applies when the shortcut is created; existing shortcuts must be recreated to update their icon.</string>
+
+    <!-- QQ Music Order -->
+    <string name="feature_qq_music_order_name">QQ Music Order</string>
+    <string name="feature_qq_music_order_description">Request songs by sending a trigger word in chat</string>
+    <string name="qq_music_order_need_a_channel">Enable at least the music card or the song voice</string>
+    <string name="qq_music_order_not_found">No match found</string>
+    <string name="qq_music_order_detail_failed">Failed to fetch; possibly a copyright or digital-album restriction</string>
+    <string name="qq_music_order_both_failed">Both the music card and the song voice failed to send</string>
+    <string name="qq_music_order_card_failed">Failed to send the music card</string>
+    <string name="qq_music_order_voice_failed">Failed to send the song voice</string>
+    <string name="qq_music_order_settings_title">QQ Music Order</string>
+    <string name="qq_music_order_triggers">Trigger words</string>
+    <string name="qq_music_order_triggers_summary">Separate multiple triggers with commas; defaults to “点歌”</string>
+    <string name="qq_music_order_send_as_card">Send music card</string>
+    <string name="qq_music_order_send_as_voice">Send song as voice</string>
+    <string name="qq_music_order_custom_singer">Allow explicit singer</string>
+    <string name="qq_music_order_custom_singer_summary">Send “song&amp;singer” to pick the performer</string>
+    <string name="qq_music_order_default_singer">Default singer name</string>
+    <string name="qq_music_order_singer_as_nickname">Replace singer with nickname</string>
+    <string name="qq_music_order_cover_as_avatar">Replace cover with avatar</string>
+    <string name="qq_music_order_app_id">Music card AppID</string>
+    <string name="qq_music_order_intercept_own">Also react to your own messages</string>
+    <string name="qq_music_order_allowed_talkers">Enabled chats</string>
+    <string name="qq_music_order_allowed_talkers_summary">Empty means all chats</string>
+    <string name="qq_music_order_this_chat_only">Enable for this chat only</string>
+    <string name="qq_music_order_clear_talkers">Clear enabled chats</string>
+    <string name="qq_music_order_this_chat_off">Disable for this chat</string>
+
+    <!-- Text to speech announcements -->
+    <string name="feature_text_speech_name">Text-to-speech announcements</string>
+    <string name="feature_text_speech_description">Announce text or voice messages received from the allowed chats</string>
+    <string name="text_speech_settings_title">Text-to-speech announcements</string>
+    <string name="text_speech_announce_sender">Announce the sender name</string>
+    <string name="text_speech_play_voice_messages">Announce voice messages</string>
+    <string name="text_speech_respect_wechat_dnd">Respect WeChat mute settings</string>
+    <string name="text_speech_volume_control">Allow volume keys to control playback</string>
+    <string name="text_speech_template">Announcement template</string>
+    <string name="text_speech_template_summary">Available placeholders:</string>
+    <string name="text_speech_quiet_enable">Enable quiet hours</string>
+    <string name="text_speech_quiet_start">Quiet hours start</string>
+    <string name="text_speech_quiet_end">Quiet hours end</string>
+    <string name="text_speech_tts_engine">TTS engine package</string>
+    <string name="text_speech_tts_engine_summary">Leave empty to use the system default</string>
+    <string name="text_speech_allowed_contacts">Chats to announce</string>
+    <string name="text_speech_allowed_contacts_summary">Empty means all chats</string>
+    <string name="text_speech_clear_contacts">Clear announcement chats</string>
+    <string name="text_speech_this_chat_off">Stop announcing this chat</string>
+    <string name="text_speech_this_chat_only">Announce this chat only</string>
+    <string name="text_speech_voice_message">[voice message]</string>
+
+    <!-- Audio clipper (ported from FunBox) -->
+    <string name="feature_audio_clipper_name">Audio clipper</string>
+    <string name="feature_audio_clipper_description">Drag the two handles to set head/tail, preview and export the selection</string>
+    <string name="audio_clipper_title">Audio clipper</string>
+    <string name="audio_clipper_range">Head: %1$s Tail: %2$s Selected: %3$s</string>
+    <string name="audio_clipper_range_tip">Drag the two handles on the same bar to set the head and tail positions</string>
+    <string name="audio_clipper_info_title">Audio info</string>
+    <string name="audio_clipper_info">Source: %1$s Rate: %2$dHz Length: %3$s Size: %4$s</string>
+    <string name="audio_clipper_play">Play selection</string>
+    <string name="audio_clipper_stop">Stop preview</string>
+    <string name="audio_clipper_reset">Reset range</string>
+    <string name="audio_clipper_confirm">Confirm</string>
+    <string name="audio_clipper_preparing">Preparing audio…</string>
+    <string name="audio_clipper_export_voice">Export as voice</string>
+    <string name="audio_clipper_export_mp3">Export as MP3</string>
+    <string name="audio_clipper_exported">Exported: %1$s</string>
+    <string name="audio_clipper_export_failed">Export failed: %1$s</string>
+    <string name="audio_clipper_play_failed">Preview failed</string>
+    <string name="audio_clipper_failed">Could not prepare the audio: %1$s</string>
+    <string name="audio_clipper_source_missing">No clipable audio found</string>
+    <string name="audio_clipper_need_voice_message">Long-press a voice message to use the audio clipper</string>
+    <string name="audio_clipper_max_duration_error">The selection cannot exceed %1$s; adjust it before exporting</string>
 </resources>

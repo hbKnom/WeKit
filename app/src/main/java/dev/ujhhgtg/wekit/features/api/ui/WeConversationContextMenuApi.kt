@@ -10,6 +10,7 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.core.ApiFeature
+import java.util.concurrent.ConcurrentHashMap
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
@@ -28,7 +29,8 @@ object WeConversationContextMenuApi : ApiFeature(), IResolveDex {
         fun getMenuItems(): List<MenuItem>
     }
 
-    private val menuItemProviders = mutableSetOf<IMenuItemsProvider>()
+    // UI 线程读、setup 线程写：线程安全集合，避免并发注册时 ConcurrentModificationException。
+    private val menuItemProviders: MutableSet<IMenuItemsProvider> = ConcurrentHashMap.newKeySet()
 
     fun addProvider(provider: IMenuItemsProvider) {
         menuItemProviders += provider

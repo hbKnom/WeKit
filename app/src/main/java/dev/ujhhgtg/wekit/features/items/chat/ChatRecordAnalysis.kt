@@ -49,7 +49,13 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
     override val descriptionRes = R.string.feature_chat_record_analysis_description
 
     private var maxCount by prefOption("chat_analysis_max_count", 20000)
-    private var sampleLimit by prefOption("chat_analysis_sample_limit", 500)
+
+    /**
+     * 喂给 AI 的抽样条数上限。
+     * 旧默认 500 条 + 单条 200 字，用户反馈"内容太少、经常返回错误"，现在放宽到 1500 条，
+     * 单条长度与整段总量上限见 [ChatAnalysisEngine]（500 字 / 60000 字）。
+     */
+    private var sampleLimit by prefOption("chat_analysis_sample_limit", 1500)
 
     private val rangeLabels = listOf("今天", "昨天", "本周", "上周", "本月", "上月")
 
@@ -139,7 +145,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     saveFeatures(s)
                 },
                 onEditMaxCount = { editInt(view, "分析条数上限", "0 = 全部（越大越慢，建议大群 5000~20000）", maxCount) { maxCount = it } },
-                onEditSampleLimit = { editInt(view, "抽样上限", "喂给 AI 的最大文本条数，建议 200~2000", sampleLimit) { sampleLimit = it } },
+                onEditSampleLimit = { editInt(view, "抽样上限", "喂给 AI 的最大文本条数，建议 500~3000（另有 60000 字总量上限兜底）", sampleLimit) { sampleLimit = it } },
                 onModelManager = { showModelManager(view) },
                 onTestModel = { testCurrentModel(view) },
                 onClose = { dismiss() },
@@ -311,8 +317,14 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                         ),
                         onTestModel = { m -> dismiss(); showModelTesting(view, model, m) },
                         onUseModel = { m ->
-                            ChatAnalysisModelStore.select(m)
-                            showToast("已切换当前模型：$m")
+                            // 「同步为当前模型」：把刚验证通过的 baseURL / APIKey 与新模型名一起落盘并选中。
+                            // 只写模型名的话，选中项会指向一个并不存在的条目，用户还得手动重填地址与密钥。
+                            if (model.name.isBlank()) {
+                                showToast("请先给该模型配置命名，再同步为当前模型")
+                            } else {
+                                ChatAnalysisModelStore.addOrUpdate(model.copy(model = m))
+                                showToast("已同步并切换当前模型：$m")
+                            }
                         },
                         onClose = { dismiss() },
                     )

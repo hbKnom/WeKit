@@ -3,6 +3,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 import android.content.Context
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewParent
 import com.tencent.mm.ui.base.CustomViewPager
 import androidx.activity.ComponentActivity
 import androidx.annotation.StringRes
@@ -256,6 +257,20 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
     @Volatile
     private var tabsHeaderView = WeakReference<View>(null)
 
+    /**
+     * 依次对顶栏的所有祖先容器打开/恢复「不拦截触摸」。
+     *
+     * 下拉小程序面板由哪一层容器响应随宿主版本变化（ViewPager / TaskBar 容器），所以往上一直
+     * 遍历到根；只影响当前这一次触摸，不改变任何分组/排序/过滤逻辑。
+     */
+    private fun disallowParentIntercept(view: View, disallow: Boolean) {
+        var parent: ViewParent? = view.parent
+        while (parent != null) {
+            runCatching { parent.requestDisallowInterceptTouchEvent(disallow) }
+            parent = parent.parent
+        }
+    }
+
     private fun applyTabsPin(recycler: View?) {
         val header = tabsHeaderView.get() ?: return
         if (!pinTabsState.value) {
@@ -394,6 +409,39 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
             val composeView = ComposeView(conversationHostView.context).apply {
                 val lifecycleOwner = LifecycleOwnerProvider.lifecycleOwner
                 setLifecycleOwner(lifecycleOwner)
+
+                // 点击分组 tab 误触「下拉小程序面板」：宿主的下拉手势是父容器在 DOWN/MOVE 阶段
+                // 拦截实现的，而这一条 tab 行（列表的第 0 个 header）只依赖 combinedClickable，
+                // 触摸期不声明消费 → 父容器先一步把手势判成下拉。这里只在触摸期间声明"别拦截"，
+                // 不改 Compose 内部逻辑、也不消费事件（返回 false，tab 点击照常生效）。
+                var touchStartX = 0f
+                var touchStartY = 0f
+                var interceptRelaxed = false
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            touchStartX = event.x
+                            touchStartY = event.y
+                            interceptRelaxed = false
+                            disallowParentIntercept(view, true)
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (!interceptRelaxed) {
+                                val dx = kotlin.math.abs(event.x - touchStartX)
+                                val dy = kotlin.math.abs(event.y - touchStartY)
+                                // 明确的横向滑动属于「滑动切换分组」手势，必须让回去，
+                                // 否则会把原有的横向接管逻辑一起掐死。
+                                if (dx > dy && dx > 24f) {
+                                    interceptRelaxed = true
+                                    disallowParentIntercept(view, false)
+                                }
+                            }
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                            disallowParentIntercept(view, false)
+                    }
+                    false
+                }
 
                 val context = conversationHostView.context
 

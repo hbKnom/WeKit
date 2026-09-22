@@ -1481,7 +1481,8 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     /** 发送文本消息 */
     fun sendText(toUser: String, text: String): Boolean {
         return try {
-            WeLogger.i(TAG, "sending text message: $text")
+            // 日志落盘在手机上、还可能被日志页/脚本读取：只记长度，不记聊天正文（隐私）。
+            WeLogger.i(TAG, "sending text message (len=${text.length})")
             val sendMsgObject = methodGetSendMsgObject.method.invoke(null) ?: return false
             val msgObj = createSendMsgScene(toUser, text)
             methodPostToQueue.method.invoke(sendMsgObject, msgObj) as? Boolean ?: false
@@ -1494,7 +1495,8 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     /** 发送文件消息 */
     fun sendFile(talker: String, filePath: String, title: String, appId: String? = null): Boolean {
         return try {
-            WeLogger.i(TAG, "sending file message: $filePath")
+            // 同上：只记文件名，不落盘完整路径（可能含用户名/目录结构）。
+            WeLogger.i(TAG, "sending file message: ${filePath.substringAfterLast('/')}")
             val fileObject = WXFileObject()
             fileObject.filePath = filePath
             val mediaMessage = WXMediaMessage()

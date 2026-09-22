@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
+import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -52,7 +53,8 @@ object WeChatInputBarMenuApi : ApiFeature(), IResolveDex {
     )
 
     private const val TAG = "WeChatInputBarMenuApi"
-    private val providers = mutableSetOf<IActionItemsProvider>()
+    // UI 线程读、setup 线程写：线程安全集合，避免并发注册时 ConcurrentModificationException。
+    private val providers: MutableSet<IActionItemsProvider> = ConcurrentHashMap.newKeySet()
 
     fun addProvider(provider: IActionItemsProvider) {
         providers += provider

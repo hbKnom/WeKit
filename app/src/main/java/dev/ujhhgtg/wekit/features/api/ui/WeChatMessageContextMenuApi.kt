@@ -10,6 +10,7 @@ import android.widget.PopupWindow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Icon
@@ -98,7 +99,9 @@ object WeChatMessageContextMenuApi : ApiFeature(), IResolveDex {
     // id of the single merged entry shown when MergeChatMessageContextMenuItems is enabled
     private const val MERGED_MENU_ITEM_ID = 777000
 
-    private val providers = mutableSetOf<IMenuItemsProvider>()
+    // 宿主 UI 线程读（构建菜单），feature setup 线程写（onEnable/onDisable）：必须是线程安全集合，
+    // 否则并发注册/反注册会抛 ConcurrentModificationException，把整个长按菜单打断。
+    private val providers: MutableSet<IMenuItemsProvider> = ConcurrentHashMap.newKeySet()
 
     fun addProvider(provider: IMenuItemsProvider) {
         providers += provider

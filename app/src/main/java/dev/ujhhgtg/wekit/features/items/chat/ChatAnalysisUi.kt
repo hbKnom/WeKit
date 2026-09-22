@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -24,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,11 +35,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +72,7 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
+import dev.ujhhgtg.wekit.ui.content.m3.CornerRadius
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 
 /**
@@ -80,24 +87,37 @@ internal object ChatAnalysisUi {
 
     @Composable
     fun SectionHeader(title: String, accent: Color = MaterialTheme.colorScheme.primary) {
+        SectionHeaderRow(title, accent, Modifier.padding(top = 18.dp))
+    }
+
+    /**
+     * 分节标题的实际渲染：3dp 竖条（accent）+ titleSmall/Bold。
+     * 竖条先 clip 再 background，保证圆角外不会溢出颜色。
+     */
+    @Composable
+    private fun SectionHeaderRow(title: String, accent: Color, modifier: Modifier = Modifier) {
         Row(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
-                .padding(top = 10.dp, bottom = 4.dp),
+                .padding(bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 Modifier
-                    .width(4.dp)
-                    .height(18.dp)
-                    .background(accent, RoundedCornerShape(2.dp))
+                    .width(3.dp)
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accent)
             )
             Spacer(Modifier.width(8.dp))
             Text(
                 title,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.5.sp),
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -160,7 +180,7 @@ internal object ChatAnalysisUi {
                         )
                     }
                     item {
-                        HorizontalDivider()
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     }
                     item {
                         BaseWidget(
@@ -477,7 +497,8 @@ internal object ChatAnalysisUi {
             when {
                 t.isEmpty() -> out.add(ReportUnit.Gap)
                 t.startsWith("【") && t.endsWith("】") -> {
-                    out.add(ReportUnit.Gap)
+                    // 引擎每个段前已有一个空行（Gap），此处不再额外插 Gap，
+                    // 分节间距统一由 SectionHeader / 分节卡片承担。
                     out.add(ReportUnit.Section(t.removeSurrounding("【", "】")))
                 }
                 t.contains("█") -> {
@@ -520,35 +541,120 @@ internal object ChatAnalysisUi {
         return out
     }
 
+    /** 一个【段】= 一张卡片：[title] 为该段标题（null 表示报告开头无标题的前置内容）。 */
+    private data class ReportBlock(val title: String?, val units: List<ReportUnit>)
+
+    /** 把线性 unit 流按 Section 切块；Gap 不再产生任何间距（节奏由卡片与标题承担）。 */
+    private fun groupIntoBlocks(units: List<ReportUnit>): List<ReportBlock> {
+        val blocks = mutableListOf<ReportBlock>()
+        var title: String? = null
+        var bucket = mutableListOf<ReportUnit>()
+        for (unit in units) {
+            when (unit) {
+                is ReportUnit.Section -> {
+                    if (bucket.isNotEmpty() || title != null) blocks.add(ReportBlock(title, bucket))
+                    title = unit.title
+                    bucket = mutableListOf()
+                }
+                is ReportUnit.Gap -> Unit // no-op：间距节奏统一为 分节 18dp → 卡片内 14dp → 行间 6dp
+                else -> bucket.add(unit)
+            }
+        }
+        if (bucket.isNotEmpty() || title != null) blocks.add(ReportBlock(title, bucket))
+        return blocks
+    }
+
+    /** 段位配色分流：核心指标/发言排行 → primary；载体偏好/高频词 → secondary；活跃频次/情绪指纹 → tertiary。 */
+    @Composable
+    private fun sectionAccent(title: String?, fallback: Color): Color = when {
+        title == null -> fallback
+        title.contains("载体偏好") || title.contains("高频词") -> MaterialTheme.colorScheme.secondary
+        title.contains("活跃频次") || title.contains("情绪指纹") -> MaterialTheme.colorScheme.tertiary
+        title.contains("核心指标") || title.contains("发言排行") -> MaterialTheme.colorScheme.primary
+        else -> fallback
+    }
+
+    /** 统一分节卡片：圆角取自项目常量 CornerRadius，卡内 padding 14dp。 */
+    @Composable
+    private fun SectionCard(
+        title: String?,
+        accent: Color,
+        modifier: Modifier = Modifier,
+        content: @Composable () -> Unit,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(CornerRadius),
+            color = MaterialTheme.colorScheme.surfaceBright,
+            tonalElevation = 1.dp,
+            modifier = Modifier.fillMaxWidth().then(modifier),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
+                if (title != null) SectionHeaderRow(title, accent)
+                content()
+            }
+        }
+    }
+
     @Composable
     fun ReportContent(
         units: List<ReportUnit>,
         accent: Color = MaterialTheme.colorScheme.primary,
     ) {
-        LazyColumn(Modifier.heightIn(max = 460.dp).fillMaxWidth()) {
-            itemsIndexed(units) { _, unit ->
-                when (unit) {
-                    is ReportUnit.Gap -> Spacer(Modifier.height(6.dp))
-                    is ReportUnit.Section -> SectionHeader(unit.title, accent)
-                    is ReportUnit.BarRow -> BarRowView(unit, accent)
-                    is ReportUnit.KeyValue -> KeyValueView(unit)
-                    is ReportUnit.WordChips -> WordChipsView(unit.words)
-                    is ReportUnit.TextLine -> Text(
-                        unit.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(vertical = 2.dp),
-                    )
+        val blocks = remember(units) { groupIntoBlocks(units) }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 140.dp, max = 420.dp),
+            contentPadding = PaddingValues(bottom = 8.dp),
+        ) {
+            itemsIndexed(blocks) { index, block ->
+                val blockAccent = sectionAccent(block.title, accent)
+                SectionCard(
+                    title = block.title,
+                    accent = blockAccent,
+                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 18.dp),
+                ) {
+                    block.units.forEach { unit -> ReportUnitView(unit, blockAccent) }
                 }
             }
         }
     }
 
     @Composable
+    private fun ReportUnitView(unit: ReportUnit, accent: Color) {
+        when (unit) {
+            is ReportUnit.Gap -> Unit
+            is ReportUnit.Section -> SectionHeaderRow(unit.title, accent, Modifier.padding(top = 6.dp))
+            is ReportUnit.BarRow -> BarRowView(unit, accent)
+            is ReportUnit.KeyValue -> KeyValueView(unit)
+            is ReportUnit.WordChips -> WordChipsView(unit.words)
+            is ReportUnit.TextLine -> {
+                val fs = LocalDensity.current.fontScale
+                Text(
+                    unit.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = (3 * fs).dp),
+                )
+            }
+        }
+    }
+
+    @Composable
     private fun BarRowView(unit: ReportUnit.BarRow, accent: Color) {
+        val fs = LocalDensity.current.fontScale
+        val barShape = RoundedCornerShape((5 * fs).dp)
+        val ratio = unit.ratio.coerceIn(0f, 1f)
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp)
+                .padding(vertical = (3 * fs).dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -556,7 +662,8 @@ internal object ChatAnalysisUi {
             ) {
                 Text(
                     unit.label,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -565,33 +672,45 @@ internal object ChatAnalysisUi {
                     Spacer(Modifier.width(8.dp))
                     Text(
                         unit.value,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
                         color = accent,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            Spacer(Modifier.height(3.dp))
-            LinearProgressIndicator(
-                progress = { unit.ratio.coerceIn(0f, 1f) },
-                modifier = Modifier
+            Spacer(Modifier.height((3 * fs).dp))
+            // 自绘进度条：M3 的 LinearProgressIndicator 在小高度下会把圆角压平，
+            // 这里用 Box 轨道 + Box 填充，显式 clip 保证两端圆角完整。
+            Box(
+                Modifier
                     .fillMaxWidth()
-                    .height(8.dp),
-                color = accent,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
+                    .height((10 * fs).dp)
+                    .clip(barShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(ratio)
+                        .fillMaxHeight()
+                        .clip(barShape)
+                        .background(accent)
+                )
+            }
         }
     }
 
     @Composable
     private fun KeyValueView(unit: ReportUnit.KeyValue) {
+        val fs = LocalDensity.current.fontScale
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 2.dp),
+                .padding(vertical = (3 * fs).dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // key / value 各占一半且都设上限，避免长文本把对方顶出卡片边界
             Text(
                 unit.key,
                 style = MaterialTheme.typography.bodyMedium,
@@ -600,11 +719,14 @@ internal object ChatAnalysisUi {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(12.dp))
             Text(
                 unit.value,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -613,25 +735,40 @@ internal object ChatAnalysisUi {
 
     @Composable
     private fun WordChipsView(words: List<Pair<String, Int>>) {
+        val fs = LocalDensity.current.fontScale
+        val chipShape = RoundedCornerShape((10 * fs).dp)
         // FlowRow 自动换行，避免词太多挤成一排被截断
         FlowRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 3.dp),
+                .padding(vertical = (3 * fs).dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            words.take(20).forEach { (word, count) ->
+            words.take(20).forEachIndexed { index, (word, count) ->
+                // 按热度分档：Top1-3 / 4-8 / 9-20
+                val container = when (index) {
+                    in 0..2 -> MaterialTheme.colorScheme.primaryContainer
+                    in 3..7 -> MaterialTheme.colorScheme.secondaryContainer
+                    else -> MaterialTheme.colorScheme.tertiaryContainer
+                }
+                val onContainer = when (index) {
+                    in 0..2 -> MaterialTheme.colorScheme.onPrimaryContainer
+                    in 3..7 -> MaterialTheme.colorScheme.onSecondaryContainer
+                    else -> MaterialTheme.colorScheme.onTertiaryContainer
+                }
                 Box(
                     Modifier
-                        .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(10.dp))
+                        .clip(chipShape)
+                        .background(container)
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Text(
                         "$word ×$count",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = onContainer,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -744,7 +881,20 @@ internal object ChatAnalysisUi {
                 }
             },
             text = {
-                Column {
+                Column(Modifier.fillMaxWidth()) {
+                    // 导出/复制移到内容区右上角，避免 4 个按钮挤在一行导致窄屏溢出
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onExportPng) {
+                            Icon(MaterialSymbols.Outlined.Download, contentDescription = "导出 PNG")
+                        }
+                        IconButton(onClick = onCopy) {
+                            Icon(MaterialSymbols.Outlined.Content_copy, contentDescription = "复制")
+                        }
+                    }
                     if (hasTranscript) {
                         ReportContent(units)
                     } else {
@@ -756,14 +906,6 @@ internal object ChatAnalysisUi {
                 Button(onAiSummary) {
                     Icon(MaterialSymbols.Outlined.Smart_toy, null)
                     Text("AI 总结")
-                }
-                Button(onExportPng) {
-                    Icon(MaterialSymbols.Outlined.Download, null)
-                    Text("导出 PNG")
-                }
-                Button(onCopy) {
-                    Icon(MaterialSymbols.Outlined.Content_copy, null)
-                    Text("复制")
                 }
                 Button(onClose) { Text("关闭") }
             },
@@ -797,27 +939,37 @@ internal object ChatAnalysisUi {
                 }
             },
             text = {
-                if (units.isEmpty()) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 460.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {                        Text(ai, style = MaterialTheme.typography.bodyMedium)
+                Column(Modifier.fillMaxWidth()) {
+                    // 导出/复制移到内容区右上角，与报告弹窗保持一致
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onExportPng) {
+                            Icon(MaterialSymbols.Outlined.Download, contentDescription = "导出 PNG")
+                        }
+                        IconButton(onClick = onCopy) {
+                            Icon(MaterialSymbols.Outlined.Content_copy, contentDescription = "复制")
+                        }
                     }
-                } else {
-                    ReportContent(units, MaterialTheme.colorScheme.tertiary)
+                    if (units.isEmpty()) {
+                        // 长文本分支：显式限高 + 内部滚动，保证按钮行始终可见、内容能滚到底
+                        Text(
+                            ai,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 140.dp, max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    } else {
+                        ReportContent(units, MaterialTheme.colorScheme.tertiary)
+                    }
                 }
             },
             confirmButton = {
-                Button(onExportPng) {
-                    Icon(MaterialSymbols.Outlined.Download, null)
-                    Text("导出 PNG")
-                }
-                Button(onCopy) {
-                    Icon(MaterialSymbols.Outlined.Content_copy, null)
-                    Text("复制")
-                }
                 Button(onClose) { Text("关闭") }
             },
         )
@@ -935,7 +1087,7 @@ internal object ChatAnalysisUi {
                         if (state.result.success && state.result.testedModel.isNotBlank()) {
                             Button({ onUseModel(state.result.testedModel) }) {
                                 Icon(MaterialSymbols.Outlined.Check, null)
-                                Text("设为当前模型")
+                                Text("同步为当前模型")
                             }
                         }
                         if (state.result.testedModel.isNotBlank()) {
