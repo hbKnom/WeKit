@@ -498,8 +498,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      * QQ 音乐的取流主机两种协议都实测可用（`https://sjy.stream.qqmusic.qq.com/…ogg?…vkey=…` 同样 206），
      * 所以统一升级成 https：卡片里播放更稳，下载也不会被明文策略拦。
      */
-    private fun secureUrl(url: String): String {
-        if (!url.startsWith("http://")) return url
+    private fun secureUrl(url: String?): String? {
+        if (url == null || !url.startsWith("http://")) return url
         val host = url.removePrefix("http://").substringBefore('/').substringAfter('@').substringBefore(':')
         return if (host.endsWith(".qq.com")) {
             "https://" + url.removePrefix("http://")
