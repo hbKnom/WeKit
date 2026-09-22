@@ -59,6 +59,12 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
     private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
     private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
 
+    /**
+     * 引擎枚举用的 action（= `TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE`）。
+     * 同样用字面量：平台常量在本项目编译 SDK 里可见性不稳定，字面量运行时行为完全一致。
+     */
+    private const val ACTION_TTS_SERVICE = "android.intent.action.TTS_SERVICE"
+
     internal const val KEY_ALLOWED = "text_speech_allowed_contacts"
     internal const val KEY_ANNOUNCE_SENDER = "text_speech_announce_sender"
     internal const val KEY_TEMPLATE = "text_speech_announcement_template"
@@ -120,17 +126,25 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
      * 枚举本机已安装的 TTS 引擎，供设置页直接选择（用户反馈："我的 tts 引擎不止一个，
      * 手动输入很麻烦"）。空字符串代表「系统默认引擎」。
      *
-     * [TextToSpeech.getEngines] 返回的是 EngineInfo，`name` 是引擎包名（系统默认项可能为 null），
-     * `label` 往往是 `包名:语音包` 这类资源名，直接显示很难认，所以这里用 PackageManager 取
-     * 应用名做展示文案，取不到再退回包名。
+     * ⚠️ 不能用 `TextToSpeech.getEngines(context)`：那个静态重载在编译 SDK 里不可见
+     * （编译报 `Unresolved reference 'getEngines'`，实例方法 `TextToSpeech.engines` 要等引擎
+     * 初始化完才有值，枚举阶段根本拿不到）。这里改用**公开且与 `TtsEngines` 内部同源**的做法：
+     * 查询声明了 `android.intent.action.TTS_SERVICE` 的服务，其所在包名就是构造
+     * `TextToSpeech(ctx, listener, enginePackage)` 第三个参数要的值。
+     *
+     * 展示文案：包名很难认，用 PackageManager 取应用名当标题，包名作副标题。
      */
     fun ttsEngineOptions(): List<TtsEngineOption> {
         val ctx = HostInfo.application
         val pm = ctx.packageManager
         val result = mutableListOf(TtsEngineOption("", ctx.getString(R.string.text_speech_engine_system_default)))
         runCatching {
-            TextToSpeech.getEngines(ctx).orEmpty().forEach { info ->
-                val pkg = info.name ?: return@forEach
+            val intent = Intent(ACTION_TTS_SERVICE)
+            // flags 传 0（不用 MATCH_DEFAULT_ONLY）：部分引擎的 intent-filter 没写 CATEGORY_DEFAULT，
+            // 带上该过滤条件会把它们筛掉，用户就会"看着装了引擎却选不到"。
+            val services = pm.queryIntentServices(intent, 0).orEmpty()
+            services.forEach { resolved ->
+                val pkg = resolved.serviceInfo?.packageName ?: return@forEach
                 if (result.any { it.name == pkg }) return@forEach
                 val label = runCatching {
                     pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
