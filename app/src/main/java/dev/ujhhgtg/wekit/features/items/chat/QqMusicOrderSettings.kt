@@ -40,7 +40,10 @@ object QqMusicOrderSettings {
 
     fun show(context: Context) {
         showComposeDialog(context) {
-            var triggers by remember { mutableStateOf(QqMusicOrder.triggers().joinToString(",")) }
+            var triggers by remember { mutableStateOf(QqMusicOrder.cardTriggers().joinToString(",")) }
+            var voiceTriggers by remember {
+                mutableStateOf(QqMusicOrder.voiceTriggers().joinToString(","))
+            }
             var sendCard by remember { mutableStateOf(QqMusicOrder.sendAsCard()) }
             var sendVoice by remember { mutableStateOf(QqMusicOrder.sendAsVoice()) }
             var customSinger by remember { mutableStateOf(QqMusicOrder.customSinger()) }
@@ -85,10 +88,25 @@ object QqMusicOrderSettings {
                                 )
                             }
 
+                            // 语音卡片用**自己的一套触发词**：命中它只发语音、不发卡片（2026-09-23 要求）。
+                            item {
+                                OutlinedTextField(
+                                    value = voiceTriggers,
+                                    onValueChange = { voiceTriggers = it },
+                                    label = { Text(stringResource(R.string.qq_music_order_voice_triggers)) },
+                                    supportingText = {
+                                        Text(stringResource(R.string.qq_music_order_voice_triggers_summary))
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                )
+                            }
+
                             item {
                                 SwitchWidget(
                                     icon = MaterialSymbols.Outlined.Music_note,
                                     title = stringResource(R.string.qq_music_order_send_as_card),
+                                    description = stringResource(R.string.qq_music_order_send_as_card_summary),
                                     checked = sendCard,
                                     onCheckedChange = { sendCard = it },
                                     trailingDivider = true,
@@ -98,6 +116,7 @@ object QqMusicOrderSettings {
                                 SwitchWidget(
                                     icon = MaterialSymbols.Outlined.Voice_chat,
                                     title = stringResource(R.string.qq_music_order_send_as_voice),
+                                    description = stringResource(R.string.qq_music_order_send_as_voice_summary),
                                     checked = sendVoice,
                                     onCheckedChange = { sendVoice = it },
                                     trailingDivider = true,
@@ -206,6 +225,26 @@ object QqMusicOrderSettings {
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                                 )
                             }
+                            // AppID 预设：微信只给「它自己认识的」AppID 渲染卡片左下角的来源名，
+                            // 这里把实测能显示的几个列出来，点一下同时把来源名一起写好。
+                            QqMusicOrder.APP_ID_PRESETS.entries.forEach { preset ->
+                                item {
+                                    BaseWidget(
+                                        icon = MaterialSymbols.Outlined.Music_note,
+                                        title = stringResource(
+                                            R.string.qq_music_order_app_id_preset,
+                                            preset.value,
+                                        ),
+                                        description = preset.key,
+                                        onClick = {
+                                            appId = preset.key
+                                            appName = preset.value
+                                        },
+                                        trailingDivider = true,
+                                    )
+                                }
+                            }
+
                             if (appId.trim() != QqMusicOrder.DEFAULT_APP_ID) {
                                 item {
                                     BaseWidget(
@@ -293,6 +332,15 @@ object QqMusicOrderSettings {
                                 .filter { it.isNotEmpty() }
                                 .distinct()
                                 .ifEmpty { listOf(QqMusicOrder.DEFAULT_TRIGGER) }
+                                .joinToString(","),
+                        )
+                        WePrefs.putString(
+                            QqMusicOrder.KEY_VOICE_TRIGGERS,
+                            voiceTriggers.split(',', '\uFF0C', '\n')
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() }
+                                .distinct()
+                                .ifEmpty { QqMusicOrder.DEFAULT_VOICE_TRIGGERS.split(',') }
                                 .joinToString(","),
                         )
                         WePrefs.putBool(QqMusicOrder.KEY_SEND_AS_CARD, sendCard)

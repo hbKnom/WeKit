@@ -9,6 +9,7 @@ sealed interface HomeSidePanelRoute {
     data class WeatherSettings(val cardId: String) : EditorDetail
     data class WalletSettings(val cardId: String) : EditorDetail
     data class HitokotoSettings(val cardId: String) : EditorDetail
+    data class CalendarSettings(val cardId: String) : EditorDetail
     data object AddCard : EditorDetail
     data class AddAction(val cardId: String) : EditorDetail
 }
@@ -81,6 +82,14 @@ class HomeSidePanelEditSession(
         replaceCard(transform(card).copy(id = card.id))
     }
 
+    fun updateCalendar(cardId: String, transform: (CalendarCardConfig) -> CalendarCardConfig) {
+        val card = card(cardId)
+        require(card is CalendarCardConfig) {
+            "Card '$cardId' is ${card.type}; expected Calendar card"
+        }
+        replaceCard(transform(card).copy(id = card.id))
+    }
+
     fun updateWallet(cardId: String, transform: (WalletCardConfig) -> WalletCardConfig) {
         val card = card(cardId)
         require(card is WalletCardConfig) {
@@ -103,6 +112,29 @@ class HomeSidePanelEditSession(
             "Card '$cardId' is ${card.type}; expected Image card"
         }
         replaceCard(transform(card).copy(id = card.id))
+    }
+
+    /**
+     * Points the card background at [assetId]. A card whose alpha was left at "off" is bumped back
+     * to the default opacity, so picking an image is immediately visible instead of silently
+     * invisible.
+     */
+    fun setCardBackgroundImage(cardId: String, assetId: String) {
+        val background = backgroundCard(cardId)
+        val alpha = background.backgroundImageAlpha
+            .takeIf { it > HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN }
+            ?: HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT
+        replaceCard(background.withCardBackground(assetId, alpha))
+    }
+
+    fun setCardBackgroundAlpha(cardId: String, alphaPercent: Int) {
+        val background = backgroundCard(cardId)
+        replaceCard(background.withCardBackground(background.backgroundImageAssetId, alphaPercent))
+    }
+
+    fun clearCardBackgroundImage(cardId: String) {
+        val background = backgroundCard(cardId)
+        replaceCard(background.withCardBackground(null, background.backgroundImageAlpha))
     }
 
     fun addAction(
@@ -138,6 +170,14 @@ class HomeSidePanelEditSession(
     fun discardedLayout(): HomeSidePanelLayout = original
 
     private fun actionCount(cardId: String): Int = actionCard(cardId).actions.size
+
+    private fun backgroundCard(cardId: String): HomeSidePanelBackgroundImageCardConfig {
+        val card = card(cardId)
+        require(card is HomeSidePanelBackgroundImageCardConfig) {
+            "Card '$cardId' is ${card.type}; expected a card with background image support"
+        }
+        return card
+    }
 
     private fun card(cardId: String): HomeSidePanelCardConfig = draft.cards.firstOrNull {
         it.id == cardId

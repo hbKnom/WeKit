@@ -219,6 +219,7 @@ private fun HomeSidePanelLayoutCard(
             modifier = modifier,
             onEditCard = panelState::openDateTimeSettings,
             onDeleteCard = panelState::removeCard,
+            backgroundImageFile = panelState.backgroundImageFile(card.id),
         )
 
         is WeatherCardConfig -> {
@@ -236,6 +237,7 @@ private fun HomeSidePanelLayoutCard(
                 onRefresh = panelState::refreshWeather,
                 onEditCard = panelState::openWeatherSettings,
                 onDeleteCard = panelState::removeCard,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -256,6 +258,7 @@ private fun HomeSidePanelLayoutCard(
                 onOpenPaymentCode = panelState::openPaymentCode,
                 onEditCard = panelState::openWalletSettings,
                 onDeleteCard = panelState::removeCard,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -274,6 +277,7 @@ private fun HomeSidePanelLayoutCard(
                 onRefresh = panelState::refreshHitokoto,
                 onEditCard = panelState::openHitokotoSettings,
                 onDeleteCard = panelState::removeCard,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -301,7 +305,9 @@ private fun HomeSidePanelLayoutCard(
             card = card,
             editMode = editMode,
             modifier = modifier,
+            onEditCard = panelState::openCalendarSettings,
             onDeleteCard = panelState::removeCard,
+            backgroundImageFile = panelState.backgroundImageFile(card.id),
         )
 
         is HorizontalActionsCardConfig -> HomeSidePanelHorizontalActionsCard(

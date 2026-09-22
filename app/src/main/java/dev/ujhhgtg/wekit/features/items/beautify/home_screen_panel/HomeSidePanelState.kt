@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.ujhhgtg.wekit.R
@@ -34,6 +35,15 @@ import kotlinx.coroutines.launch
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * What a picked image is used for. Image cards and card backgrounds share the same import
+ * pipeline, picker launch and error reporting; only the commit target differs.
+ */
+private enum class HomeSidePanelImageImportTarget {
+    CARD_IMAGE,
+    CARD_BACKGROUND,
+}
 
 data class HomeSidePanelUiState(
     val profile: HomeSidePanelProfile,
@@ -315,8 +325,28 @@ class HomeSidePanelState(
     }
 
     fun selectImage(cardId: String) {
+        startCardImageImport(cardId, HomeSidePanelImageImportTarget.CARD_IMAGE)
+    }
+
+    /**
+     * Lets the user pick any local image as this card background with the system picker.
+     *
+     * The returned Uri is only used once, to stream the bytes into the module private directory:
+     * the card then references that copy, so a later revoked Uri grant can never break rendering.
+     */
+    fun selectBackgroundImage(cardId: String) {
+        startCardImageImport(cardId, HomeSidePanelImageImportTarget.CARD_BACKGROUND)
+    }
+
+    private fun startCardImageImport(
+        cardId: String,
+        target: HomeSidePanelImageImportTarget,
+    ) {
         val active = requireEditing()
-        requireDraftImageCard(cardId)
+        when (target) {
+            HomeSidePanelImageImportTarget.CARD_IMAGE -> requireDraftImageCard(cardId)
+            HomeSidePanelImageImportTarget.CARD_BACKGROUND -> requireDraftBackgroundImageCard(cardId)
+        }
         if (cardId in _uiState.value.imageImportingCardIds) return
         val sessionId = active.sessionId
         val token = UUID.randomUUID().toString()
@@ -324,72 +354,113 @@ class HomeSidePanelState(
         refreshImageImportingCards()
         runCatching {
             TransparentActivity.launch(activity) {
-                val launcher = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                val onPicked: (Uri?) -> Unit = { uri ->
                     finish()
-                    val request = imageImports[token] ?: return@registerForActivityResult
-                    if (uri == null) {
-                        completeImageImport(token)
-                        return@registerForActivityResult
-                    }
-                    val job = scope.launch {
-                        try {
-                            val result = imageAssets.importDraft(request.sessionId) {
-                                activity.contentResolver.openInputStream(uri)
-                                    ?: throw IllegalStateException("Failed to open selected image")
-                            }
-                            val current = editing
-                            val currentCardExists = current?.sessionId == request.sessionId &&
-                                current.editor.draft.cards.any {
-                                    it.id == request.cardId && it is ImageCardConfig
-                                }
-                            if (currentCardExists) {
-                                when (result) {
-                                    is HomeSidePanelImageImportResult.Success -> mutateImageDraft {
-                                        updateImage(request.cardId) {
-                                            it.copy(
-                                                imageAssetId = result.assetId,
-                                                imageWidthPx = result.widthPx,
-                                                imageHeightPx = result.heightPx,
-                                            )
-                                        }
-                                    }
-
-                                    HomeSidePanelImageImportResult.TooLarge -> publishMessage(
-                                        beautifyText(R.string.home_side_panel_image_too_large),
-                                    )
-
-                                    HomeSidePanelImageImportResult.TooManyPixels -> publishMessage(
-                                        beautifyText(R.string.home_side_panel_image_dimensions_too_large),
-                                    )
-
-                                    HomeSidePanelImageImportResult.UnsupportedAspectRatio -> publishMessage(
-                                        beautifyText(R.string.home_side_panel_image_aspect_ratio_unsupported),
-                                    )
-
-                                    HomeSidePanelImageImportResult.InvalidImage -> publishMessage(
-                                        beautifyText(R.string.home_side_panel_image_invalid),
-                                    )
-
-                                    is HomeSidePanelImageImportResult.Failure -> {
-                                        WeLogger.w(TAG, "failed to import side panel image", result.error)
-                                        publishMessage(beautifyText(R.string.home_side_panel_image_import_failed))
-                                    }
-                                }
-                            } else if (result is HomeSidePanelImageImportResult.Success) {
-                                imageAssets.deleteDraftAsset(request.sessionId, result.assetId)
-                            }
-                        } finally {
+                    val request = imageImports[token]
+                    if (request != null) {
+                        if (uri == null) {
                             completeImageImport(token)
+                        } else {
+                            request.job = scope.launch {
+                                try {
+                                    applyPickedImage(request, target, uri)
+                                } finally {
+                                    completeImageImport(token)
+                                }
+                            }
                         }
                     }
-                    request.job = job
                 }
-                launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                when (target) {
+                    HomeSidePanelImageImportTarget.CARD_IMAGE -> {
+                        val launcher = registerForActivityResult(
+                            ActivityResultContracts.PickVisualMedia(),
+                        ) { uri -> onPicked(uri) }
+                        launcher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    }
+
+                    HomeSidePanelImageImportTarget.CARD_BACKGROUND -> {
+                        val launcher = registerForActivityResult(
+                            ActivityResultContracts.GetContent(),
+                        ) { uri -> onPicked(uri) }
+                        launcher.launch("image/*")
+                    }
+                }
             }
         }.onFailure { failure ->
             completeImageImport(token)
             WeLogger.w(TAG, "failed to open side panel image picker", failure)
             publishMessage(beautifyText(R.string.home_side_panel_image_import_failed))
+        }
+    }
+
+    private suspend fun applyPickedImage(
+        request: ActiveImageImport,
+        target: HomeSidePanelImageImportTarget,
+        uri: Uri,
+    ) {
+        val result = imageAssets.importDraft(request.sessionId) {
+            activity.contentResolver.openInputStream(uri)
+                ?: throw IllegalStateException("Failed to open selected image")
+        }
+        val current = editing
+        val currentCard = current?.takeIf { it.sessionId == request.sessionId }
+            ?.editor
+            ?.draft
+            ?.cards
+            ?.firstOrNull { it.id == request.cardId }
+        val accepted = when (target) {
+            HomeSidePanelImageImportTarget.CARD_IMAGE -> currentCard is ImageCardConfig
+            HomeSidePanelImageImportTarget.CARD_BACKGROUND ->
+                currentCard is HomeSidePanelBackgroundImageCardConfig
+        }
+        if (!accepted) {
+            // The card (or the whole edit session) disappeared while the picker was open, so the
+            // freshly imported draft asset has no owner and is dropped again.
+            if (result is HomeSidePanelImageImportResult.Success) {
+                imageAssets.deleteDraftAsset(request.sessionId, result.assetId)
+            }
+            return
+        }
+        when (result) {
+            is HomeSidePanelImageImportResult.Success -> when (target) {
+                HomeSidePanelImageImportTarget.CARD_IMAGE -> mutateImageDraft {
+                    updateImage(request.cardId) {
+                        it.copy(
+                            imageAssetId = result.assetId,
+                            imageWidthPx = result.widthPx,
+                            imageHeightPx = result.heightPx,
+                        )
+                    }
+                }
+
+                HomeSidePanelImageImportTarget.CARD_BACKGROUND -> mutateImageDraft {
+                    setCardBackgroundImage(request.cardId, result.assetId)
+                }
+            }
+
+            HomeSidePanelImageImportResult.TooLarge -> publishMessage(
+                beautifyText(R.string.home_side_panel_image_too_large),
+            )
+
+            HomeSidePanelImageImportResult.TooManyPixels -> publishMessage(
+                beautifyText(R.string.home_side_panel_image_dimensions_too_large),
+            )
+
+            HomeSidePanelImageImportResult.UnsupportedAspectRatio -> publishMessage(
+                beautifyText(R.string.home_side_panel_image_aspect_ratio_unsupported),
+            )
+
+            HomeSidePanelImageImportResult.InvalidImage -> publishMessage(
+                beautifyText(R.string.home_side_panel_image_invalid),
+            )
+
+            is HomeSidePanelImageImportResult.Failure -> {
+                WeLogger.w(TAG, "failed to import side panel image", result.error)
+                publishMessage(beautifyText(R.string.home_side_panel_image_import_failed))
+            }
         }
     }
 
@@ -412,6 +483,29 @@ class HomeSidePanelState(
         require(card is ImageCardConfig) { "Card '$cardId' is ${card.type}; expected Image card" }
         val assetId = card.imageAssetId ?: return null
         return imageAssets.resolve(editing?.sessionId, assetId)
+    }
+
+    fun updateCardBackgroundAlpha(cardId: String, alphaPercent: Int) {
+        mutateImageDraft { setCardBackgroundAlpha(cardId, alphaPercent) }
+    }
+
+    fun removeCardBackgroundImage(cardId: String) {
+        mutateImageDraft { clearCardBackgroundImage(cardId) }
+    }
+
+    /**
+     * Resolves the card background to a file inside the module private directory, or null when the
+     * card has no background, the opacity is 0, or the image is gone/corrupt. Every failure path
+     * degrades to "no background" instead of throwing, so a stale asset can never crash the panel.
+     */
+    fun backgroundImageFile(cardId: String): Path? {
+        val background = _uiState.value.renderedLayout.cards
+            .firstOrNull { it.id == cardId }
+            ?.let { it as? HomeSidePanelBackgroundImageCardConfig }
+            ?: return null
+        if (background.backgroundImageAlpha <= HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN) return null
+        val assetId = background.backgroundImageAssetId?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { imageAssets.resolve(editing?.sessionId, assetId) }.getOrNull()
     }
 
     fun openAddAction(cardId: String) {
@@ -444,6 +538,11 @@ class HomeSidePanelState(
 
     fun updateDateTimeLunarCalendar(cardId: String, show: Boolean) {
         mutateDraft { updateDateTime(cardId) { it.copy(showLunarCalendar = show) } }
+    }
+
+    fun updateCalendarLunarCalendar(cardId: String, show: Boolean) {
+        requireDraftCalendarCard(cardId)
+        mutateDraft { updateCalendar(cardId) { it.copy(showLunarCalendar = show) } }
     }
 
     fun openWeatherSettings(cardId: String) {
@@ -526,6 +625,11 @@ class HomeSidePanelState(
         setRoute(HomeSidePanelRoute.HitokotoSettings(cardId))
     }
 
+    fun openCalendarSettings(cardId: String) {
+        requireDraftCalendarCard(cardId)
+        setRoute(HomeSidePanelRoute.CalendarSettings(cardId))
+    }
+
     fun updateHitokotoSettings(cardId: String, settings: HitokotoSettings) {
         val validationError = hitokoto.validate(settings)
         if (validationError != null) {
@@ -543,6 +647,7 @@ class HomeSidePanelState(
             is HomeSidePanelRoute.WeatherSettings,
             is HomeSidePanelRoute.WalletSettings,
             is HomeSidePanelRoute.HitokotoSettings,
+            is HomeSidePanelRoute.CalendarSettings,
             HomeSidePanelRoute.AddCard,
             is HomeSidePanelRoute.AddAction,
             -> {
@@ -572,6 +677,7 @@ class HomeSidePanelState(
         is HomeSidePanelRoute.WeatherSettings,
         is HomeSidePanelRoute.WalletSettings,
         is HomeSidePanelRoute.HitokotoSettings,
+        is HomeSidePanelRoute.CalendarSettings,
         HomeSidePanelRoute.AddCard,
         is HomeSidePanelRoute.AddAction,
         -> {
@@ -799,6 +905,20 @@ class HomeSidePanelState(
     private fun requireDraftImageCard(cardId: String): ImageCardConfig {
         val card = requireDraftCard(cardId)
         require(card is ImageCardConfig) { "Card '$cardId' is ${card.type}; expected Image card" }
+        return card
+    }
+
+    private fun requireDraftBackgroundImageCard(cardId: String): HomeSidePanelBackgroundImageCardConfig {
+        val card = requireDraftCard(cardId)
+        require(card is HomeSidePanelBackgroundImageCardConfig) {
+            "Card '$cardId' is ${card.type}; expected a card with background image support"
+        }
+        return card
+    }
+
+    private fun requireDraftCalendarCard(cardId: String): CalendarCardConfig {
+        val card = requireDraftCard(cardId)
+        require(card is CalendarCardConfig) { "Card '$cardId' is ${card.type}; expected Calendar card" }
         return card
     }
 

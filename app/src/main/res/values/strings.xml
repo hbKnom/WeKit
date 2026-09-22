@@ -3953,6 +3953,16 @@
     <string name="home_side_panel_calendar_ganzhi">%1$s year · %2$s · month %3$s · day %4$s</string>
     <string name="home_side_panel_calendar_jianchu">%1$s day</string>
     <string name="home_side_panel_calendar_yiji">Suitable: %1$s\nAvoid: %2$s</string>
+    <string name="home_side_panel_calendar_settings">Calendar settings</string>
+    <string name="home_side_panel_card_background">Background image</string>
+    <string name="home_side_panel_card_background_none">No background image</string>
+    <string name="home_side_panel_card_background_selected">Background image applied</string>
+    <string name="home_side_panel_card_background_pick">Choose image</string>
+    <string name="home_side_panel_card_background_replace">Replace image</string>
+    <string name="home_side_panel_card_background_remove">Remove</string>
+    <string name="home_side_panel_card_background_alpha">Background opacity</string>
+    <string name="home_side_panel_card_background_hint">Painted below the card content; only this card is affected.</string>
+    <string name="home_side_panel_card_background_alpha_hint">At 0% the image is hidden completely, exactly like having no background image.</string>
     <string name="home_side_panel_music_search_hint">Search a song</string>
     <string name="home_side_panel_music_no_lyric">No lyrics</string>
     <string name="home_side_panel_music_tap_search">Tap to search a song</string>
@@ -4012,6 +4022,7 @@
     <string name="jev_chat_assistant_scope_no_chat">Open a chat first</string>
     <string name="jev_chat_assistant_scope_hint">Currently enabled chat</string>
     <string name="jev_chat_assistant_scope_none">None \u2014 tap to clear</string>
+    <string name="jev_chat_assistant_scope_pick">Pick the chat to analyze (loads every conversation)</string>
     <string name="jev_chat_assistant_api_key">API Key</string>
     <string name="jev_chat_assistant_api_key_summary">Bearer token for api.typesafe.ai; get one from the community group</string>
     <string name="jev_chat_assistant_auto_analyze">Auto-analyse incoming messages</string>
@@ -4034,6 +4045,11 @@
     <string name="qq_music_order_settings_title">QQ Music Order</string>
     <string name="qq_music_order_triggers">Trigger words</string>
     <string name="qq_music_order_triggers_summary">Separate multiple triggers with commas; defaults to “点歌”</string>
+    <string name="qq_music_order_send_as_card_summary">The card trigger word sends the music card only</string>
+    <string name="qq_music_order_send_as_voice_summary">The voice trigger word sends the song as a voice note only</string>
+    <string name="qq_music_order_voice_triggers">Voice trigger words</string>
+    <string name="qq_music_order_voice_triggers_summary">Hitting one of these sends the song as a voice note only — no music card. Separate with commas; defaults to “点歌语音,语音点歌”.</string>
+    <string name="qq_music_order_app_id_preset">Use the %1$s AppID</string>
     <string name="qq_music_order_send_as_card">Send music card</string>
     <string name="qq_music_order_send_as_voice">Send song as voice</string>
     <string name="qq_music_order_custom_singer">Allow explicit singer</string>
@@ -4075,27 +4091,6 @@
     <string name="text_speech_voice_message">[voice message]</string>
 
     <!-- Audio clipper (ported from FunBox) -->
-    <string name="feature_audio_clipper_name">Audio clipper</string>
-    <string name="feature_audio_clipper_description">Drag the two handles to set head/tail, preview and export the selection</string>
-    <string name="audio_clipper_title">Audio clipper</string>
-    <string name="audio_clipper_range">Head: %1$s Tail: %2$s Selected: %3$s</string>
-    <string name="audio_clipper_range_tip">Drag the two handles on the same bar to set the head and tail positions</string>
-    <string name="audio_clipper_info_title">Audio info</string>
-    <string name="audio_clipper_info">Source: %1$s Rate: %2$dHz Length: %3$s Size: %4$s</string>
-    <string name="audio_clipper_play">Play selection</string>
-    <string name="audio_clipper_stop">Stop preview</string>
-    <string name="audio_clipper_reset">Reset range</string>
-    <string name="audio_clipper_confirm">Confirm</string>
-    <string name="audio_clipper_preparing">Preparing audio…</string>
-    <string name="audio_clipper_export_voice">Export as voice</string>
-    <string name="audio_clipper_export_mp3">Export as MP3</string>
-    <string name="audio_clipper_exported">Exported: %1$s</string>
-    <string name="audio_clipper_export_failed">Export failed: %1$s</string>
-    <string name="audio_clipper_play_failed">Preview failed</string>
-    <string name="audio_clipper_failed">Could not prepare the audio: %1$s</string>
-    <string name="audio_clipper_source_missing">No clipable audio found</string>
-    <string name="audio_clipper_need_voice_message">Long-press a voice message to use the audio clipper</string>
-    <string name="audio_clipper_max_duration_error">The selection cannot exceed %1$s; adjust it before exporting</string>
 
     <!-- WeKit: 会话选择器 / TTS 引擎枚举 / 点歌仅自己指令 (2026-09-22) -->
     <string name="conversation_picker_loading">Loading chats…</string>

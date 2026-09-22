@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.ujhhgtg.wekit.R
+import java.nio.file.Path
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -50,6 +51,7 @@ internal fun HomeSidePanelCalendarCard(
     cardDragModifier: Modifier = Modifier,
     onEditCard: ((String) -> Unit)? = null,
     onDeleteCard: ((String) -> Unit)? = null,
+    backgroundImageFile: Path? = null,
 ) {
     var viewMode by remember { mutableStateOf(HomeSidePanelCalendarMode.MONTH) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
@@ -118,6 +120,11 @@ internal fun HomeSidePanelCalendarCard(
         editMode = editMode,
         onEdit = onEditCard?.let { edit -> { edit(card.id) } },
         onDelete = onDeleteCard?.let { delete -> { delete(card.id) } },
+        // The background lives on the card frame, i.e. outside the `when (viewMode)` switch below,
+        // so month / week / day all share one identical background and switching modes never
+        // re-decodes or drops it.
+        backgroundImageFile = backgroundImageFile,
+        backgroundImageAlpha = card.backgroundImageAlpha,
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),

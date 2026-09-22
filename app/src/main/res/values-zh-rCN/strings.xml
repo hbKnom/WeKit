@@ -3980,6 +3980,16 @@
     <string name="home_side_panel_calendar_ganzhi">%1$s年 · 属%2$s · %3$s月 · %4$s日</string>
     <string name="home_side_panel_calendar_jianchu">%1$s日</string>
     <string name="home_side_panel_calendar_yiji">宜：%1$s\n忌：%2$s</string>
+    <string name="home_side_panel_calendar_settings">日历设置</string>
+    <string name="home_side_panel_card_background">背景图片</string>
+    <string name="home_side_panel_card_background_none">未设置背景图片</string>
+    <string name="home_side_panel_card_background_selected">已设置背景图片</string>
+    <string name="home_side_panel_card_background_pick">选择图片</string>
+    <string name="home_side_panel_card_background_replace">更换图片</string>
+    <string name="home_side_panel_card_background_remove">移除</string>
+    <string name="home_side_panel_card_background_alpha">背景透明度</string>
+    <string name="home_side_panel_card_background_hint">绘制在卡片内容下层，只影响当前卡片。</string>
+    <string name="home_side_panel_card_background_alpha_hint">为 0% 时完全隐藏，等同于没有设置背景图。</string>
     <string name="home_side_panel_music_search_hint">输入歌名</string>
     <string name="home_side_panel_music_no_lyric">暂无歌词</string>
     <string name="home_side_panel_music_tap_search">点击搜索歌曲</string>
@@ -4039,6 +4049,7 @@
     <string name="jev_chat_assistant_scope_no_chat">请先进入一个聊天会话</string>
     <string name="jev_chat_assistant_scope_hint">当前开启的会话</string>
     <string name="jev_chat_assistant_scope_none">未开启 — 点击清空</string>
+    <string name="jev_chat_assistant_scope_pick">选择要分析的聊天（加载全部会话）</string>
     <string name="jev_chat_assistant_api_key">API Key</string>
     <string name="jev_chat_assistant_api_key_summary">api.typesafe.ai 的 Bearer 令牌，进交流群获取</string>
     <string name="jev_chat_assistant_auto_analyze">自动分析对方消息</string>
@@ -4061,6 +4072,11 @@
     <string name="qq_music_order_settings_title">QQ音乐点歌</string>
     <string name="qq_music_order_triggers">触发词</string>
     <string name="qq_music_order_triggers_summary">多个触发词用逗号分隔，默认“点歌”</string>
+    <string name="qq_music_order_send_as_card_summary">用卡片触发词时只发音乐卡片</string>
+    <string name="qq_music_order_send_as_voice_summary">用语音触发词时只发语音</string>
+    <string name="qq_music_order_voice_triggers">语音触发词</string>
+    <string name="qq_music_order_voice_triggers_summary">命中这里的词只发语音、不发音乐卡片。多个用逗号分隔，默认“点歌语音,语音点歌”。</string>
+    <string name="qq_music_order_app_id_preset">使用%1$s的 AppID</string>
     <string name="qq_music_order_send_as_card">发送音乐卡片</string>
     <string name="qq_music_order_send_as_voice">发送歌曲语音</string>
     <string name="qq_music_order_custom_singer">支持指定歌手</string>
@@ -4102,27 +4118,6 @@
     <string name="text_speech_voice_message">[语音消息]</string>
 
     <!-- 音频剪辑 (由 FunBox 移植) -->
-    <string name="feature_audio_clipper_name">音频剪辑</string>
-    <string name="feature_audio_clipper_description">拖动两个圆点设置头尾，试听并导出选中的音频片段</string>
-    <string name="audio_clipper_title">音频剪辑</string>
-    <string name="audio_clipper_range">头部: %1$s 尾部: %2$s 已选: %3$s</string>
-    <string name="audio_clipper_range_tip">拖动同一进度条上的两个圆点设置头尾位置</string>
-    <string name="audio_clipper_info_title">音频信息</string>
-    <string name="audio_clipper_info">来源:%1$s 采样率:%2$dHz 总长:%3$s 大小:%4$s</string>
-    <string name="audio_clipper_play">播放选中片段</string>
-    <string name="audio_clipper_stop">停止试听</string>
-    <string name="audio_clipper_reset">重置范围</string>
-    <string name="audio_clipper_confirm">确认剪辑</string>
-    <string name="audio_clipper_preparing">正在准备音频…</string>
-    <string name="audio_clipper_export_voice">导出为语音</string>
-    <string name="audio_clipper_export_mp3">导出为 MP3</string>
-    <string name="audio_clipper_exported">已导出: %1$s</string>
-    <string name="audio_clipper_export_failed">导出失败: %1$s</string>
-    <string name="audio_clipper_play_failed">试听失败</string>
-    <string name="audio_clipper_failed">无法准备音频: %1$s</string>
-    <string name="audio_clipper_source_missing">未找到可剪辑的音频</string>
-    <string name="audio_clipper_need_voice_message">请长按一条语音消息使用音频剪辑</string>
-    <string name="audio_clipper_max_duration_error">选中的片段不能超过 %1$s，请调整后再导出</string>
 
     <!-- WeKit: 会话选择器 / TTS 引擎枚举 / 点歌仅自己指令 (2026-09-22) -->
     <string name="conversation_picker_loading">正在加载会话…</string>

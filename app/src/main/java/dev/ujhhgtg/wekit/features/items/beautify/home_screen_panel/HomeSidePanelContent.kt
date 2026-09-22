@@ -166,6 +166,13 @@ fun HomeSidePanelContent(
                             panelState = panelState,
                         )
                     }
+
+                    is HomeSidePanelRoute.CalendarSettings -> HomeSidePanelCalendarSettings(
+                        card = state.renderedLayout.cards.single {
+                            it.id == route.cardId
+                        } as CalendarCardConfig,
+                        panelState = panelState,
+                    )
                 }
             }
         }

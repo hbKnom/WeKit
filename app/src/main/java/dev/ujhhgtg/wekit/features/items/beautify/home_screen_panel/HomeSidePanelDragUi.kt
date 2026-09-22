@@ -413,6 +413,7 @@ private fun HomeSidePanelDraggedCard(
             card = card,
             content = DateTimeCardContent.Runtime,
             editMode = false,
+            backgroundImageFile = panelState.backgroundImageFile(card.id),
         )
 
         is WeatherCardConfig -> {
@@ -427,6 +428,7 @@ private fun HomeSidePanelDraggedCard(
                 content = WeatherCardContent.Runtime(runtime.state),
                 editMode = false,
                 interactionEnabled = false,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -442,6 +444,7 @@ private fun HomeSidePanelDraggedCard(
                 content = WalletCardContent.Runtime(runtime.state),
                 editMode = false,
                 interactionEnabled = false,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -457,6 +460,7 @@ private fun HomeSidePanelDraggedCard(
                 content = HitokotoCardContent.Runtime(runtime.state),
                 editMode = false,
                 interactionEnabled = false,
+                backgroundImageFile = panelState.backgroundImageFile(card.id),
             )
         }
 
@@ -489,6 +493,7 @@ private fun HomeSidePanelDraggedCard(
         is CalendarCardConfig -> HomeSidePanelCalendarCard(
             card = card,
             editMode = false,
+            backgroundImageFile = panelState.backgroundImageFile(card.id),
         )
     }
 }

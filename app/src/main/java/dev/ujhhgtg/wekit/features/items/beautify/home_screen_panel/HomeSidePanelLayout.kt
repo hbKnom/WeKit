@@ -13,6 +13,14 @@ const val HOME_SIDE_PANEL_IMAGE_MIN_HEIGHT_DP = 80
 const val HOME_SIDE_PANEL_IMAGE_MAX_HEIGHT_DP = 800
 const val HOME_SIDE_PANEL_IMAGE_HEIGHT_STEP_DP = 8
 const val HOME_SIDE_PANEL_IMAGE_MAX_ASPECT_RATIO = 100
+const val HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN = 0
+const val HOME_SIDE_PANEL_BACKGROUND_ALPHA_MAX = 100
+
+/**
+ * Opacity of a freshly imported card background. Existing layouts decode with this default too,
+ * but they carry no asset id, so nothing is painted until the user picks an image.
+ */
+const val HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT = 100
 
 fun interface HomeSidePanelIdGenerator {
     fun nextId(): String
@@ -70,12 +78,60 @@ sealed class HomeSidePanelCardConfig {
     abstract val type: HomeSidePanelCardType
 }
 
+/**
+ * Cards that can paint a user supplied image underneath their own content.
+ *
+ * [backgroundImageAssetId] is an asset id owned by [HomeSidePanelImageAssetStore] inside the
+ * module private directory, never an external `content://` Uri, so rendering never depends on a
+ * still valid read grant. [backgroundImageAlpha] is the opacity in percent:
+ * [HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN] means "no background", and a card without an asset id
+ * ignores it entirely.
+ */
+interface HomeSidePanelBackgroundImageCardConfig {
+    val id: String
+    val backgroundImageAssetId: String?
+    val backgroundImageAlpha: Int
+}
+
+/**
+ * Returns a copy of this card with its background image replaced. [alphaPercent] is clamped into
+ * the supported range. Only the five container cards implement
+ * [HomeSidePanelBackgroundImageCardConfig], so the `else` branch is unreachable in practice.
+ */
+internal fun HomeSidePanelBackgroundImageCardConfig.withCardBackground(
+    assetId: String?,
+    alphaPercent: Int,
+): HomeSidePanelCardConfig {
+    val alpha = alphaPercent.coerceIn(
+        HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN,
+        HOME_SIDE_PANEL_BACKGROUND_ALPHA_MAX,
+    )
+    return when (this) {
+        is DateTimeCardConfig -> copy(backgroundImageAssetId = assetId, backgroundImageAlpha = alpha)
+        is CalendarCardConfig -> copy(backgroundImageAssetId = assetId, backgroundImageAlpha = alpha)
+        is WeatherCardConfig -> copy(backgroundImageAssetId = assetId, backgroundImageAlpha = alpha)
+        is WalletCardConfig -> copy(backgroundImageAssetId = assetId, backgroundImageAlpha = alpha)
+        is HitokotoCardConfig -> copy(backgroundImageAssetId = assetId, backgroundImageAlpha = alpha)
+        else -> error("Card '$id' cannot hold a background image")
+    }
+}
+
+internal fun HomeSidePanelCardConfig.backgroundImageAssetIdOrNull(): String? =
+    (this as? HomeSidePanelBackgroundImageCardConfig)
+        ?.backgroundImageAssetId
+        ?.takeIf { it.isNotBlank() }
+
+internal fun HomeSidePanelCardConfig.supportsBackgroundImage(): Boolean =
+    this is HomeSidePanelBackgroundImageCardConfig
+
 @Serializable
 @SerialName("date_time")
 data class DateTimeCardConfig(
     override val id: String,
     val showLunarCalendar: Boolean = false,
-) : HomeSidePanelCardConfig() {
+    override val backgroundImageAssetId: String? = null,
+    override val backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT,
+) : HomeSidePanelCardConfig(), HomeSidePanelBackgroundImageCardConfig {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.DATE_TIME
 }
@@ -85,7 +141,9 @@ data class DateTimeCardConfig(
 data class WeatherCardConfig(
     override val id: String,
     val city: WeatherCity,
-) : HomeSidePanelCardConfig() {
+    override val backgroundImageAssetId: String? = null,
+    override val backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT,
+) : HomeSidePanelCardConfig(), HomeSidePanelBackgroundImageCardConfig {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.WEATHER
 }
@@ -95,7 +153,9 @@ data class WeatherCardConfig(
 data class WalletCardConfig(
     override val id: String,
     val hideBalanceByDefault: Boolean = false,
-) : HomeSidePanelCardConfig() {
+    override val backgroundImageAssetId: String? = null,
+    override val backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT,
+) : HomeSidePanelCardConfig(), HomeSidePanelBackgroundImageCardConfig {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.WALLET
 }
@@ -105,7 +165,9 @@ data class WalletCardConfig(
 data class HitokotoCardConfig(
     override val id: String,
     val settings: HitokotoSettings = HitokotoSettings(),
-) : HomeSidePanelCardConfig() {
+    override val backgroundImageAssetId: String? = null,
+    override val backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT,
+) : HomeSidePanelCardConfig(), HomeSidePanelBackgroundImageCardConfig {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.HITOKOTO
 }
@@ -166,7 +228,9 @@ data class MusicCardConfig(
 data class CalendarCardConfig(
     override val id: String,
     val showLunarCalendar: Boolean = true,
-) : HomeSidePanelCardConfig() {
+    override val backgroundImageAssetId: String? = null,
+    override val backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_DEFAULT,
+) : HomeSidePanelCardConfig(), HomeSidePanelBackgroundImageCardConfig {
     @Transient
     override val type: HomeSidePanelCardType = HomeSidePanelCardType.CALENDAR
 }
@@ -185,6 +249,7 @@ fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
         throw InvalidHomeSidePanelLayoutException("Card IDs must be unique")
     }
     layout.cards.forEach { card ->
+        validateCardBackground(card)
         when (card) {
             is HitokotoCardConfig -> validateHitokotoSettings(
                 minLength = card.settings.minLength,
@@ -193,14 +258,7 @@ fun validateHomeSidePanelLayout(layout: HomeSidePanelLayout) {
             )?.let { throw InvalidHomeSidePanelLayoutException("Invalid hitokoto settings: $it") }
 
             is ImageCardConfig -> {
-                card.imageAssetId?.let { assetId ->
-                    val parsed = runCatching { UUID.fromString(assetId) }.getOrElse {
-                        throw InvalidHomeSidePanelLayoutException("Invalid image asset ID: $assetId")
-                    }
-                    if (parsed.toString() != assetId) {
-                        throw InvalidHomeSidePanelLayoutException("Invalid image asset ID: $assetId")
-                    }
-                }
+                card.imageAssetId?.let(::validateImageAssetId)
                 if (
                     card.heightDp !in HOME_SIDE_PANEL_IMAGE_MIN_HEIGHT_DP..HOME_SIDE_PANEL_IMAGE_MAX_HEIGHT_DP ||
                     card.heightDp % HOME_SIDE_PANEL_IMAGE_HEIGHT_STEP_DP != 0
@@ -242,8 +300,34 @@ fun isHomeSidePanelImageAspectRatioSupported(width: Int, height: Int): Boolean {
 }
 
 fun HomeSidePanelLayout.imageAssetIds(): Set<String> = cards
-    .filterIsInstance<ImageCardConfig>()
-    .mapNotNullTo(linkedSetOf(), ImageCardConfig::imageAssetId)
+    .mapNotNullTo(linkedSetOf()) { card ->
+        // Card background images live in the same asset store as image cards, so they have to be
+        // reported here: this set is what gets promoted from the draft on save and what protects
+        // already saved assets from being garbage collected.
+        if (card is ImageCardConfig) card.imageAssetId else card.backgroundImageAssetIdOrNull()
+    }
+
+private fun validateCardBackground(card: HomeSidePanelCardConfig) {
+    val background = card as? HomeSidePanelBackgroundImageCardConfig ?: return
+    if (
+        background.backgroundImageAlpha < HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN ||
+        background.backgroundImageAlpha > HOME_SIDE_PANEL_BACKGROUND_ALPHA_MAX
+    ) {
+        throw InvalidHomeSidePanelLayoutException(
+            "Invalid card background alpha: ${background.backgroundImageAlpha}",
+        )
+    }
+    background.backgroundImageAssetId?.let(::validateImageAssetId)
+}
+
+private fun validateImageAssetId(assetId: String) {
+    val parsed = runCatching { UUID.fromString(assetId) }.getOrElse {
+        throw InvalidHomeSidePanelLayoutException("Invalid image asset ID: $assetId")
+    }
+    if (parsed.toString() != assetId) {
+        throw InvalidHomeSidePanelLayoutException("Invalid image asset ID: $assetId")
+    }
+}
 
 private fun validateActionIds(actions: List<HomeSidePanelActionConfig>) {
     val actionIds = actions.map(HomeSidePanelActionConfig::id)

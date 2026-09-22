@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -25,6 +26,7 @@ import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import dev.ujhhgtg.wekit.ui.utils.ConversationPickerSection
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 
 /**
@@ -86,6 +88,34 @@ object JevChatAssistantSettings {
                                 },
                                 onClick = { activeTalker = "" },
                                 trailingDivider = true,
+                            )
+                        }
+
+                        // 用户 2026-09-23 要求：作用范围参考「QQ点歌 → 生效聊天」的做法 ——
+                        // 直接加载**全部会话**，点哪一条哪一条就生效，不用先打开那个聊天再设置
+                        // （原来是"只能在当前聊天里开"，要换目标很麻烦）。
+                        item {
+                            Text(
+                                text = stringResource(R.string.jev_chat_assistant_scope_pick),
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                        item {
+                            ConversationPickerSection(
+                                selected = if (activeTalker.isBlank()) {
+                                    emptySet()
+                                } else {
+                                    setOf(activeTalker)
+                                },
+                                onToggle = { wxId, enabled ->
+                                    // 单选语义：打开哪一条，作用范围就切到哪一条；关掉当前项就清空。
+                                    activeTalker = when {
+                                        enabled -> wxId
+                                        wxId == activeTalker -> ""
+                                        else -> activeTalker
+                                    }
+                                },
                             )
                         }
 

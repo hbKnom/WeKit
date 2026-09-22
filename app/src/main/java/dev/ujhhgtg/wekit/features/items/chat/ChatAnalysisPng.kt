@@ -13,6 +13,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 聊天记录分析 —— 报告 PNG 导出（排版重构版 v3 · 专业分析报告观感）
@@ -55,53 +56,53 @@ object ChatAnalysisPng {
     private const val W = 1080
 
     /** 画布左右安全边距（硬约束：≥48px，所有卡片都对它对齐） */
-    private const val CANVAS_PAD = 48
+    private const val CANVAS_PAD = 56
 
     /** 卡片内水平内边距 */
-    private const val CARD_PAD_H = 36
+    private const val CARD_PAD_H = 40
 
     /** 卡片内垂直内边距（上下一致） */
-    private const val CARD_PAD_V = 30
+    private const val CARD_PAD_V = 36
 
     /** 卡片与卡片之间的间距 */
-    private const val CARD_GAP = 32
+    private const val CARD_GAP = 40
 
     /** 卡片圆角半径（所有卡片统一） */
-    private const val CARD_RADIUS = 28f
+    private const val CARD_RADIUS = 32f
 
     /** 卡片左侧强调条宽度 */
     private const val CARD_ACCENT_W = 8
 
     /** 卡片最小高度 */
-    private const val CARD_MIN_H = 150
+    private const val CARD_MIN_H = 168
 
     /** 画布底部收尾留白 */
-    private const val BOTTOM_PAD = 56
+    private const val BOTTOM_PAD = 64
 
     /** 条形行 / 单行键值行高 */
-    private const val ROW_H = 60
+    private const val ROW_H = 66
 
     /** 正文文本行高 */
-    private const val TEXT_LINE_H = 50
+    private const val TEXT_LINE_H = 56
 
     /** 正文文本行之间的额外留白 */
-    private const val TEXT_LINE_GAP = 16
+    private const val TEXT_LINE_GAP = 18
 
     /** 空行占位高度（段间距） */
-    private const val GAP_H = 24
+    private const val GAP_H = 26
 
     /** 章节卡片头部高度（序号徽章 + 标题 + 渐变下划线） */
-    private const val SECTION_HEADER_H = 108
+    private const val SECTION_HEADER_H = 120
 
     /** 章节标题下方的渐变下划线宽度 / 厚度 */
-    private const val SECTION_UNDERLINE_W = 168
+    private const val SECTION_UNDERLINE_W = 180
     private const val SECTION_UNDERLINE_H = 6f
 
     /** 章节序号徽章边长 */
-    private const val SECTION_BADGE_BOX = 52
+    private const val SECTION_BADGE_BOX = 56
 
     /** 分组 pill（本地统计报告 / AI 洞察报告）高度 */
-    private const val GROUP_PILL_H = 64
+    private const val GROUP_PILL_H = 68
 
     /** 分组 pill 与上一张卡片的间距（分组间隔更大，节奏分明） */
     private const val GROUP_PILL_GAP = 44
@@ -118,21 +119,24 @@ object ChatAnalysisPng {
     private const val GROUP_PILL_DOT_GAP = 16
     private const val GROUP_PILL_PAD_R = 24
 
-    /** 页脚高度 / 底部品牌渐变条厚度 */
-    private const val FOOTER_H = 56
+    /** 页脚高度 / 内部节奏（上留白 / 文字行高 / 文字与品牌条间距 / 品牌条厚度） */
+    private const val FOOTER_H = 64
+    private const val FOOTER_TOP_GAP = 8
+    private const val FOOTER_TEXT_H = 40
+    private const val FOOTER_STRIP_GAP = 8
     private const val FOOTER_STRIP_H = 5f
 
     /** 顶部信息卡：品牌行高 */
-    private const val BRAND_LINE_H = 58
+    private const val BRAND_LINE_H = 62
 
     /** 顶部信息卡：品牌小方块边长 */
     private const val BRAND_BOX = 16
 
     /** 顶部信息卡：主标题行高 */
-    private const val HEADER_TITLE_LINE_H = 80
+    private const val HEADER_TITLE_LINE_H = 86
 
     /** 顶部信息卡：副标题 / 生成时间行高 */
-    private const val HEADER_META_LINE_H = 50
+    private const val HEADER_META_LINE_H = 52
 
     /** 顶部信息卡：品牌行与主标题之间留白 */
     private const val HEADER_BRAND_TITLE_GAP = 12
@@ -144,13 +148,13 @@ object ChatAnalysisPng {
     private const val HEADER_SUB_GEN_GAP = 6
 
     /** 顶部信息卡头像边长 */
-    private const val AVATAR_SIZE = 104
+    private const val AVATAR_SIZE = 112
 
     /** 头像与右侧文字列的水平间距 */
     private const val AVATAR_TEXT_GAP = 30
 
     /** 右上角范围徽章高度 */
-    private const val BADGE_H = 52
+    private const val BADGE_H = 56
 
     /** 右上角范围徽章水平内边距（单侧） */
     private const val BADGE_PAD_H = 26
@@ -170,13 +174,30 @@ object ChatAnalysisPng {
     /** 文本 / 标签在列内的横向内缩 */
     private const val CELL_INSET = 6
 
-    /** KPI 单元高度 / 列间距 / 行间距 / 内部水平内边距 */
-    private const val KPI_CELL_H = 156
+    /** 排行行序号徽章（与 App 内报告视图同款）：边长 / 与标签的间距 / 字号 */
+    private const val RANK_BOX = 42
+    private const val RANK_GAP = 14
+    private const val FS_RANK = 24f
+
+    /**
+     * KPI 网格内部节奏（单元高度由内部节奏推导，不再写死）：
+     *   上内边距 + 标签行 + 标签↔数值间隙 + 数值行 + 下内边距 = KPI_CELL_H
+     * 单位过长时（放不进数值行）额外加一行单位：KPI_CELL_H_TALL。
+     */
+    private const val KPI_PAD_H = 26
+    private const val KPI_PAD_V = 26
     private const val KPI_COL_GAP = 20
-    private const val KPI_ROW_GAP = 20
-    private const val KPI_PAD_H = 24
-    private const val KPI_LABEL_ROW_H = 34
-    private const val KPI_VALUE_ROW_H = 66
+    private const val KPI_ROW_GAP = 22
+    private const val KPI_LABEL_ROW_H = 36
+    private const val KPI_LABEL_VALUE_GAP = 10
+    private const val KPI_VALUE_ROW_H = 62
+    private const val KPI_UNIT_GAP = 4
+    private const val KPI_UNIT_ROW_H = 32
+    private const val KPI_CELL_H = KPI_PAD_V * 2 + KPI_LABEL_ROW_H + KPI_LABEL_VALUE_GAP + KPI_VALUE_ROW_H
+    private const val KPI_CELL_H_TALL = KPI_CELL_H + KPI_UNIT_GAP + KPI_UNIT_ROW_H
+
+    /** 单位短于等于这个长度才与数值同排；更长则另起一行（绝不因省略号丢信息） */
+    private const val KPI_UNIT_INLINE_MAX = 4
 
     /** 顶部卡片 / 卡片的最大显示行数（超出按测量宽度省略，绝不溢出） */
     private const val HEADER_NAME_MAX_LINES = 3
@@ -265,6 +286,18 @@ object ChatAnalysisPng {
         require(2 * KPI_CELL_W + KPI_COL_GAP <= CONTENT_W) { "PNG KPI 网格超宽" }
         require(CANVAS_PAD >= 48) { "PNG 画布左右边距不得小于 48px" }
         require(SECTION_HEADER_H >= SECTION_BADGE_BOX + 40) { "PNG 章节头部高度装不下序号徽章" }
+        // KPI 单元：内部排版（标签 + 数值 [+ 单位]）必须装得进单元高度，且加单位那档确实更高
+        require(KPI_LABEL_ROW_H + KPI_LABEL_VALUE_GAP + KPI_VALUE_ROW_H + KPI_PAD_V <= KPI_CELL_H) {
+            "PNG KPI 单元内部排版超出单元高度"
+        }
+        require(KPI_CELL_H_TALL > KPI_CELL_H) { "PNG KPI 带单位行的单元高度非法" }
+        // 排行行：圆角序号徽章必须装得进行高，且标签列扣掉徽章后仍有余量
+        require(ROW_H >= RANK_BOX + 8) { "PNG 行长装不下排行序号徽章" }
+        require(LABEL_W - CELL_INSET * 2 - RANK_BOX - RANK_GAP >= 120) { "PNG 排行标签列可用宽度过窄" }
+        require(CARD_MIN_H >= CARD_PAD_V * 2 + ROW_H) { "PNG 卡片最小高度小于内边距 + 一行" }
+        // 页脚：上留白 + 文字行 + 间距 + 品牌条 必须装得进页脚高度
+        require((FOOTER_TOP_GAP + FOOTER_TEXT_H + FOOTER_STRIP_GAP).toFloat() + FOOTER_STRIP_H <=
+            FOOTER_H.toFloat()) { "PNG 页脚内部排版超出页脚高度" }
     }
 
     // ==================================================================
@@ -533,8 +566,8 @@ object ChatAnalysisPng {
                 // 章节标题由卡片头部承担，正文里不会再出现 Section
                 is Block.Section -> Unit
                 is Block.KpiGrid -> {
-                    val lineCount = (u.items.size + 1) / 2
-                    val h = lineCount * KPI_CELL_H + (lineCount - 1) * KPI_ROW_GAP
+                    // 高度必须与 drawKpiGrid 的分行方式完全一致（含"单位另起一行"那档）
+                    val h = kpiGridHeight(u.items)
                     rows.add(Row(u, y, h))
                     y += h
                 }
@@ -1006,6 +1039,22 @@ object ChatAnalysisPng {
         )
     }
 
+    // ---- KPI 网格：两遍布局共用的分行/高度规则（布局与绘制必须用同一套，否则必然串位）----
+
+    /** 该单元是否需要把单位另起一行（单位太长时同排会被省略号吃掉信息） */
+    private fun needsUnitRow(kv: Block.KeyValue): Boolean =
+        splitValueUnit(kv.value).second.length > KPI_UNIT_INLINE_MAX
+
+    /** 一行（最多两张单元）的高度：任一张需要单位行就整行加高，保证同一行底色等高 */
+    private fun kpiRowCellH(row: List<Block.KeyValue>): Int =
+        if (row.any { needsUnitRow(it) }) KPI_CELL_H_TALL else KPI_CELL_H
+
+    /** KPI 网格整体高度：与 [drawKpiGrid] 的排布完全一致 */
+    private fun kpiGridHeight(items: List<Block.KeyValue>): Int {
+        val rows = items.chunked(2)
+        return rows.sumOf { kpiRowCellH(it) } + (rows.size - 1).coerceAtLeast(0) * KPI_ROW_GAP
+    }
+
     /** KPI 网格：每行两张浅色底卡片，标签小、数字大（强调色）、单位轻 */
     private fun drawKpiGrid(
         cv: Canvas,
@@ -1014,11 +1063,17 @@ object ChatAnalysisPng {
         accent: Int,
         limitBottom: Float,
     ) {
-        items.chunked(2).forEachIndexed { r, pair ->
-            val cellTop = rowTop + r * (KPI_CELL_H + KPI_ROW_GAP)
+        var cellTop = rowTop
+        items.chunked(2).forEach { pair ->
+            val cellH = kpiRowCellH(pair)
             pair.forEachIndexed { c, kv ->
-                drawKpiCell(cv, kv, CONTENT_LEFT + c * (KPI_CELL_W + KPI_COL_GAP), cellTop, accent, limitBottom)
+                drawKpiCell(
+                    cv, kv,
+                    CONTENT_LEFT + c * (KPI_CELL_W + KPI_COL_GAP),
+                    cellTop, cellH, accent, limitBottom,
+                )
             }
+            cellTop += cellH + KPI_ROW_GAP
         }
     }
 
@@ -1027,27 +1082,20 @@ object ChatAnalysisPng {
         kv: Block.KeyValue,
         left: Int,
         top: Float,
+        cellH: Int,
         accent: Int,
         limitBottom: Float,
     ) {
-        val rect = RectF(left.toFloat(), top, (left + KPI_CELL_W).toFloat(), top + KPI_CELL_H)
-        cv.drawRoundRect(rect, 20f, 20f, Paint().apply {
-            isAntiAlias = true
-            color = withAlpha(accent, 0x12)
-        })
-        cv.drawRoundRect(rect, 20f, 20f, Paint().apply {
-            isAntiAlias = true
-            color = withAlpha(accent, 0x33)
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-        })
+        val rect = RectF(left.toFloat(), top, (left + KPI_CELL_W).toFloat(), top + cellH)
+        cv.drawRoundRect(rect, 20f, 20f, shapePaint(withAlpha(accent, 0x12)))
+        cv.drawRoundRect(rect, 20f, 20f, shapePaint(withAlpha(accent, 0x33), stroke = true, strokeWidth = 2f))
 
         val innerLeft = (left + KPI_PAD_H).toFloat()
         val innerRight = (left + KPI_CELL_W - KPI_PAD_H).toFloat()
 
         // 标签（小字、次要色）
         val labelP = paint(FS_KPI_LABEL, COLOR_META)
-        val labelTop = top + 22f
+        val labelTop = top + KPI_PAD_V
         val labelClip = RectF(innerLeft, labelTop, innerRight, labelTop + KPI_LABEL_ROW_H)
         val labelText = truncateToWidth(kv.key, labelClip.width(), labelP)
         drawClipped(
@@ -1056,21 +1104,22 @@ object ChatAnalysisPng {
             labelClip, labelP,
         )
 
-        // 数值（大数字 + 轻单位）
-        val valueTop = labelTop + KPI_LABEL_ROW_H + 8f
+        // 数值（大数字 + 轻单位）。单位短就同排；长则另起一行，绝不因宽度不足丢字。
+        val valueTop = labelTop + KPI_LABEL_ROW_H + KPI_LABEL_VALUE_GAP
         val valueClip = RectF(innerLeft, valueTop, innerRight, valueTop + KPI_VALUE_ROW_H)
         val bottomLimit = minOf(valueClip.bottom, limitBottom)
         val numP = paint(FS_KPI_VALUE, accent, bold = true)
         val unitP = paint(FS_KPI_UNIT, COLOR_META)
         val (num, unit) = splitValueUnit(kv.value)
-        val unitW = if (unit.isEmpty()) 0f else unitP.measureText(unit) + 10f
-        val numText = truncateToWidth(num, valueClip.width() - unitW, numP)
+        val inlineUnit = unit.isNotEmpty() && unit.length <= KPI_UNIT_INLINE_MAX
+        val unitW = if (inlineUnit) unitP.measureText(unit) + 10f else 0f
+        val numText = truncateToWidth(num, (valueClip.width() - unitW).coerceAtLeast(0f), numP)
         drawClipped(
             cv, numText, innerLeft,
             fitBaseline(valueTop, KPI_VALUE_ROW_H.toFloat(), numP, bottomLimit),
             valueClip, numP,
         )
-        if (unit.isNotEmpty()) {
+        if (inlineUnit) {
             val ux = innerLeft + numP.measureText(numText) + 10f
             val unitClip = RectF(ux, valueTop, innerRight, valueClip.bottom)
             if (unitClip.width() > 0f) {
@@ -1080,14 +1129,28 @@ object ChatAnalysisPng {
                     unitClip, unitP,
                 )
             }
+        } else if (unit.isNotEmpty()) {
+            // 单位行：整行给单位，最多一行（超长自动省略），永远落在单元内
+            val unitTop = valueTop + KPI_VALUE_ROW_H + KPI_UNIT_GAP
+            val unitClip = RectF(innerLeft, unitTop, innerRight, unitTop + KPI_UNIT_ROW_H)
+            val unitBottom = minOf(unitClip.bottom, limitBottom)
+            if (unitClip.width() > 0f && unitBottom > unitTop) {
+                val unitText = truncateToWidth(unit, unitClip.width(), unitP)
+                drawClipped(
+                    cv, unitText, innerLeft,
+                    fitBaseline(unitTop, KPI_UNIT_ROW_H.toFloat(), unitP, unitBottom),
+                    unitClip, unitP,
+                )
+            }
         }
     }
 
     /**
      * 条形行：严格三列。
-     * 1) 先画条形（只在 bar 列内，长度按比例、最小 BAR_MIN_W、最大不超过列宽）
-     * 2) 再画标签（label 列内，超宽按测量宽度逐字截断加 "…"）
-     * 3) 再画数值（value 列内右对齐）
+     * 1) 先铺满整列淡轨道（给所有条形一个 100% 参照，图表留白不贴边）
+     * 2) 再画比例填充（只在 bar 列内，长度按比例、最小 BAR_MIN_W、最大不超过列宽）
+     * 3) 再画标签（label 列内；排行行先画序号徽章，昵称去掉重复的 "1." 前缀）
+     * 4) 再画数值（value 列内右对齐）
      */
     private fun drawBarRow(
         cv: Canvas,
@@ -1101,16 +1164,20 @@ object ChatAnalysisPng {
         val labelP = paint(FS_ROW, COLOR_BODY)
         val valueP = paint(FS_ROW, valueColor(u.rank), bold = true)
         val baseline = fitBaseline(rowTop, rowH, labelP, minOf(rowBottom, limitBottom))
+        val barTop = rowTop + (rowH - BAR_TRACK_H) / 2f
 
-        // ---- 1) bar 列 ----
+        // ---- 1) bar 列：整列淡轨道 + 渐变填充 ----
+        cv.drawRoundRect(
+            RectF(BAR_LEFT.toFloat(), barTop, BAR_RIGHT.toFloat(), barTop + BAR_TRACK_H),
+            BAR_TRACK_H / 2f, BAR_TRACK_H / 2f,
+            shapePaint(COLOR_TRACK),
+        )
         if (u.ratio > 0f) {
             val fillW = (BAR_W * u.ratio).coerceIn(BAR_MIN_W, BAR_W.toFloat())
-            val barTop = rowTop + (rowH - BAR_TRACK_H) / 2f
             val fill = RectF(BAR_LEFT.toFloat(), barTop, BAR_LEFT + fillW, barTop + BAR_TRACK_H)
             drawClippedRect(
                 cv, fill, BAR_LEFT.toFloat(), BAR_RIGHT.toFloat(),
-                Paint().apply {
-                    isAntiAlias = true
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     // 条形颜色跟随所属卡片的主色（统计卡=蓝、AI 卡=青），并用渐变提亮右端
                     shader = LinearGradient(
                         BAR_LEFT.toFloat(), 0f, BAR_RIGHT.toFloat(), 0f,
@@ -1119,20 +1186,21 @@ object ChatAnalysisPng {
                     )
                 },
             )
-        } else {
-            // 比例列：仍显示一条极淡的轨道，避免"空格子"观感
-            val barTop = rowTop + (rowH - BAR_TRACK_H) / 2f
-            cv.drawRoundRect(
-                RectF(BAR_LEFT.toFloat(), barTop, BAR_RIGHT.toFloat(), barTop + BAR_TRACK_H),
-                BAR_TRACK_H / 2f, BAR_TRACK_H / 2f,
-                Paint().apply { isAntiAlias = true; color = COLOR_TRACK },
-            )
         }
 
-        // ---- 2) label 列 ----
+        // ---- 2) label 列：排行行先画圆角序号徽章（金银铜），并去掉文本里重复的序号 ----
+        var labelLeft = LABEL_LEFT + CELL_INSET
+        if (u.rank > 0) {
+            drawRankBadge(cv, u.rank, labelLeft, rowTop + rowH / 2f, accent)
+            labelLeft += RANK_BOX + RANK_GAP
+        }
         val labelClip = RectF(LABEL_LEFT.toFloat(), rowTop, LABEL_RIGHT.toFloat(), rowBottom)
-        val labelText = truncateToWidth(u.label, LABEL_W - CELL_INSET * 2f, labelP)
-        drawClipped(cv, labelText, (LABEL_LEFT + CELL_INSET).toFloat(), baseline, labelClip, labelP)
+        val pureLabel = if (u.rank > 0) u.label.replaceFirst(RANK_PREFIX, "").trim() else u.label
+        val labelAvailW = (LABEL_RIGHT - CELL_INSET - labelLeft).toFloat()
+        if (labelAvailW > 0f) {
+            val labelText = truncateToWidth(pureLabel, labelAvailW, labelP)
+            drawClipped(cv, labelText, labelLeft.toFloat(), baseline, labelClip, labelP)
+        }
 
         // ---- 3) value 列（右对齐到列右边界）----
         if (u.value.isNotEmpty()) {
@@ -1140,6 +1208,29 @@ object ChatAnalysisPng {
             val vx = (VALUE_RIGHT - CELL_INSET).toFloat() - valueP.measureText(u.value)
             drawClipped(cv, u.value, vx, baseline, valueClip, valueP)
         }
+    }
+
+    /**
+     * 排行序号徽章：Top1-3 用金银铜实底 + 白字，其余用强调色浅底 + 强调色字
+     * （与 App 内报告视图的 RankBadge 观感一致）。徽章只在自己的矩形内绘制。
+     */
+    private fun drawRankBadge(cv: Canvas, rank: Int, left: Int, centerY: Float, accent: Int) {
+        val box = RANK_BOX.toFloat()
+        val top = centerY - box / 2f
+        val rect = RectF(left.toFloat(), top, left + box, top + box)
+        val medal = rank in 1..3
+        cv.drawRoundRect(
+            rect, box / 2.6f, box / 2.6f,
+            shapePaint(if (medal) valueColor(rank) else withAlpha(accent, 0x1C)),
+        )
+        val p = paint(FS_RANK, if (medal) Color.WHITE else accent, bold = true)
+        val s = rank.toString()
+        val tx = rect.centerX() - p.measureText(s) / 2f
+        drawClipped(
+            cv, s, tx,
+            fitBaseline(top, box, p, minOf(rect.bottom, top + box)),
+            rect, p,
+        )
     }
 
     /** 单行键值（未聚合成 KPI 网格时）：key 左、value 右，两边都有限宽 */
@@ -1183,9 +1274,11 @@ object ChatAnalysisPng {
             },
         )
 
-        val textTop = top + 8f
-        val textH = (FOOTER_H - 8).toFloat()
-        val limitBottom = (top + FOOTER_H).toFloat()
+        // 页脚内部节奏全部来自常量：上留白 → 文字行 → 间距 → 品牌条，
+        // 文字行与品牌条严格分离（避免文字下缘与渐变条压在一起）
+        val textTop = top + FOOTER_TOP_GAP
+        val textH = FOOTER_TEXT_H.toFloat()
+        val limitBottom = textTop + textH
         val pageP = paint(FS_SMALL, COLOR_ACCENT, bold = true)
         val pageText = "第 1 / 1 页"
         val pageW = pageP.measureText(pageText)
@@ -1212,7 +1305,7 @@ object ChatAnalysisPng {
         )
 
         // 底部品牌渐变条（水印感，同时收住整张图的下边缘）
-        val stripTop = top + FOOTER_H - FOOTER_STRIP_H - 6f
+        val stripTop = textTop + textH + FOOTER_STRIP_GAP
         cv.drawRoundRect(
             RectF(
                 CARD_LEFT.toFloat(), stripTop,
@@ -1234,13 +1327,43 @@ object ChatAnalysisPng {
     // 七、绘制工具（文本永远不越界）
     // ==================================================================
 
-    private fun paint(size: Float, color: Int, bold: Boolean = false): Paint = Paint().apply {
-        isAntiAlias = true
-        this.color = color
-        textSize = size
-        if (bold) typeface = Typeface.DEFAULT_BOLD
-        isSubpixelText = true
-    }
+    /**
+     * 画笔缓存（文本用）。
+     *
+     * 一份报告可能有上百个单元格 / 行，逐个 new Paint 会产生大量临时对象；
+     * 宿主堆只有 512MB，导出时还要一次性分配整张位图，所以这里按
+     * (字号, 颜色, 是否加粗) 复用同一个 Paint —— 返回的实例只读，调用方不得修改。
+     * 用 ConcurrentHashMap 是因为导出可能发生在后台线程。
+     */
+    private class PaintKey(val size: Float, val color: Int, val bold: Boolean)
+
+    private val textPaints = ConcurrentHashMap<PaintKey, Paint>()
+
+    private fun paint(size: Float, color: Int, bold: Boolean = false): Paint =
+        textPaints.getOrPut(PaintKey(size, color, bold)) {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = color
+                textSize = size
+                if (bold) typeface = Typeface.DEFAULT_BOLD
+                isSubpixelText = true
+            }
+        }
+
+    /** 纯色 / 描边形状画笔缓存（不含 shader 的形状才可共享） */
+    private class ShapeKey(val color: Int, val stroke: Boolean, val strokeWidth: Float)
+
+    private val shapePaints = ConcurrentHashMap<ShapeKey, Paint>()
+
+    private fun shapePaint(color: Int, stroke: Boolean = false, strokeWidth: Float = 0f): Paint =
+        shapePaints.getOrPut(ShapeKey(color, stroke, strokeWidth)) {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = color
+                if (stroke) {
+                    style = Paint.Style.STROKE
+                    this.strokeWidth = strokeWidth
+                }
+            }
+        }
 
     /**
      * 行内垂直居中基线，并受容器底边硬约束：
@@ -1291,6 +1414,23 @@ object ChatAnalysisPng {
         cv.restore()
     }
 
+    /**
+     * 二分求「从 start 起能塞进 maxW 的最长前缀末尾」（依赖 measureText 对 end 单调不减）。
+     *
+     * 原来是逐个字符回退：每个长段落 O(n) 次 measureText、每次 measureText 又是 O(n)，
+     * AI 长段落会把导出明显拖慢。二分后是 O(log n)，结果与回退法完全一致
+     * （都是「最长的仍然放得下的前缀」）。
+     */
+    private fun maxPrefixEnd(text: String, start: Int, maxW: Float, p: Paint): Int {
+        var lo = start
+        var hi = text.length
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (p.measureText(text, start, mid) <= maxW) lo = mid else hi = mid - 1
+        }
+        return lo
+    }
+
     /** 按测量宽度换行（不丢字），空段落保留为空行 */
     private fun wrapLines(text: String, maxW: Float, p: Paint): List<String> {
         if (text.isEmpty()) return emptyList()
@@ -1302,8 +1442,8 @@ object ChatAnalysisPng {
             }
             var start = 0
             while (start < para.length) {
-                var end = para.length
-                while (end > start && p.measureText(para, start, end) > maxW) end--
+                // 二分出本行能放下的最长前缀（原来是逐字回退，长段落会变慢）
+                var end = maxPrefixEnd(para, start, maxW, p)
                 if (end == start) end = start + 1
                 // 不要把代理对（emoji 等）截成半截字符
                 if (end < para.length && Character.isLowSurrogate(para[end])) end++
@@ -1324,20 +1464,19 @@ object ChatAnalysisPng {
         return head
     }
 
-    /** 超宽则按 Paint.measureText 逐字截断并补 "…"（不猜宽度） */
+    /** 超宽则按 Paint.measureText 精确截断并补 "…"（二分定位，不猜宽度、不越出容器） */
     private fun truncateToWidth(text: String, maxW: Float, p: Paint): String {
         if (text.isEmpty() || maxW <= 0f) return if (maxW <= 0f) "" else text
         if (p.measureText(text) <= maxW) return text
         val ellW = p.measureText("…")
-        var end = text.length
-        while (end > 0) {
-            if (p.measureText(text, 0, end) + ellW <= maxW) return text.substring(0, end) + "…"
+        var end = maxPrefixEnd(text, 0, maxW - ellW, p)
+        // 不要把代理对（emoji 等）截成半截字符
+        if (end in 1 until text.length &&
+            Character.isLowSurrogate(text[end]) && Character.isHighSurrogate(text[end - 1])
+        ) {
             end--
-            if (end >= 2 && Character.isLowSurrogate(text[end]) && Character.isHighSurrogate(text[end - 1])) {
-                end--
-            }
         }
-        return "…"
+        return if (end <= 0) "…" else text.substring(0, end) + "…"
     }
 
     /** 数值 / 单位拆分："12,345 条" → ("12,345", "条")；非数字开头则整串当数值 */

@@ -4,13 +4,17 @@ import android.content.ContentValues
 import android.media.MediaMetadataRetriever
 import android.view.View
 import androidx.activity.ComponentActivity
+import com.tencent.mm.pluginsdk.ui.chat.ChatFooter
+import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseListenerApi
 import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
 import dev.ujhhgtg.wekit.features.api.core.models.MessageType
+import dev.ujhhgtg.wekit.features.api.ui.WeChatInputBarMenuApi
 import dev.ujhhgtg.wekit.features.api.ui.WeConversationContextMenuApi
+import dev.ujhhgtg.wekit.features.api.ui.WeCurrentConversationApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs
@@ -60,6 +64,12 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     private const val TAG = "QqMusicOrder"
 
     internal const val KEY_TRIGGERS = "qq_music_order_triggers"
+
+    /**
+     * 语音卡片触发词（2026-09-23 用户要求「音乐卡片的消息指令要和语音卡片的消息指令要不同」）：
+     * 命中卡片触发词只发音乐卡片，命中语音触发词只发语音，两者不再一起发。
+     */
+    internal const val KEY_VOICE_TRIGGERS = "qq_music_order_voice_triggers"
     internal const val KEY_SEND_AS_CARD = "qq_music_order_send_as_card"
     internal const val KEY_SEND_AS_VOICE = "qq_music_order_send_as_voice"
     internal const val KEY_CUSTOM_SINGER = "qq_music_order_custom_singer"
@@ -81,7 +91,23 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     internal const val KEY_HIDE_OWN_COMMAND = "qq_music_order_hide_own_command"
 
     internal const val DEFAULT_TRIGGER = "点歌"
-    const val DEFAULT_APP_ID = "wx485a97c844086dc9"
+    internal const val DEFAULT_VOICE_TRIGGERS = "点歌语音,语音点歌"
+
+    /**
+     * 卡片来源 AppID 的默认值。
+     *
+     * 2026-09-23 真机结论：微信只会给**它自己认识**的 AppID 渲染卡片左下角的「来源应用」，
+     * 模块里原本用的 QQ音乐 AppID 发出来的卡片在手机上是一条**不带来源**的灰卡
+     * （用户反馈「音乐卡片没有带 appid 显示出来」）。所以默认值改成**用户手机上实测能正常显示**
+     * 的网易云音乐 AppID（就是用户提供的真实卡片报文里的那个），设置页里可以一键切回 QQ音乐。
+     */
+    const val DEFAULT_APP_ID = "wx8dd6ecd81906fd84"
+
+    /** 已知能被微信渲染出来源的 AppID 预设：appid → 卡片上显示的应用名。 */
+    val APP_ID_PRESETS: Map<String, String> = linkedMapOf(
+        "wx8dd6ecd81906fd84" to "网易云音乐",
+        "wx485a97c844086dc9" to "QQ音乐",
+    )
 
     /** Conversation long-press menu ids (kept in a range no other feature uses). */
     private const val MENU_ID_CHAT_ON = 777441
@@ -127,14 +153,28 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
     // ------------------------------------------------------------------ config
 
-    fun triggers(): List<String> {
+    /** 音乐卡片的触发词（默认「点歌」）。 */
+    fun cardTriggers(): List<String> {
         val raw = WePrefs.getStringOrDef(KEY_TRIGGERS, DEFAULT_TRIGGER)
+        return splitTriggers(raw, DEFAULT_TRIGGER)
+    }
+
+    /** 语音卡片的触发词（默认「点歌语音 / 语音点歌」），命中它只发语音不发卡片。 */
+    fun voiceTriggers(): List<String> {
+        val raw = WePrefs.getStringOrDef(KEY_VOICE_TRIGGERS, DEFAULT_VOICE_TRIGGERS)
+        return splitTriggers(raw, DEFAULT_VOICE_TRIGGERS)
+    }
+
+    private fun splitTriggers(raw: String, fallback: String): List<String> {
         val list = raw.split(',', '\uFF0C', '\n')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
-        return list.ifEmpty { listOf(DEFAULT_TRIGGER) }
+        return list.ifEmpty { listOf(fallback) }
     }
+
+    /** 兼容旧调用：卡片 + 语音两套触发词的并集。 */
+    fun triggers(): List<String> = (cardTriggers() + voiceTriggers()).distinct()
 
     fun sendAsCard(): Boolean = WePrefs.getBoolOrDef(KEY_SEND_AS_CARD, true)
 
@@ -247,44 +287,167 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      * 「拦截自己发出的点歌指令」的注入点。
      *
      * 数据库 listener 只能**事后**看到消息已经落库，拦不住它进聊天；能拦的是发送点击本身。
-     * 这里 hook 微信输入栏 `com.tencent.mm.pluginsdk.ui.chat.n1#onClick(View)`（与「群聊自定义艾特」
-     * 同一个注入点，该方法是 void，hookBefore 安全）：点击前读出输入框文本，若是点歌指令就
-     * **清空输入框**（宿主随后读到空文本 → 什么都不会发出去），再由我们自己走点歌流程。
-     * 类名变化时会失败并只记日志：这种情况下指令照常发出去，点歌功能本身不受影响。
+     *
+     * 2026-09-23 真机日志定位（用户上传日志 wekit-2026-09-23.x.log）：
+     *   00:14:48.277 RedirectHostLogs: [MicroMsg.ChattingUI.SendTextComponent] doSendMessage end cost:6
+     *   00:14:48.314 QqMusicOrder: order detected: talker=… isSend=1 song=粉红色的回忆
+     *   00:14:48.315 RedirectHostLogs: [MicroMsg.MsgInfoStorage] insert:28869 … type:1 issend:1
+     * —— 指令文字**照样落库并发了出去**，说明只 hook `n1.onClick` 时真机的发送点击根本没进我们的回调。
+     * 用户点「发送」实际执行的是 ChatFooter 里发送按钮的 OnClickListener.onClick，也就是
+     * [WeChatInputBarMenuApi.methodSendMessage]（多个功能（如 ReadReceipts）都挂在它上面）。
+     * 因此两条路径都挂，优先级取 300（高于 CustomAt/ReadReceipts 的 100），保证我们**先**清输入框。
+     *
+     * 任何一步失败都只记日志：这种情况下指令照常发出去，点歌功能本身不受影响。
      */
     private fun installSendGuard() {
+        val installed = mutableListOf<String>()
+
+        runCatching {
+            WeChatInputBarMenuApi.methodSendMessage.hookBefore(300) { handleSendGuard(thisObject) }
+            installed += "methodSendMessage"
+        }.onFailure { WeLogger.w(TAG, "发送拦截 Hook（methodSendMessage）安装失败", it) }
+
         runCatching {
             val n1 = Class.forName("com.tencent.mm.pluginsdk.ui.chat.n1", false, ClassLoaders.HOST)
             val onClick = n1.getDeclaredMethod("onClick", View::class.java)
             onClick.isAccessible = true
-            // 优先级必须**高于**「群聊自定义艾特」的 100：insertCallback 按优先级降序排、高的先跑。
-            // 否则本拦截器读到的是已被 CustomAt 改写过的输入框文本，改写结果还会被之后的清空动作丢弃。
-            onClick.hookBefore(110) { handleSendGuard(thisObject) }
-            WeLogger.i(TAG, "点歌指令发送拦截 Hook 已安装")
-        }.onFailure {
-            WeLogger.w(TAG, "点歌指令发送拦截 Hook 安装失败（指令将照常发出）", it)
+            onClick.hookBefore(300) { handleSendGuard(thisObject) }
+            installed += "n1.onClick"
+        }.onFailure { WeLogger.w(TAG, "发送拦截 Hook（n1.onClick）安装失败", it) }
+
+        if (installed.isEmpty()) {
+            WeLogger.w(TAG, "点歌指令发送拦截 Hook 全部安装失败（指令将照常发出）")
+        } else {
+            WeLogger.i(TAG, "点歌指令发送拦截 Hook 已安装：${installed.joinToString("/")}")
         }
     }
 
-    /** 发送点击前：识别"自己发出的点歌指令"，按开关决定是否把它拦在聊天之外。 */
+    /** 同一次点击会被上面两条 hook 各回调一次：用「同一文案 + 短时间窗」去重。 */
+    private val guardLastHit = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /**
+     * 发送点击前：识别"自己发出的点歌指令"，按开关决定是否把它拦在聊天之外。
+     *
+     * 每个提前返回的分支都留了日志（用户上一轮反馈"拦截没生效"时，日志里只有安装成功、
+     * 没有任何拦截记录，无法判断卡在哪一步）—— 下一次真机日志能直接看出是取不到输入框、
+     * 还是文本没匹配上指令。
+     */
     private fun handleSendGuard(thisObject: Any?) {
         if (!hideOwnCommand()) return
         runCatching {
-            val footer = CustomAt.findFooterFromListener(thisObject) ?: return
-            val text = CustomAt.getFooterText(footer)
-            if (text.isBlank()) return
-            val query = parseCommand(text) ?: return
-            val talker = CustomAt.findTalkerFromFooter(footer)
-            if (talker.isBlank()) return
+            val footer = resolveFooterForGuard(thisObject)
+            val text = readFooterText(footer)
+            if (text.isBlank()) {
+                WeLogger.d(TAG, "guard: 取不到输入框文本（footer=${footer?.javaClass?.name ?: "null"}），放行")
+                return
+            }
+            val parsed = parseOrder(text)
+            if (parsed == null) {
+                WeLogger.d(TAG, "guard: 不是点歌指令 text='${text.take(40)}'，放行")
+                return
+            }
+            // 对应的通道被关掉时不要吞掉这句话：让用户看到自己发的普通消息。
+            val channelOn = when (parsed.kind) {
+                CommandKind.CARD -> sendAsCard()
+                CommandKind.VOICE -> sendAsVoice()
+            }
+            if (!channelOn) {
+                WeLogger.d(TAG, "guard: ${parsed.kind} 通道未启用，放行")
+                return
+            }
+            val talker = resolveTalkerForGuard(footer)
+            if (talker.isBlank()) {
+                WeLogger.d(TAG, "guard: 取不到会话 wxId，放行")
+                return
+            }
             val allow = allowedTalkers()
-            if (allow.isNotEmpty() && talker !in allow) return
-            CustomAt.setFooterText(footer, "")
+            if (allow.isNotEmpty() && talker !in allow) {
+                WeLogger.d(TAG, "guard: 会话 $talker 不在生效列表，放行")
+                return
+            }
+
+            val now = System.currentTimeMillis()
+            val last = guardLastHit.get()
+            if (now - last < GUARD_DEDUPE_MS) {
+                WeLogger.d(TAG, "guard: 同一次点击的第二次回调，忽略")
+                return
+            }
+            guardLastHit.set(now)
+
+            clearFooterText(footer)
             // 拦下之后我们自己出歌；宿主如果仍然把这条落库，onInsert 那边会看到同文案而跳过，
             // 避免同一句指令出两份卡片。
-            guardSuppress[talker] = text.trim() to System.currentTimeMillis()
-            WeLogger.i(TAG, "已拦截自己的点歌指令：talker=$talker song=${query.song} singer=${query.singer}")
-            scope.launch { process(talker, "", query, true) }
+            guardSuppress[talker] = text.trim() to now
+            WeLogger.i(
+                TAG,
+                "已拦截自己的点歌指令：kind=${parsed.kind} talker=$talker " +
+                    "song=${parsed.query.song} singer=${parsed.query.singer}",
+            )
+            scope.launch { process(talker, "", parsed.query, true, parsed.kind) }
         }.onFailure { WeLogger.e(TAG, "发送拦截异常", it) }
+    }
+
+    /** 同一次点击的两条 hook 都在 1 帧内发生，400ms 足够去重又不会误伤连点两次的正常操作。 */
+    private const val GUARD_DEDUPE_MS = 400L
+
+    /**
+     * 拿到当前聊天输入框（ChatFooter）。
+     *
+     * 顺序：① [WeCurrentConversationApi.chatFooter]（`ChatFooter.setUserName` 的 after hook，
+     * 最可靠）→ ② 从点击回调对象里找（原脚本的 `n1.d` 路径）→ ③ 对回调对象做一层字段下钻。
+     */
+    private fun resolveFooterForGuard(thisObject: Any?): ChatFooter? {
+        WeCurrentConversationApi.chatFooter?.let { return it }
+        CustomAt.findFooterFromListener(thisObject)?.let { return it }
+        if (thisObject == null) return null
+        // 下钻一层：监听器通常持有 `this$0` / 控制器，控制器里才是 ChatFooter。
+        runCatching {
+            val fields = thisObject.javaClass.declaredFields
+            for (field in fields) {
+                if (field.type.isPrimitive) continue
+                runCatching { field.isAccessible = true }
+                val value = runCatching { field.get(thisObject) }.getOrNull() ?: continue
+                CustomAt.findFooterFromListener(value)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 读输入框正文。
+     *
+     * 优先 [CustomAt.getFooterText]（`getLastText` / `getLastContent`），取不到就直接读输入框里的
+     * EditText（`getToSendEt`）——真机上有版本这两个 getter 返回空串，导致整条拦截静默失效。
+     */
+    private fun readFooterText(footer: ChatFooter?): String {
+        footer ?: return ""
+        val viaGetter = CustomAt.getFooterText(footer)
+        if (viaGetter.isNotBlank()) return viaGetter
+        return runCatching {
+            val et = footer.reflekt().firstMethodOrNull { name = "getToSendEt" }?.invoke()
+            (et?.reflekt()?.firstMethodOrNull { name = "getText" }?.invoke() as? CharSequence)
+                ?.toString().orEmpty()
+        }.getOrDefault("")
+    }
+
+    /** 清空输入框：footer 的 setter 与 EditText 两条都做，避免只清了一处。 */
+    private fun clearFooterText(footer: ChatFooter?) {
+        footer ?: return
+        runCatching { CustomAt.setFooterText(footer, "") }
+        runCatching {
+            val et = footer.reflekt().firstMethodOrNull { name = "getToSendEt" }?.invoke() ?: return@runCatching
+            runCatching { et.reflekt().firstMethodOrNull { name = "setText" }?.invoke("") }
+            runCatching {
+                val editable = et.reflekt().firstMethodOrNull { name = "getText" }?.invoke() as? android.text.Editable
+                editable?.clear()
+            }
+        }
+    }
+
+    /** 会话 wxId：先按 footer 里的 @映射/String 字段找，退回 [WeCurrentConversationApi.value]。 */
+    private fun resolveTalkerForGuard(footer: ChatFooter?): String {
+        footer?.let { CustomAt.findTalkerFromFooter(it).takeIf { t -> t.isNotBlank() }?.let { return it } }
+        return WeCurrentConversationApi.value
     }
 
     /** talker → (指令原文, 拦截时间)：拦截后短时间内宿主仍可能落库同一条指令，用它去重。 */
@@ -315,7 +478,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
         // 群聊带 `发送者:\n` 前缀时先剥掉再匹配，否则群里点歌的"指令在句首"永远不成立。
         val body = commandBody(talker, content, sender)
-        val query = parseCommand(body) ?: return
+        val parsed = parseOrder(body) ?: return
+        val query = parsed.query
 
         // 指令已经在"发送点击"阶段被拦下并单独出过歌了，宿主要是仍把它落库就跳过，别出两份。
         guardSuppress[talker]?.let { (guardedText, at) ->
@@ -329,9 +493,10 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
         WeLogger.i(
             TAG,
-            "order detected: talker=$talker isSend=$isSend song=${query.song} singer=${query.singer}",
+            "order detected: talker=$talker isSend=$isSend kind=${parsed.kind} " +
+                "trigger=${parsed.trigger} song=${query.song} singer=${query.singer}",
         )
-        scope.launch { process(talker, sender, query, isSend == 1) }
+        scope.launch { process(talker, sender, query, isSend == 1, parsed.kind) }
     }
 
     data class SongQuery(val song: String, val singer: String?)
@@ -372,30 +537,54 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      *  - 整条消息不能含换行；
      *  - 查询串长度上限 40 字（歌名+歌手）。
      */
-    fun parseCommand(text: String): SongQuery? {
+    fun parseCommand(text: String): SongQuery? = parseOrder(text)?.query
+
+    /**
+     * 解析点歌指令，并**同时判定用户想要哪种卡片**（2026-09-23 用户要求）：
+     * 音乐卡片与语音卡片各有独立的触发词，命中哪个就只发哪个 —— 不再两个一起发。
+     *
+     * 两套触发词都命中时取**最长的那个**（「点歌语音」优先于「点歌」），长度相同时卡片优先，
+     * 这样原来的「点歌」行为完全不变，新增的语音指令也不会被卡片指令吞掉。
+     */
+    fun parseOrder(text: String): ParsedCommand? {
         val body = text.trim()
         if (body.isEmpty() || body.contains('\n')) return null
 
-        // The longest trigger wins, so "点歌 " style variants do not shadow longer ones.
-        val hit = triggers().mapNotNull { candidate ->
+        val candidates = cardTriggers().map { it to CommandKind.CARD } +
+            voiceTriggers().map { it to CommandKind.VOICE }
+
+        val hit = candidates.mapNotNull { (candidate, kind) ->
             val idx = body.indexOf(candidate)
             if (idx < 0) return@mapNotNull null
             val prefix = body.substring(0, idx)
             if (prefix.isNotEmpty() && !MENTION_ONLY.matches(prefix)) return@mapNotNull null
-            candidate to idx
-        }.maxByOrNull { it.first.length } ?: return null
+            Triple(candidate, kind, idx)
+        }.maxWithOrNull(
+            compareBy({ it.first.length }, { if (it.second == CommandKind.CARD) 1 else 0 }),
+        ) ?: return null
 
-        val after = body.substring(hit.second + hit.first.length).trim()
+        val after = body.substring(hit.third + hit.first.length).trim()
         if (after.isEmpty() || after.length > MAX_SONG_QUERY_CHARS) return null
 
-        if (customSinger() && after.contains('&')) {
+        val query = if (customSinger() && after.contains('&')) {
             val idx = after.indexOf('&')
             val song = after.substring(0, idx).trim()
             val singer = after.substring(idx + 1).trim().ifEmpty { null }
-            return if (song.isEmpty()) null else SongQuery(song, singer)
+            if (song.isEmpty()) return null else SongQuery(song, singer)
+        } else {
+            SongQuery(after, null)
         }
-        return SongQuery(after, null)
+        return ParsedCommand(query, hit.second, hit.first)
     }
+
+    /** 指令种类：决定这次只发音乐卡片还是只发语音。 */
+    enum class CommandKind { CARD, VOICE }
+
+    data class ParsedCommand(
+        val query: SongQuery,
+        val kind: CommandKind,
+        val trigger: String,
+    )
 
     /** 歌名 + 歌手的合理长度上限，超过就当成普通聊天。 */
     private const val MAX_SONG_QUERY_CHARS = 40
@@ -409,9 +598,19 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
     // ------------------------------------------------------------------ pipeline
 
-    private fun process(talker: String, sender: String, query: SongQuery, own: Boolean) {
+    private fun process(
+        talker: String,
+        sender: String,
+        query: SongQuery,
+        own: Boolean,
+        kind: CommandKind,
+    ) {
         try {
-            if (!sendAsCard() && !sendAsVoice()) {
+            // 指令种类决定这次发哪种卡片：卡片指令只发音乐卡片、语音指令只发语音，
+            // 两者不再一起发（2026-09-23 用户要求）。
+            val wantsCard = kind == CommandKind.CARD && sendAsCard()
+            val wantsVoice = kind == CommandKind.VOICE && sendAsVoice()
+            if (!wantsCard && !wantsVoice) {
                 notice(talker, R.string.qq_music_order_need_a_channel)
                 return
             }
@@ -441,8 +640,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             val thumbUrl = resolveCoverUrl(detail, requester)
             val singer = resolveSinger(talker, requester, detail)
 
-            val wantsCard = sendAsCard()
-            val wantsVoice = sendAsVoice()
+            val wantsCard = kind == CommandKind.CARD && sendAsCard()
+            val wantsVoice = kind == CommandKind.VOICE && sendAsVoice()
 
             var cardOk = false
             if (wantsCard) cardOk = sendCard(talker, detail, singer, lyric, audioUrl, thumbUrl)
@@ -452,7 +651,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
             WeLogger.i(
                 TAG,
-                "order done: card=$wantsCard/$cardOk voice=$wantsVoice/$voiceOk " +
+                "order done: kind=$kind card=$wantsCard/$cardOk voice=$wantsVoice/$voiceOk " +
                     "audioUrl=${if (audioUrl.isNullOrBlank()) "none" else "resolved"}",
             )
 
@@ -1025,7 +1224,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     internal fun appName(): String {
         val custom = WePrefs.getStringOrDef(KEY_APP_NAME, "").trim()
         if (custom.isNotEmpty()) return custom
-        return if (effectiveAppId() == DEFAULT_APP_ID) "QQ音乐" else "音乐"
+        // 预设表里认识的 AppID 用它对应的官方来源名；不认识才退回泛称「音乐」。
+        return APP_ID_PRESETS[effectiveAppId()] ?: "音乐"
     }
 
     /**

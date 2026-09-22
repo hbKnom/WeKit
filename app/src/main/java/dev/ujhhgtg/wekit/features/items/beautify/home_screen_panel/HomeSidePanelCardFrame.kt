@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -39,6 +40,7 @@ import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Close
 import com.composables.icons.materialsymbols.outlined.Edit
 import dev.ujhhgtg.wekit.R
+import java.nio.file.Path
 
 @Composable
 fun HomeSidePanelCardFrame(
@@ -52,6 +54,8 @@ fun HomeSidePanelCardFrame(
     onDelete: (() -> Unit)?,
     @StringRes editDescriptionRes: Int = R.string.home_side_panel_edit_card,
     @StringRes deleteDescriptionRes: Int = R.string.home_side_panel_delete_card,
+    backgroundImageFile: Path? = null,
+    backgroundImageAlpha: Int = HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN,
     badgeContent: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
@@ -62,7 +66,22 @@ fun HomeSidePanelCardFrame(
                 shape = shape,
                 colors = colors,
             ) {
-                content()
+                if (backgroundImageFile != null && backgroundImageAlpha > HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN) {
+                    // The image is the first child, so it is painted under `content()`: every title,
+                    // icon and value of the card stays on top and readable. matchParentSize keeps it
+                    // out of the size calculation, which means the card still measures itself from
+                    // its own content exactly like it does without a background.
+                    Box {
+                        HomeSidePanelCardBackgroundImage(
+                            file = backgroundImageFile,
+                            alphaPercent = backgroundImageAlpha,
+                            modifier = Modifier.matchParentSize().clip(shape),
+                        )
+                        content()
+                    }
+                } else {
+                    content()
+                }
             }
             Box(
                 modifier = Modifier

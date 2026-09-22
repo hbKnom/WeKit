@@ -78,6 +78,7 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.items.beautify.resolveBeautifyText
 import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
 import kotlinx.coroutines.delay
+import java.nio.file.Path
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -98,6 +99,7 @@ fun HomeSidePanelDateTimeCard(
     cardDragModifier: Modifier = Modifier,
     onEditCard: ((String) -> Unit)? = null,
     onDeleteCard: ((String) -> Unit)? = null,
+    backgroundImageFile: Path? = null,
 ) {
     val now = when (content) {
         DateTimeCardContent.Runtime -> rememberHomeSidePanelNow()
@@ -138,6 +140,8 @@ fun HomeSidePanelDateTimeCard(
         editMode = editMode,
         onEdit = onEditCard?.let { edit -> { edit(card.id) } },
         onDelete = onDeleteCard?.let { delete -> { delete(card.id) } },
+        backgroundImageFile = backgroundImageFile,
+        backgroundImageAlpha = card.backgroundImageAlpha,
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
@@ -202,6 +206,7 @@ fun HomeSidePanelWeatherCard(
     onRefresh: (String) -> Unit = {},
     onEditCard: ((String) -> Unit)? = null,
     onDeleteCard: ((String) -> Unit)? = null,
+    backgroundImageFile: Path? = null,
 ) {
     val localizedContext = LocalWeKitLocalizedContext.current
     val runtime = content as? WeatherCardContent.Runtime
@@ -228,6 +233,8 @@ fun HomeSidePanelWeatherCard(
         editMode = editMode,
         onEdit = onEditCard?.let { edit -> { edit(card.id) } },
         onDelete = onDeleteCard?.let { delete -> { delete(card.id) } },
+        backgroundImageFile = backgroundImageFile,
+        backgroundImageAlpha = card.backgroundImageAlpha,
     ) {
         val contentColor = MaterialTheme.colorScheme.onPrimaryContainer
         val location = snapshot?.city?.let { city ->
@@ -416,6 +423,7 @@ fun HomeSidePanelWalletCard(
     onOpenPaymentCode: () -> Unit = {},
     onEditCard: ((String) -> Unit)? = null,
     onDeleteCard: ((String) -> Unit)? = null,
+    backgroundImageFile: Path? = null,
 ) {
     val runtime = content as? WalletCardContent.Runtime
     val displayBalance = when (content) {
@@ -441,6 +449,8 @@ fun HomeSidePanelWalletCard(
         editMode = editMode,
         onEdit = onEditCard?.let { edit -> { edit(card.id) } },
         onDelete = onDeleteCard?.let { delete -> { delete(card.id) } },
+        backgroundImageFile = backgroundImageFile,
+        backgroundImageAlpha = card.backgroundImageAlpha,
     ) {
         val contentColor = MaterialTheme.colorScheme.onPrimaryContainer
         Column(
@@ -522,6 +532,7 @@ fun HomeSidePanelHitokotoCard(
     onRefresh: (String) -> Unit = {},
     onEditCard: ((String) -> Unit)? = null,
     onDeleteCard: ((String) -> Unit)? = null,
+    backgroundImageFile: Path? = null,
 ) {
     val localizedContext = LocalWeKitLocalizedContext.current
     val runtime = content as? HitokotoCardContent.Runtime
@@ -552,6 +563,8 @@ fun HomeSidePanelHitokotoCard(
         editMode = editMode,
         onEdit = onEditCard?.let { edit -> { edit(card.id) } },
         onDelete = onDeleteCard?.let { delete -> { delete(card.id) } },
+        backgroundImageFile = backgroundImageFile,
+        backgroundImageAlpha = card.backgroundImageAlpha,
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

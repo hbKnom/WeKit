@@ -1,7 +1,9 @@
 package dev.ujhhgtg.wekit.features.items.beautify.home_screen_panel
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -40,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,7 +52,9 @@ import com.composables.icons.materialsymbols.outlined.Arrow_back
 import com.composables.icons.materialsymbols.outlined.Chevron_right
 import com.composables.icons.materialsymbols.outlined.Edit
 import com.composables.icons.materialsymbols.outlined.My_location
+import com.composables.icons.materialsymbols.outlined.Opacity
 import com.composables.icons.materialsymbols.outlined.Person_pin
+import com.composables.icons.materialsymbols.outlined.Wallpaper
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.items.beautify.resolveBeautifyText
 import dev.ujhhgtg.wekit.i18n.LocalWeKitLocalizedContext
@@ -57,6 +63,7 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.IntNumberPickerWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import java.nio.file.Path
 
 @Composable
 fun HomeSidePanelPanelSettings(
@@ -112,6 +119,7 @@ fun HomeSidePanelDateTimeSettings(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom).asPaddingValues())
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -132,6 +140,7 @@ fun HomeSidePanelDateTimeSettings(
                 )
             }
         }
+        HomeSidePanelCardBackgroundSection(card = card, panelState = panelState)
     }
 }
 
@@ -251,6 +260,7 @@ fun HomeSidePanelWeatherSettings(
                 }
             }
         }
+        HomeSidePanelCardBackgroundSection(card = card, panelState = panelState)
     }
 }
 
@@ -262,6 +272,7 @@ fun HomeSidePanelWalletSettings(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom).asPaddingValues())
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -284,6 +295,7 @@ fun HomeSidePanelWalletSettings(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
+        HomeSidePanelCardBackgroundSection(card = card, panelState = panelState)
     }
 }
 
@@ -396,6 +408,172 @@ fun HomeSidePanelHitokotoSettings(
             ) {
                 Text(stringResource(R.string.action_save))
             }
+        }
+        HomeSidePanelCardBackgroundSection(card = card, panelState = panelState)
+    }
+}
+
+@Composable
+fun HomeSidePanelCalendarSettings(
+    card: CalendarCardConfig,
+    panelState: HomeSidePanelState,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom).asPaddingValues())
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SettingsHeader(
+            stringResource(R.string.home_side_panel_calendar_settings),
+            panelState::closeCardSettings,
+        )
+        SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
+            item {
+                SwitchWidget(
+                    iconPlaceholder = false,
+                    title = stringResource(R.string.home_side_panel_show_lunar_calendar),
+                    checked = card.showLunarCalendar,
+                    onCheckedChange = {
+                        panelState.updateCalendarLunarCalendar(card.id, it)
+                    },
+                )
+            }
+        }
+        HomeSidePanelCardBackgroundSection(card = card, panelState = panelState)
+    }
+}
+
+/**
+ * Shared "background image + opacity" block for the five container cards (date & time, calendar,
+ * weather, wallet, hitokoto). It only edits the current draft: picking an image imports it into
+ * the module private directory straight away, and the usual save/discard of the edit session
+ * decides whether the draft asset is promoted or thrown away.
+ */
+@Composable
+fun HomeSidePanelCardBackgroundSection(
+    card: HomeSidePanelBackgroundImageCardConfig,
+    panelState: HomeSidePanelState,
+) {
+    val uiState by panelState.uiState.collectAsStateWithLifecycle()
+    val importing = card.id in uiState.imageImportingCardIds
+    val previewFile = panelState.backgroundImageFile(card.id)
+    val hasBackground = card.backgroundImageAssetId != null
+    Text(
+        stringResource(R.string.home_side_panel_card_background),
+        style = MaterialTheme.typography.titleMedium,
+    )
+    SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
+        item {
+            BaseItemContainer {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HomeSidePanelCardBackgroundPreview(file = previewFile, importing = importing)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (hasBackground) {
+                                    R.string.home_side_panel_card_background_selected
+                                } else {
+                                    R.string.home_side_panel_card_background_none
+                                },
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            stringResource(R.string.home_side_panel_card_background_hint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            BaseItemContainer {
+                IntNumberPickerWidget(
+                    icon = MaterialSymbols.Outlined.Opacity,
+                    iconPlaceholder = false,
+                    title = stringResource(R.string.home_side_panel_card_background_alpha),
+                    value = card.backgroundImageAlpha,
+                    startInt = HOME_SIDE_PANEL_BACKGROUND_ALPHA_MIN,
+                    endInt = HOME_SIDE_PANEL_BACKGROUND_ALPHA_MAX,
+                    stepSize = 5,
+                    valueSuffix = "%",
+                    enabled = hasBackground && !importing,
+                    onValueChange = { panelState.updateCardBackgroundAlpha(card.id, it) },
+                )
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { panelState.selectBackgroundImage(card.id) },
+            modifier = Modifier.weight(1f),
+            enabled = !importing,
+        ) {
+            Text(
+                stringResource(
+                    if (hasBackground) {
+                        R.string.home_side_panel_card_background_replace
+                    } else {
+                        R.string.home_side_panel_card_background_pick
+                    },
+                ),
+            )
+        }
+        OutlinedButton(
+            onClick = { panelState.removeCardBackgroundImage(card.id) },
+            modifier = Modifier.weight(1f),
+            enabled = hasBackground && !importing,
+        ) {
+            Text(stringResource(R.string.home_side_panel_card_background_remove))
+        }
+    }
+    Text(
+        stringResource(R.string.home_side_panel_card_background_alpha_hint),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp),
+    )
+}
+
+@Composable
+private fun HomeSidePanelCardBackgroundPreview(
+    file: Path?,
+    importing: Boolean,
+) {
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            importing -> CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+            )
+
+            file != null -> HomeSidePanelCardBackgroundImage(
+                file = file,
+                alphaPercent = HOME_SIDE_PANEL_BACKGROUND_ALPHA_MAX,
+                modifier = Modifier.matchParentSize(),
+            )
+
+            else -> Icon(
+                MaterialSymbols.Outlined.Wallpaper,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
