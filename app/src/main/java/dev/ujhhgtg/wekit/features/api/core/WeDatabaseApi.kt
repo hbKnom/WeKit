@@ -321,6 +321,19 @@ object WeDatabaseApi : ApiFeature(), IResolveDex {
             WHERE i.username = '$wxid'
         """.trimIndent()
 
+        /**
+         * 头像相关的所有保留列。
+         *
+         * `img_flag` 的保留列在不同微信版本里字段含义不一样（一个存本地路径、一个存远程
+         * URL），单独写死 `reserved2` 会拿到本地路径。多取几列由调用方挑 http(s) 的那一列。
+         */
+        fun avatarAll(wxid: String) = """
+            SELECT i.reserved1 AS reserved1, i.reserved2 AS reserved2,
+                   i.reserved3 AS reserved3, i.reserved4 AS reserved4
+            FROM img_flag i
+            WHERE i.username = '$wxid'
+        """.trimIndent()
+
         /** 获取群聊成员列表字符串 */
         const val GROUP_MEMBERS = "SELECT memberlist FROM chatroom WHERE chatroomname = '%s'"
 
@@ -770,6 +783,36 @@ object WeDatabaseApi : ApiFeature(), IResolveDex {
         } else {
             ""
         }
+    }
+
+    /**
+     * 头像 **http(s) 直链**（拿不到就返回空串）。
+     *
+     * 为什么需要单独一个方法：`img_flag` 的 `reserved1/2/3` 在不同微信版本里分别可能存
+     * **本地头像文件路径**（`…/avatar/01/a5/user_xxx.png`）或**远程 URL**
+     * （`http://wx.qlogo.cn/mmhead/…`）。UI 里（Coil）两者都能显示，所以原来的
+     * [getAvatarUrl] 一直够用；但**微信 appmsg 卡片的 `thumburl` 必须是远程地址**
+     * （由宿主自己去下载），把本地路径塞进去封面就是空白。
+     *
+     * 参考实现：WeKit 其他功能拿头像就是查 `img_flag`（见 [SqlStatements.avatar]），
+     * 这里只是多查几列并只挑 http(s) 的那一列。
+     */
+    fun getAvatarHttpUrl(wxid: String): String {
+        if (wxid.isEmpty()) return ""
+        val candidates = mutableListOf<String>()
+        runCatching {
+            executeQuery(SqlStatements.avatarAll(wxid)).firstOrNull()?.let { row ->
+                listOf("reserved1", "reserved2", "reserved3", "reserved4").forEach { column ->
+                    (row[column] as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let { candidates += it }
+                }
+            }
+        }.onFailure { WeLogger.w(TAG, "avatarAll query failed, falling back to reserved2", it) }
+        if (candidates.isEmpty()) {
+            runCatching { getAvatarUrl(wxid) }.getOrDefault("").let { if (it.isNotBlank()) candidates += it }
+        }
+        val http = candidates.firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
+        WeLogger.d(TAG, "avatar for '$wxid': candidates=${candidates.size} http=${http != null}")
+        return http.orEmpty()
     }
 
     private fun mapToContacts(data: List<Map<String, Any?>>): List<WeContact> {

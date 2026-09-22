@@ -1,6 +1,10 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import android.app.Activity
+import android.content.Context
 import android.media.MediaPlayer
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
@@ -97,7 +101,26 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
                     } else {
                         // 宿主菜单是 PopupWindow：等它彻底关闭再弹对话框，避免窗口事务互相打断
                         // 导致"对话框没出现"（延迟很短，用户感知不到）。
-                        view.postDelayed({ showAudioClipper(view, encPath) }, 150L)
+                        //
+                        // 真机教训（2026-09-22，日志只有 "menu click" 之后再无任何输出）：
+                        // 这里原先用 hostView.postDelayed(...)。菜单一点就关闭，锚点 View 立刻
+                        // detach，而 View.postDelayed 在 View 未 attach 时会把 runnable 塞进
+                        // 它的 RunQueue，等"重新 attach"才执行 —— 这个 View 永远不会再 attach，
+                        // 于是对话框**永远不会弹出**（且不抛异常、不打日志，表现为"点了没反应"）。
+                        // 修法：用主线程 Handler 投递，并在点击瞬间就把 context 取出来，
+                        // 不要等 150ms 之后再去碰可能已 detach 的 View。
+                        val dialogContext = view.context.activityOrNull() ?: view.context
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            runCatching {
+                                WeLogger.i(TAG, "opening audio clipper dialog")
+                                showAudioClipper(dialogContext, encPath)
+                            }.onFailure {
+                                WeLogger.e(TAG, "failed to open audio clipper dialog", it)
+                                runCatching {
+                                    showToast(dialogContext, it.message ?: "音频剪辑打开失败")
+                                }
+                            }
+                        }, 150L)
                     }
                 }.onFailure {
                     WeLogger.e(TAG, "menu click failed", it)
@@ -111,9 +134,15 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
 
     // ------------------------------------------------------------------ dialog
 
-    private fun showAudioClipper(anchor: View, encPath: String) {
-        val context = anchor.context
+    /** 弹出的 Compose 对话框需要真正的 Activity window token，某些锚点 View 拿到的只是
+     *  ContextThemeWrapper，直接用它构造 Dialog 会有 BadTokenException 风险。 */
+    private tailrec fun Context.activityOrNull(): Activity? = when (this) {
+        is Activity -> this
+        is android.content.ContextWrapper -> baseContext.activityOrNull()
+        else -> null
+    }
 
+    private fun showAudioClipper(context: Context, encPath: String) {
         showComposeDialog(context) {
             // Scope tied to the dialog composition: the previous per-dialog
             // CoroutineScope(SupervisorJob() + Dispatchers.IO) was never cancelled and leaked

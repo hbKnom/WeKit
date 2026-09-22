@@ -48,14 +48,33 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
     override val categoryIds = listOf(FeatureCategoryIds.CHAT)
     override val descriptionRes = R.string.feature_chat_record_analysis_description
 
-    private var maxCount by prefOption("chat_analysis_max_count", 20000)
+    /**
+     * 本地统计读取的消息条数上限（0 = 不限制，读该时段全部）。
+     *
+     * 用户 2026-09-22 反馈「条数只有 20000 的上限真的极少」：默认值从 20000 提到 50000，
+     * 输入框位数上限同步从 7 位放到 9 位（最大 999,999,999），并且明确提示 0 = 全部。
+     * 引擎是分页读取（PAGE_SIZE=1000），调大只会变慢，不会一次性撑爆内存。
+     */
+    private var maxCount by prefOption("chat_analysis_max_count", 50000)
 
     /**
      * 喂给 AI 的抽样条数上限。
-     * 旧默认 500 条 + 单条 200 字，用户反馈"内容太少、经常返回错误"，现在放宽到 1500 条，
-     * 单条长度与整段总量上限见 [ChatAnalysisEngine]（500 字 / 60000 字）。
+     * 旧默认 500 条、上一版 1500 条，用户仍反馈太少 → 默认 5000 条；
+     * 单条长度与整段总量上限见下方 [lineMax] / [transcriptMaxChars]。
      */
-    private var sampleLimit by prefOption("chat_analysis_sample_limit", 1500)
+    private var sampleLimit by prefOption("chat_analysis_sample_limit", 5000)
+
+    /** 单条消息喂给 AI 的字符上限（默认 2000）。 */
+    private var lineMax by prefOption("chat_analysis_line_max", ChatAnalysisEngine.TRANSCRIPT_LINE_MAX_DEFAULT)
+
+    /**
+     * 整段喂给 AI 的文本总量上限（默认 24 万字）。
+     * 这是防止服务端「上下文超限」的兜底：模型上下文小就把这个值调小。
+     */
+    private var transcriptMaxChars by prefOption(
+        "chat_analysis_transcript_chars",
+        ChatAnalysisEngine.TRANSCRIPT_MAX_CHARS_DEFAULT,
+    )
 
     private val rangeLabels = listOf("今天", "昨天", "本周", "上周", "本月", "上月")
 
@@ -138,14 +157,47 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                 features = loadFeatures(),
                 maxCount = maxCount,
                 sampleLimit = sampleLimit,
+                lineMax = lineMax,
+                transcriptMaxChars = transcriptMaxChars,
                 selectedModelName = ChatAnalysisModelStore.selectedModel()?.name ?: "",
                 onToggleFeature = { f, on ->
                     val s = loadFeatures().toMutableSet()
                     if (on) s.add(f) else s.remove(f)
                     saveFeatures(s)
                 },
-                onEditMaxCount = { editInt(view, "分析条数上限", "0 = 全部（越大越慢，建议大群 5000~20000）", maxCount) { maxCount = it } },
-                onEditSampleLimit = { editInt(view, "抽样上限", "喂给 AI 的最大文本条数，建议 500~3000（另有 60000 字总量上限兜底）", sampleLimit) { sampleLimit = it } },
+                onEditMaxCount = {
+                    editInt(
+                        view,
+                        "分析条数上限",
+                        "0 = 全部（读该时段所有消息）。数值越大读取越慢、越全；建议大群 20000~200000。",
+                        maxCount,
+                    ) { maxCount = it }
+                },
+                onEditSampleLimit = {
+                    editInt(
+                        view,
+                        "抽样上限",
+                        "喂给 AI 的最大文本条数，建议 1000~20000。条数越多 AI 看得越全，但请求也越大。",
+                        sampleLimit,
+                    ) { sampleLimit = it }
+                },
+                onEditLineMax = {
+                    editInt(
+                        view,
+                        "单条文本上限（字）",
+                        "一条消息最多喂给 AI 多少字（超出截断），默认 2000。长文多可调到 5000~10000。",
+                        lineMax,
+                    ) { lineMax = it }
+                },
+                onEditTranscriptMaxChars = {
+                    editInt(
+                        view,
+                        "喂给 AI 的文本上限（字）",
+                        "整段聊天记录的总字数上限，默认 240000。模型上下文小（如 32K/128K）请调小，" +
+                            "否则服务端会返回上下文超限错误。",
+                        transcriptMaxChars,
+                    ) { transcriptMaxChars = it }
+                },
                 onModelManager = { showModelManager(view) },
                 onTestModel = { testCurrentModel(view) },
                 onClose = { dismiss() },
@@ -356,6 +408,8 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     maxCount = maxCount,
                     sampleLimit = sampleLimit,
                     features = features,
+                    lineMax = lineMax,
+                    transcriptMaxChars = transcriptMaxChars,
                 )
                 mainHandler.post {
                     busy = false

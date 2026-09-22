@@ -23,15 +23,24 @@ object ChatAnalysisEngine {
     /** 每页查询条数（防止大群全量 OOM） */
     private const val PAGE_SIZE = 1000
 
-    /** 单条消息喂给 AI 的字符上限（超出截断，避免一条长文吃掉整个上下文）。 */
-    private const val TRANSCRIPT_LINE_MAX = 500
+    /**
+     * 单条消息喂给 AI 的字符上限（超出截断，避免一条长文吃掉整个上下文）。
+     *
+     * 用户 2026-09-22 反馈「内容文本的上限真的极少」：原值 500 字，一条长消息（比如群里
+     * 转发的长文、长公告）几乎只剩开头。默认放到 2000 字，并且改成可以由
+     * [ChatAnalysisEngine.analyze] 的 `lineMax` 参数覆盖（设置页可调）。
+     */
+    const val TRANSCRIPT_LINE_MAX_DEFAULT = 2000
 
     /**
-     * 喂给 AI 的整段对话文本硬上限（约 4 万 token 内，含思维链余量）。
-     * 旧版没有上限、单条只留 200 字，用户反馈"内容太少/条数太少"，放开条数与单条长度后
-     * 必须靠这个总量兜底，否则超大群会直接触发服务端上下文超限错误。
+     * 喂给 AI 的整段对话文本总量的**默认**硬上限。
+     *
+     * 用户反馈原值 60000 字太少、内容不够 AI 容易答错，这里默认放到 240000 字
+     * （中文约 1 字 ≈ 0.6~1 token，24 万字约 15~24 万 token，适配 32 万上下文的模型；
+     * 小上下文模型请把设置里的「喂给 AI 的文本上限」调小，否则服务端会返回上下文超限）。
+     * 真正的硬上限由调用方按设置传入，这里只是兜底默认值。
      */
-    private const val TRANSCRIPT_MAX_CHARS = 60000
+    const val TRANSCRIPT_MAX_CHARS_DEFAULT = 240_000
 
     /** 数据库未就绪时的提示，由调用方展示 */
     val dbReady: Boolean get() = runCatching { WeDatabaseApi.isReady }.getOrDefault(false)
@@ -85,6 +94,8 @@ object ChatAnalysisEngine {
         sampleLimit: Int,
         features: Set<String>,
         onProgress: ((Int, Int) -> Unit)? = null,
+        lineMax: Int = TRANSCRIPT_LINE_MAX_DEFAULT,
+        transcriptMaxChars: Int = TRANSCRIPT_MAX_CHARS_DEFAULT,
     ): AnalyzeResult {
         val now = System.currentTimeMillis()
         val range = timeRange(mode, now)
@@ -212,24 +223,26 @@ object ChatAnalysisEngine {
         val nickCache = mutableMapOf<String, String>()
         val sb = StringBuilder()
         val wordMap = mutableMapOf<String, Int>()
+        val effectiveLineMax = if (lineMax < 100) 100 else lineMax
+        val effectiveMaxChars = if (transcriptMaxChars < 2000) 2000 else transcriptMaxChars
         var included = 0
         for (k in sampledIdx) {
             val key = textSenders[k]
             val rawBody = textBodies[k]
             val dn = speakerDisplayName(key, talker, isGroup, nickCache)
             var body = rawBody
-            if (body.length > TRANSCRIPT_LINE_MAX) {
-                body = body.substring(0, TRANSCRIPT_LINE_MAX) + "…"
+            if (body.length > effectiveLineMax) {
+                body = body.substring(0, effectiveLineMax) + "…"
             }
             // 喂给 AI 的对话文本必须有硬上限：抽样后大群仍可能十几万字，整段发出去会被服务端
             // 判上下文超限（就是用户看到的"AI 返回错误"），所以到量就停并注明截断。
-            if (sb.length + dn.length + body.length + 8 > TRANSCRIPT_MAX_CHARS) break
+            if (sb.length + dn.length + body.length + 8 > effectiveMaxChars) break
             sb.append("[").append(dn).append("]: ").append(body).append("\n")
             countWords(body, wordMap)
             included++
         }
         if (included < sampledIdx.size) {
-            sb.append("…（已达 ").append(TRANSCRIPT_MAX_CHARS).append(" 字上限，本次收录 ")
+            sb.append("…（已达 ").append(effectiveMaxChars).append(" 字上限，本次收录 ")
                 .append(included).append("/").append(sampledIdx.size).append(" 条抽样消息）\n")
         }
         val transcript = sb.toString()

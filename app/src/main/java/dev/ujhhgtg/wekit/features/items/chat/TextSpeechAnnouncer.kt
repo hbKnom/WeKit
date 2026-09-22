@@ -112,6 +112,75 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
 
     fun volumeControl(): Boolean = WePrefs.getBoolOrDef(KEY_VOLUME_CONTROL, false)
 
+    // ---------------------------------------------------------------- tts engine discovery
+
+    data class TtsEngineOption(val name: String, val label: String)
+
+    /**
+     * 枚举本机已安装的 TTS 引擎，供设置页直接选择（用户反馈："我的 tts 引擎不止一个，
+     * 手动输入很麻烦"）。空字符串代表「系统默认引擎」。
+     *
+     * [TextToSpeech.getEngines] 返回的是 EngineInfo，`name` 是引擎包名（系统默认项可能为 null），
+     * `label` 往往是 `包名:语音包` 这类资源名，直接显示很难认，所以这里用 PackageManager 取
+     * 应用名做展示文案，取不到再退回包名。
+     */
+    fun ttsEngineOptions(): List<TtsEngineOption> {
+        val ctx = HostInfo.application
+        val pm = ctx.packageManager
+        val result = mutableListOf(TtsEngineOption("", ctx.getString(R.string.text_speech_engine_system_default)))
+        runCatching {
+            TextToSpeech.getEngines(ctx).orEmpty().forEach { info ->
+                val pkg = info.name ?: return@forEach
+                if (result.any { it.name == pkg }) return@forEach
+                val label = runCatching {
+                    pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+                }.getOrNull().orEmpty()
+                result += TtsEngineOption(pkg, label.ifBlank { pkg } + "\n" + pkg)
+            }
+        }.onFailure { WeLogger.w(TAG, "enumerate tts engines failed", it) }
+        WeLogger.i(TAG, "tts engines: ${result.joinToString { it.name.ifBlank { "default" } }}")
+        return result
+    }
+
+    /** 换引擎后立刻生效（否则要等下次重启微信）。 */
+    fun reinitEngine() {
+        main.post {
+            runCatching { engine?.stop(); engine?.shutdown() }
+            engine = null
+            engineReady = false
+            speaking = false
+            engineWaitTries = 0
+            initEngine()
+        }
+    }
+
+    /**
+     * 设置页「测试播报」：用当前引擎读一句固定文案。
+     * 用户实测反馈"完全没有任何声音"时，这个按钮能立刻区分「引擎没装/没初始化」和
+     * 「消息监听没拿到数据」两类完全不同的故障。
+     */
+    fun speakTest() {
+        main.post {
+            val ctx = HostInfo.application
+            if (engine == null) initEngine()
+            if (!engineReady) {
+                showToast(ctx, ctx.getString(R.string.text_speech_engine_not_ready))
+                WeLogger.w(TAG, "test speak skipped: engine not ready")
+                return@post
+            }
+            val text = ctx.getString(R.string.text_speech_test_utterance)
+            speaking = true
+            val result = runCatching {
+                engine?.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), UTTERANCE_ID)
+            }.getOrNull()
+            WeLogger.i(TAG, "test speak result=$result")
+            if (result != TextToSpeech.SUCCESS) {
+                speaking = false
+                showToast(ctx, ctx.getString(R.string.text_speech_engine_not_ready))
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- runtime state
 
     private val main = Handler(Looper.getMainLooper())
@@ -136,6 +205,11 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
 
     @Volatile
     private var engineReady = false
+
+    /** 引擎异步初始化的重试计数（见 [drainQueue]）。 */
+    private var engineWaitTries = 0
+
+    private val MAX_ENGINE_WAIT_TRIES = 20
 
     @Volatile
     private var speaking = false
@@ -209,17 +283,44 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
 
     override fun onInsert(table: String, values: ContentValues) {
         if (table != "message") return
-        if (values.getAsInteger("isSend") != 0) return
 
-        val type = values.getAsInteger("type") ?: return
-        val msgType = MessageType.fromCode(type) ?: return
+        // 这条链路以前完全静默：真机反馈"一条消息都不播报"时，日志里连一行都没有，
+        // 无法区分「监听没装上」「列名不对」「被免打扰/静默时段过滤」「引擎没起来」。
+        // 现在每个 return 分支都留 INFO 日志（只记关键字段，不打印正文以外的隐私内容）。
+        val isSend = values.getAsInteger("isSend")
+        if (isSend == null) {
+            WeLogger.i(TAG, "insert skipped: no isSend column (keys=${values.keySet()})")
+            return
+        }
+        if (isSend != 0) return // 自己发送的消息不播报
 
-        val msgInfo = runCatching { MessageInfo.fromContentValues(values) }.getOrNull() ?: return
+        val type = values.getAsInteger("type")
+        if (type == null) {
+            WeLogger.i(TAG, "insert skipped: no type column (keys=${values.keySet()})")
+            return
+        }
+        val msgType = MessageType.fromCode(type)
+        if (msgType == null) {
+            WeLogger.i(TAG, "insert skipped: unknown type=$type")
+            return
+        }
+
+        val msgInfo = runCatching { MessageInfo.fromContentValues(values) }.getOrNull()
+        if (msgInfo == null) {
+            WeLogger.i(TAG, "insert skipped: cannot build MessageInfo (type=$type)")
+            return
+        }
         val talker = msgInfo.talker
-        if (talker.isEmpty()) return
+        if (talker.isEmpty()) {
+            WeLogger.i(TAG, "insert skipped: empty talker (type=$type)")
+            return
+        }
 
         val allow = allowedContacts()
-        if (allow.isNotEmpty() && talker !in allow) return
+        if (allow.isNotEmpty() && talker !in allow) {
+            WeLogger.d(TAG, "insert skipped: $talker not in allow list")
+            return
+        }
 
         // msgId can still be 0 while the insert is in flight; msgSvrId is assigned by WeChat
         // and is stable, so prefer it and fall back to the local id.
@@ -237,26 +338,36 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
             msgType.isText -> body = msgInfo.actualContent
             msgType.code == MessageType.VOICE.code -> {
                 // Announced as a placeholder line; the voice itself is not replayed.
-                if (!playVoiceMessages()) return
+                if (!playVoiceMessages()) {
+                    WeLogger.i(TAG, "insert skipped: voice message and play-voice is off")
+                    return
+                }
                 body = HostInfo.application.getString(R.string.text_speech_voice_message)
             }
-            else -> return
+            else -> {
+                WeLogger.i(TAG, "insert skipped: unsupported type=${msgType.code}")
+                return
+            }
         }
 
-        if (body.isBlank()) return
+        if (body.isBlank()) {
+            WeLogger.i(TAG, "insert skipped: blank body (type=${msgType.code})")
+            return
+        }
 
         val sender = resolveSenderName(talker, msgInfo)
         val text = renderTemplate(talker, sender, body)
 
         if (isQuietNow()) {
-            WeLogger.d(TAG, "quiet hours, skipping announcement")
+            WeLogger.i(TAG, "quiet hours, skipping announcement")
             return
         }
         if (respectWechatDnd() && runCatching { WeConversationApi.isDnd(talker) }.getOrDefault(false)) {
-            WeLogger.d(TAG, "chat is muted and wechat-dnd respect is on, skipping")
+            WeLogger.i(TAG, "chat is muted and wechat-dnd respect is on, skipping")
             return
         }
 
+        WeLogger.i(TAG, "queued announcement for $talker (type=${msgType.code})")
         queue.addLast(Announcement(talker, text))
         main.post { drainQueue() }
     }
@@ -317,20 +428,42 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
     private fun initEngine() {
         if (engine != null) return
         val ctx = HostInfo.application
-        val wanted = ttsEngine()
-        val created = if (wanted.isNotBlank()) {
-            runCatching { TextToSpeech(ctx, { }, wanted) }.getOrNull()
-        } else null
+        val wanted = ttsEngine().trim()
+        WeLogger.i(TAG, "init tts engine: wanted='${wanted.ifBlank { "system default" }}'")
 
-        engine = created ?: TextToSpeech(ctx) { status ->
-            engineReady = status == TextToSpeech.SUCCESS
-            if (!engineReady) {
-                WeLogger.w(TAG, "TextToSpeech init failed: status=$status")
-            } else {
+        val listener = TextToSpeech.OnInitListener { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engineReady = true
+                engineWaitTries = 0
+                WeLogger.i(TAG, "tts engine ready: ${runCatching { engine?.engines?.firstOrNull() }.getOrNull()}")
                 configureEngine()
+                main.post { drainQueue() }
+            } else {
+                WeLogger.w(TAG, "TextToSpeech init failed: status=$status (wanted='$wanted')")
+                engineReady = false
             }
         }
 
+        // 注意：TextToSpeech 的初始化是**异步**的，第 3 个参数指定引擎时也不会同步完成。
+        // 旧实现里对「指定引擎」这条分支直接 `engineReady = true` 并立刻 configureEngine()，
+        // 结果：引擎没起来也当作就绪，speak() 恒返回 ERROR 却不留日志（真机表现就是
+        // "完全没有任何声音"）。现在两条分支统一由 OnInitListener 决定就绪状态。
+        val created = runCatching {
+            if (wanted.isNotEmpty()) TextToSpeech(ctx, listener, wanted) else TextToSpeech(ctx, listener)
+        }.getOrNull()
+
+        if (created == null) {
+            WeLogger.w(TAG, "failed to construct TextToSpeech with engine='$wanted'")
+            if (wanted.isNotEmpty()) {
+                WeLogger.w(TAG, "falling back to system default engine")
+                runCatching { TextToSpeech(ctx, listener) }
+                    .onFailure { WeLogger.e(TAG, "system default engine unavailable", it) }
+                    .getOrNull()?.let { engine = it }
+            }
+            return
+        }
+
+        engine = created
         engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
 
@@ -351,11 +484,6 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
                 main.post { drainQueue() }
             }
         })
-
-        if (created != null) {
-            engineReady = true
-            configureEngine()
-        }
     }
 
     private fun configureEngine() {
@@ -364,30 +492,55 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
             val res = e.isLanguageAvailable(Locale.SIMPLIFIED_CHINESE)
             if (res >= TextToSpeech.LANG_AVAILABLE) {
                 e.language = Locale.SIMPLIFIED_CHINESE
+                WeLogger.i(TAG, "tts language set to zh-CN")
             } else {
                 WeLogger.w(TAG, "chinese language pack unavailable: $res")
             }
-        }
+            // 音量：把播报固定在媒体音量上，避免随通话音量/铃声音量变化（与独立音量开关配套）。
+            runCatching { e.setAudioAttributes(mediaAudioAttributes()) }
+        }.onFailure { WeLogger.w(TAG, "configureEngine failed", it) }
     }
+
+    private fun mediaAudioAttributes(): android.media.AudioAttributes =
+        android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
 
     private fun drainQueue() {
         if (speaking) return
         val next = queue.pollFirst() ?: return
         if (!engineReady) {
-            // Engine still warming up; retry shortly instead of dropping the message.
+            // 引擎还在异步初始化：重试有限次，避免旧实现那种「永远每 500ms 空转、
+            // 消息永久卡在队列里且不打任何日志」的静默失败。
+            if (engineWaitTries >= MAX_ENGINE_WAIT_TRIES) {
+                WeLogger.e(
+                    TAG,
+                    "tts engine never became ready after ${MAX_ENGINE_WAIT_TRIES} tries, dropping '${next.text}'",
+                )
+                engineWaitTries = 0
+                return
+            }
+            engineWaitTries++
+            if (engineWaitTries == 1) WeLogger.i(TAG, "waiting for tts engine to become ready…")
             queue.addFirst(next)
             main.postDelayed({ drainQueue() }, 500)
             return
         }
+        engineWaitTries = 0
         speak(next)
     }
 
     private fun speak(item: Announcement) {
-        val e = engine ?: return
+        val e = engine ?: run {
+            WeLogger.w(TAG, "speak skipped: engine is null")
+            return
+        }
         speaking = true
         updatePlaybackState(true)
 
         val result = e.speak(item.text, TextToSpeech.QUEUE_FLUSH, Bundle(), UTTERANCE_ID)
+        WeLogger.i(TAG, "speak '${item.text}' -> $result")
         if (result != TextToSpeech.SUCCESS) {
             WeLogger.w(TAG, "speak() returned $result")
             speaking = false

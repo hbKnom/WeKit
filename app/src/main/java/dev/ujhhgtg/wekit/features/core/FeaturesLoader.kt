@@ -48,6 +48,24 @@ object FeaturesLoader {
         }
         val allDexItems = featuresToStart.filterIsInstance<IResolveDex>()
 
+        // 铁律守卫：只有 IResolveDex 的 feature 会被送去 DexKit 解析（见上面的 filterIsInstance）。
+        // 若某个 feature 声明了 DexKit 委托却没实现该接口，它的委托永远停在「未解析」状态：
+        // descriptor 为 null，而 isPlaceholder 只在 descriptor == PLACEHOLDER 时为 true，
+        // 于是 `if (!delegate.isPlaceholder)` 这类保护形同虚设，访问 delegate 会抛
+        // IllegalStateException("Method not found for key: …")，被 enable() 的 runCatching 吃掉后
+        // 执行 unhookAll()，把该 feature 已装好的 hook 全部摘掉 —— 表现就是「开关打开却完全没生效」。
+        // （AutoEnableSendOriginalMedia 2026-09-22 的真实线上故障，这里加日志守卫防止再犯。）
+        featuresToStart.forEach { feature ->
+            if (feature !is IResolveDex && (feature as BaseFeature).dexDelegates.isNotEmpty()) {
+                WeLogger.e(
+                    TAG,
+                    "守卫：${feature.technicalId} 声明了 ${feature.dexDelegates.size} 个 DexKit 委托" +
+                        "却没有实现 IResolveDex —— 解析永远不会发生，访问委托会抛异常并 unhook 整条功能" +
+                        "（keys=${feature.dexDelegates.map { it.key }}）",
+                )
+            }
+        }
+
         val outdatedItems = DexCacheManager.getOutdatedItems(allDexItems)
         val validItems = allDexItems - outdatedItems.toSet()
 

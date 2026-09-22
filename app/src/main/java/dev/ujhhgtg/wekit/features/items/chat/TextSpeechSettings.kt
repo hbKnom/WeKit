@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Check
 import com.composables.icons.materialsymbols.outlined.Text_to_speech
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.preferences.WePrefs
@@ -25,6 +27,7 @@ import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
+import dev.ujhhgtg.wekit.utils.android.showToast
 
 /**
  * Settings sheet for [TextSpeechAnnouncer].
@@ -134,15 +137,39 @@ object TextSpeechSettings {
                         }
 
                         item {
-                            OutlinedTextField(
-                                value = engineName,
-                                onValueChange = { engineName = it },
-                                label = { Text(stringResource(R.string.text_speech_tts_engine)) },
-                                supportingText = {
-                                    Text(stringResource(R.string.text_speech_tts_engine_summary))
+                            // 引擎选择：本机可能装了好几个 TTS 引擎（用户反馈"手动输入很麻烦、
+                            // 也不知道有哪些"），这里枚举出来点选，选完立刻重建引擎生效。
+                            BaseWidget(
+                                icon = MaterialSymbols.Outlined.Text_to_speech,
+                                title = stringResource(R.string.text_speech_tts_engine),
+                                description = if (engineName.isBlank()) {
+                                    stringResource(R.string.text_speech_engine_system_default)
+                                } else {
+                                    engineName
                                 },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                onClick = {
+                                    showEnginePicker(
+                                        context = context,
+                                        current = engineName,
+                                        onPick = { picked ->
+                                            engineName = picked
+                                            WePrefs.putString(TextSpeechAnnouncer.KEY_TTS_ENGINE, picked)
+                                            TextSpeechAnnouncer.reinitEngine()
+                                            showToast(context, context.getString(R.string.text_speech_engine_switched))
+                                        },
+                                    )
+                                },
+                                trailingDivider = true,
+                            )
+                        }
+
+                        item {
+                            BaseWidget(
+                                icon = MaterialSymbols.Outlined.Text_to_speech,
+                                title = stringResource(R.string.text_speech_test_speak),
+                                description = stringResource(R.string.text_speech_tts_engine_summary),
+                                onClick = { TextSpeechAnnouncer.speakTest() },
+                                trailingDivider = true,
                             )
                         }
 
@@ -209,6 +236,44 @@ object TextSpeechSettings {
                         Text(stringResource(R.string.action_save))
                     }
                 },
+            )
+        }
+    }
+
+    /**
+     * TTS 引擎选择器：枚举本机已安装引擎（含"系统默认"），点选后立即回写并重建引擎。
+     * 用嵌套弹窗（与本项目其它 picker 一致）而不是再点开一个新页面。
+     */
+    private fun showEnginePicker(context: Context, current: String, onPick: (String) -> Unit) {
+        showComposeDialog(context) {
+            val options = remember { TextSpeechAnnouncer.ttsEngineOptions() }
+            AlertDialogContent(
+                title = { Text(stringResource(R.string.text_speech_engine_pick)) },
+                text = {
+                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                        items(options) { option ->
+                            val label = option.label.substringBefore("\n").trim()
+                            BaseWidget(
+                                icon = MaterialSymbols.Outlined.Text_to_speech,
+                                title = label,
+                                description = option.name.ifBlank {
+                                    stringResource(R.string.text_speech_engine_system_default)
+                                },
+                                onClick = {
+                                    onPick(option.name)
+                                    onDismiss()
+                                },
+                                trailingContent = {
+                                    if (option.name == current) {
+                                        Icon(MaterialSymbols.Outlined.Check, contentDescription = null)
+                                    }
+                                },
+                                trailingDivider = true,
+                            )
+                        }
+                    }
+                },
+                dismissButton = { TextButton(onDismiss) { Text(stringResource(R.string.dialog_cancel)) } },
             )
         }
     }

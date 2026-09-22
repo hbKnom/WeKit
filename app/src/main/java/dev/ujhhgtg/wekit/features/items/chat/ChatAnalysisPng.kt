@@ -599,11 +599,16 @@ object ChatAnalysisPng {
         drawCard(cv, top, top + height, accent)
         val inner = top + CARD_PAD_V
         val innerBottom = (top + height - CARD_PAD_V).toFloat()
+        // 分区序号：与 App 内报告视图保持一致（每张卡片各自编号），让 PNG 也有清晰的结构感
+        var sectionNo = 0
         for (row in rows) {
             val rowTop = (inner + row.top).toFloat()
             when (val u = row.unit) {
-                is Block.Section -> drawSectionRow(cv, u.title, rowTop, accent, innerBottom)
-                is Block.BarLine -> drawBarRow(cv, u, rowTop, row.height.toFloat(), innerBottom)
+                is Block.Section -> {
+                    sectionNo++
+                    drawSectionRow(cv, "$sectionNo. ${u.title}", rowTop, accent, innerBottom)
+                }
+                is Block.BarLine -> drawBarRow(cv, u, rowTop, row.height.toFloat(), innerBottom, accent)
                 is Block.TextLine -> drawTextLines(
                     cv, row.lines, CONTENT_LEFT.toFloat(), rowTop,
                     TEXT_LINE_H, bodyP, CONTENT_RIGHT.toFloat(), innerBottom,
@@ -647,7 +652,14 @@ object ChatAnalysisPng {
      * 2) 再画标签（label 列内，超宽按测量宽度逐字截断加 "…"）
      * 3) 再画数值（value 列内右对齐）
      */
-    private fun drawBarRow(cv: Canvas, u: Block.BarLine, rowTop: Float, rowH: Float, limitBottom: Float) {
+    private fun drawBarRow(
+        cv: Canvas,
+        u: Block.BarLine,
+        rowTop: Float,
+        rowH: Float,
+        limitBottom: Float,
+        accent: Int,
+    ) {
         val rowBottom = rowTop + rowH
         val labelP = paint(FS_ROW, COLOR_BODY)
         val valueP = paint(FS_ROW, valueColor(u.rank), bold = true)
@@ -665,9 +677,10 @@ object ChatAnalysisPng {
             val fill = RectF(track.left, track.top, track.left + fillW, track.bottom)
             val fillP = Paint().apply {
                 isAntiAlias = true
+                // 条形颜色跟随所属卡片的主色（统计卡=蓝、AI 卡=青），不再一律用蓝色
                 shader = LinearGradient(
                     track.left, 0f, track.right, 0f,
-                    intArrayOf(COLOR_ACCENT, lighten(COLOR_ACCENT)),
+                    intArrayOf(accent, lighten(accent)),
                     null, Shader.TileMode.CLAMP,
                 )
             }

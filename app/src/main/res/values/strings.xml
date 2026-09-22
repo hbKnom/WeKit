@@ -4066,4 +4066,27 @@
     <string name="audio_clipper_source_missing">No clipable audio found</string>
     <string name="audio_clipper_need_voice_message">Long-press a voice message to use the audio clipper</string>
     <string name="audio_clipper_max_duration_error">The selection cannot exceed %1$s; adjust it before exporting</string>
+
+    <!-- WeKit: 会话选择器 / TTS 引擎枚举 / 点歌仅自己指令 (2026-09-22) -->
+    <string name="conversation_picker_loading">Loading chats…</string>
+    <string name="conversation_picker_empty">No chats were found</string>
+    <string name="conversation_picker_group">Group</string>
+    <string name="text_speech_engine_system_default">System default engine</string>
+    <string name="text_speech_engine_not_ready">The TTS engine is not ready yet. Please wait or pick another engine.</string>
+    <string name="text_speech_test_utterance">Hello, this is a test of the WeKit text-to-speech announcement.</string>
+    <string name="text_speech_test_speak">Test announcement</string>
+    <string name="text_speech_engine_pick">Choose a TTS engine</string>
+    <string name="text_speech_engine_switched">Engine switched, re-initialising…</string>
+    <string name="qq_music_order_only_own">Only react to commands you send</string>
+    <string name="qq_music_order_only_own_summary">When enabled, songs are only ordered by your own messages; messages from other people never trigger a card or a voice message.</string>
+    <string name="qq_music_order_pick_talkers">Choose enabled chats (loads every conversation)</string>
+    <string name="qq_music_order_talkers_loading">Loading chats…</string>
+
+    <string name="conversation_picker_search">Search chats</string>
+    <string name="conversation_picker_counts">%1$d selected · %2$d chats</string>
+    <string name="conversation_picker_no_match">No chat matches the search</string>
+    <string name="conversation_picker_truncated">Showing the first %1$d of %2$d chats, type more to narrow it down</string>
+    <string name="qq_music_order_app_id_hint">The AppID written into the card. Empty falls back to the QQ Music one. Some third-party AppIDs are not rendered as music by WeChat.</string>
+    <string name="qq_music_order_app_id_reset">Restore the default AppID</string>
+    <string name="qq_music_order_allowed_talkers_count">%1$d chat(s) selected</string>
 </resources>

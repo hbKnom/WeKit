@@ -4094,4 +4094,27 @@
     <string name="audio_clipper_source_missing">未找到可剪辑的音频</string>
     <string name="audio_clipper_need_voice_message">请长按一条语音消息使用音频剪辑</string>
     <string name="audio_clipper_max_duration_error">选中的片段不能超过 %1$s，请调整后再导出</string>
+
+    <!-- WeKit: 会话选择器 / TTS 引擎枚举 / 点歌仅自己指令 (2026-09-22) -->
+    <string name="conversation_picker_loading">正在加载会话…</string>
+    <string name="conversation_picker_empty">没有读取到任何会话</string>
+    <string name="conversation_picker_group">群聊</string>
+    <string name="text_speech_engine_system_default">系统默认引擎</string>
+    <string name="text_speech_engine_not_ready">TTS 引擎尚未就绪，请稍后重试或更换引擎</string>
+    <string name="text_speech_test_utterance">你好，这是微信文字转语音播报的测试。</string>
+    <string name="text_speech_test_speak">测试播报</string>
+    <string name="text_speech_engine_pick">选择 TTS 引擎</string>
+    <string name="text_speech_engine_switched">已切换引擎，正在重新初始化…</string>
+    <string name="qq_music_order_only_own">仅识别自己发出的指令</string>
+    <string name="qq_music_order_only_own_summary">开启后只有你自己发出的点歌指令会触发，其他人发的消息不会发送音乐卡片和语音。</string>
+    <string name="qq_music_order_pick_talkers">选择生效聊天（拉取全部会话）</string>
+    <string name="qq_music_order_talkers_loading">正在加载会话…</string>
+
+    <string name="conversation_picker_search">搜索会话</string>
+    <string name="conversation_picker_counts">已选 %1$d 个 · 共 %2$d 个会话</string>
+    <string name="conversation_picker_no_match">没有匹配的会话</string>
+    <string name="conversation_picker_truncated">仅显示前 %1$d 个（共 %2$d 个），继续输入关键词可缩小范围</string>
+    <string name="qq_music_order_app_id_hint">写进卡片的 AppID，留空则用 QQ音乐默认值。注意：微信对第三方 AppID 不一定按音乐卡片渲染。</string>
+    <string name="qq_music_order_app_id_reset">恢复默认 AppID</string>
+    <string name="qq_music_order_allowed_talkers_count">已选 %1$d 个会话</string>
 </resources>

@@ -25,6 +25,7 @@ import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import dev.ujhhgtg.wekit.ui.utils.ConversationPickerSection
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 
 /**
@@ -49,6 +50,7 @@ object QqMusicOrderSettings {
             var appId by remember { mutableStateOf(QqMusicOrder.appId()) }
             var cookie by remember { mutableStateOf(QqMusicOrder.cookie()) }
             var interceptOwn by remember { mutableStateOf(QqMusicOrder.interceptOwnCommand()) }
+            var onlyOwn by remember { mutableStateOf(QqMusicOrder.onlyOwnCommand()) }
             var talkers by remember { mutableStateOf(QqMusicOrder.refreshTalkers()) }
 
             AlertDialogContent(
@@ -108,6 +110,16 @@ object QqMusicOrderSettings {
                                     trailingDivider = true,
                                 )
                             }
+                            item {
+                                SwitchWidget(
+                                    icon = MaterialSymbols.Outlined.Music_note,
+                                    title = stringResource(R.string.qq_music_order_only_own),
+                                    description = stringResource(R.string.qq_music_order_only_own_summary),
+                                    checked = onlyOwn,
+                                    onCheckedChange = { onlyOwn = it },
+                                    trailingDivider = true,
+                                )
+                            }
 
                             item {
                                 SwitchWidget(
@@ -163,9 +175,23 @@ object QqMusicOrderSettings {
                                     value = appId,
                                     onValueChange = { appId = it },
                                     label = { Text(stringResource(R.string.qq_music_order_app_id)) },
+                                    supportingText = {
+                                        Text(stringResource(R.string.qq_music_order_app_id_hint))
+                                    },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                                 )
+                            }
+                            if (appId.trim() != QqMusicOrder.DEFAULT_APP_ID) {
+                                item {
+                                    BaseWidget(
+                                        icon = MaterialSymbols.Outlined.Music_note,
+                                        title = stringResource(R.string.qq_music_order_app_id_reset),
+                                        description = QqMusicOrder.DEFAULT_APP_ID,
+                                        onClick = { appId = QqMusicOrder.DEFAULT_APP_ID },
+                                        trailingDivider = true,
+                                    )
+                                }
                             }
 
                             item {
@@ -194,10 +220,25 @@ object QqMusicOrderSettings {
                                     description = if (talkers.isEmpty()) {
                                         stringResource(R.string.qq_music_order_allowed_talkers_summary)
                                     } else {
-                                        talkers.joinToString("\n")
+                                        stringResource(
+                                            R.string.qq_music_order_allowed_talkers_count,
+                                            talkers.size,
+                                        )
                                     },
                                     onClick = { },
                                     trailingDivider = true,
+                                )
+                            }
+                            // 用户反馈「生效聊天那个按钮点了没反应，拉不到所有的群聊和私聊会话」：
+                            // 以前这里只是个只读展示（会话只能靠聊天页右键菜单一条条加）。
+                            // 现在直接内嵌一个带搜索的全量会话选择器，勾谁生效谁。
+                            item {
+                                ConversationPickerSection(
+                                    selected = talkers,
+                                    onToggle = { wxId, enabled ->
+                                        QqMusicOrder.setTalkerEnabled(wxId, enabled)
+                                        talkers = QqMusicOrder.refreshTalkers()
+                                    },
                                 )
                             }
                             if (talkers.isNotEmpty()) {
@@ -211,17 +252,6 @@ object QqMusicOrderSettings {
                                                 emptySet(),
                                             )
                                             talkers = emptySet()
-                                        },
-                                        trailingDivider = true,
-                                    )
-                                }
-                                items(talkers.toList()) { talker ->
-                                    BaseWidget(
-                                        icon = MaterialSymbols.Outlined.Music_note,
-                                        title = talker,
-                                        onTrailingClick = {
-                                            QqMusicOrder.removeTalker(talker)
-                                            talkers = QqMusicOrder.refreshTalkers()
                                         },
                                         trailingDivider = true,
                                     )
@@ -244,6 +274,7 @@ object QqMusicOrderSettings {
                         WePrefs.putBool(QqMusicOrder.KEY_SEND_AS_CARD, sendCard)
                         WePrefs.putBool(QqMusicOrder.KEY_SEND_AS_VOICE, sendVoice)
                         WePrefs.putBool(QqMusicOrder.KEY_INTERCEPT_OWN, interceptOwn)
+                        WePrefs.putBool(QqMusicOrder.KEY_ONLY_OWN, onlyOwn)
                         WePrefs.putBool(QqMusicOrder.KEY_CUSTOM_SINGER, customSinger)
                         WePrefs.putString(QqMusicOrder.KEY_DEFAULT_SINGER, defaultSinger.trim())
                         WePrefs.putBool(QqMusicOrder.KEY_SINGER_AS_NICKNAME, singerAsNickname)

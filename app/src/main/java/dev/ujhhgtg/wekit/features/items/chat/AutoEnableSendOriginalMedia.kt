@@ -9,11 +9,38 @@ import android.widget.CompoundButton
 import android.widget.TextView
 import dev.ujhhgtg.reflekt.utils.toClassOrNull
 import dev.ujhhgtg.wekit.R
-import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.utils.WeLogger
 
+/**
+ * 相册发送图片时自动勾选「原图」。
+ *
+ * 宿主实现（8.0.72 dex 实测，AlbumPreviewUI.initView）：
+ * ```
+ * this.<原始图开关字段> = intent.getBooleanExtra("key_send_raw_image", false)
+ *                         || intent.getBooleanExtra("send_raw_img", false);
+ * ...
+ * applyRawImageState(该字段);   // 设置勾选图标 + 尺寸文案
+ * ```
+ * 也就是说**宿主自己就是用这两个 intent extra 决定初始勾选状态**的，我们只要在 onCreate 之前
+ * 把两个 flag 都写进 activity.intent，宿主就会把「原图」勾上并画出选中态。
+ *
+ * ⚠️ 2026-09-22 定位到的历史遗留 bug（用户反馈"这功能从来没生效过"）：
+ * 之前这里挂了一个 `methodUpdateSendAsMediaGroupViews` 的 dexMethod 钩子，但本 object
+ * **没有实现 `IResolveDex`** —— `FeaturesLoader` 只对 `IResolveDex` 的 feature 做 DexKit 解析
+ * （`featuresToStart.filterIsInstance<IResolveDex>()`），于是这个 delegate 永远不会被解析，
+ * `descriptor` 保持 null；`isPlaceholder` 又是 `descriptor?.descriptor == PLACEHOLDER`，
+ * 对 null 返回 false，保护判断形同虚设 → `hookBefore` 读 `method` 时抛
+ * `IllegalStateException: Method not found for key: methodUpdateSendAsMediaGroupViews`，
+ * 异常被 `enable()` 的 runCatching 捕获后执行 `unhookAll()`，**把前面刚装的
+ * onCreate 钩子一起摘掉** —— 整条功能静默消失（真机日志：`failed to enable feature chat/自动启用发送原图`）。
+ *
+ * 另外那个钩子本身也是错的：`updateSendAsMediaGroupViews` 是「合并发送媒体」的回调
+ * （写入的是它的 boolean 字段），跟「原图」无关，args[3] 强制 true 只会去动合并发送。
+ * 因此这里彻底去掉 DexKit 依赖，只保留宿主自己的 intent-extra 通路，功能变成纯 View 层 hook、
+ * 不可能再因为解析失败而整条挂掉。
+ */
 object AutoEnableSendOriginalMedia : SwitchFeature() {
 
     override val technicalId = "自动启用发送原图"
@@ -36,7 +63,7 @@ object AutoEnableSendOriginalMedia : SwitchFeature() {
     private const val TAG = "AutoSendOriginal"
 
     /** 「原图」开关在三语文案里的写法（宿主随系统语言切换）。 */
-    private val ORIGINAL_LABELS = listOf("原图", "原圖")
+    private val ORIGINAL_LABELS = listOf("原图", "原圖", "Original")
 
     override fun onEnable() {
         PICKER_PAGES.forEach { name ->
@@ -44,114 +71,67 @@ object AutoEnableSendOriginalMedia : SwitchFeature() {
             // （一旦抛出，后面的 Hook 全部不会安装，表现就是"功能整条消失"）。
             name.toClassOrNull()?.hookBeforeOnCreate {
                 val activity = thisObject as? Activity ?: return@hookBeforeOnCreate
-                // Upstream 09-12 also sets WeChat's newer "key_send_raw_image" flag, which is
-                // what makes the picker keep original moments images and original video files
-                // (send_raw_img alone only covers the chat path).
+                // 宿主 initView 里两个 key 是「或」的关系（见类注释里的反编译片段），
+                // 但不同版本/不同入口只用其中一条，所以两条都写，保证任一实现都能命中。
                 activity.intent.putExtra("send_raw_img", true)
                 activity.intent.putExtra("key_send_raw_image", true)
+                WeLogger.i(TAG, "${activity.javaClass.simpleName} raw flags set")
 
-                // 真机反馈：仅改 intent flag 时勾选框仍可能没勾上（宿主在 iniView 里按自己的
-                // 状态重建勾选行）。所以再补一条事件兜底：页面起来后在视图树里找到「原图」
-                // 勾选框，真的把它点上（走宿主自己的 performClick，等于用户手点，语义一致）。
-                attachOriginalAutoCheck(activity)
-            }
-        }
-
-        // Keep the "send as original" toggle logically checked so the picker does not drop the
-        // raw flag when it refreshes its own checkbox row (选数量变化时宿主会把勾选状态重置)。
-        if (!methodUpdateSendAsMediaGroupViews.isPlaceholder) {
-            methodUpdateSendAsMediaGroupViews.hookBefore {
-                // 该方法的最后一个 boolean 参数就是原图开关；先做类型/越界保护，
-                // 参数位对不上的宿主版本直接跳过（宁可不动，也不要改错参数静默失效）。
-                if (args.size > 3 && args[3] is Boolean) {
-                    args[3] = true
-                }
+                // 只做诊断（绝不点选）：页面起来后看一眼「原图」行到底有没有渲染出来、
+                // 勾选控件是什么类型。宿主自己会用上面的 extra 把状态设对，这里再点一次反而
+                // 可能把已经勾上的状态切掉，所以只记录日志，供后续排查使用。
+                diagnose(activity)
             }
         }
     }
 
-    // ------------------------------------------------------------------ 勾选框兜底
-
-    /**
-     * 页面打开后短时间内重试几次再勾选：宿主先绑数据、后重建勾选行，第一次查询往往是空树。
-     *
-     * 只在打开后这几秒内自动勾选 —— 用户之后手动取消不会被反复夺回（尊重用户操作）。
-     */
-    private fun attachOriginalAutoCheck(activity: Activity) {
+    private fun diagnose(activity: Activity) {
         // 用主线程 Handler 而不是 decorView.postDelayed：hook 发生在 onCreate 之前，
         // 此时 decorView 可能还没 attach，挂在它上面的 runnable 会一直不执行；
         // 每次执行时再取当前 decorView，避免拿到被宿主重建掉的旧树。
         val handler = Handler(Looper.getMainLooper())
-        listOf(300L, 800L, 1600L, 2600L).forEach { delay ->
+        listOf(600L, 2000L).forEach { delay ->
             runCatching {
                 handler.postDelayed({
                     runCatching {
                         if (activity.isFinishing || activity.isDestroyed) return@runCatching
                         val root = activity.window?.decorView ?: return@runCatching
-                        autoCheckOriginal(root)
+                        reportOriginalRow(root)
                     }
                 }, delay)
             }
         }
     }
 
-    private fun autoCheckOriginal(root: View) {
+    private fun reportOriginalRow(root: View) {
         runCatching {
-            val toggle = findOriginalToggle(root)
-            if (toggle == null) {
-                WeLogger.d(TAG, "original toggle not found yet")
-                return
+            val queue = ArrayDeque<View>()
+            queue.add(root)
+            var label: View? = null
+            var checkedBox: Boolean? = null
+            while (queue.isNotEmpty()) {
+                val view = queue.removeFirst()
+                if (view is TextView && label == null) {
+                    val text = view.text?.toString().orEmpty()
+                    if (ORIGINAL_LABELS.any { text.contains(it) }) label = view
+                }
+                if (view is CompoundButton && checkedBox == null && view === label) {
+                    checkedBox = view.isChecked
+                }
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) queue.add(view.getChildAt(index))
+                }
             }
-            if (toggle.isChecked) {
-                WeLogger.d(TAG, "original toggle already checked")
-                return
+            val parentChain = label?.let { node ->
+                generateSequence(node.parent) { (it as? View)?.parent }
+                    .take(3)
+                    .joinToString(">") { it.javaClass.simpleName }
             }
-            val clicked = runCatching { toggle.performClick() }.getOrDefault(false)
-            WeLogger.i(TAG, "auto check original: click=$clicked checked=${toggle.isChecked}")
-        }.onFailure { WeLogger.w(TAG, "auto check original failed", it) }
-    }
-
-    /**
-     * 在视图树里找「原图」勾选框。
-     *
-     * 两种宿主布局都覆盖：勾选框自己带文案（CompoundButton.text），或文案是它同父容器里的
-     * 兄弟 TextView（微信相册的「原图」行常见写法）。只认这个标签，避免误点同页其他开关。
-     */
-    private fun findOriginalToggle(root: View): CompoundButton? {
-        val queue = ArrayDeque<View>()
-        queue.add(root)
-        while (queue.isNotEmpty()) {
-            val view = queue.removeFirst()
-            if (view is CompoundButton && isOriginalToggle(view)) return view
-            if (view is ViewGroup) {
-                for (index in 0 until view.childCount) queue.add(view.getChildAt(index))
-            }
-        }
-        return null
-    }
-
-    private fun isOriginalToggle(button: CompoundButton): Boolean {
-        if (button.text?.let { text -> ORIGINAL_LABELS.any { text.contains(it) } } == true) return true
-
-        val parent = button.parent as? ViewGroup ?: return false
-        for (index in 0 until parent.childCount) {
-            val sibling = parent.getChildAt(index)
-            if (sibling === button) continue
-            val label = (sibling as? TextView)?.text?.toString() ?: continue
-            if (ORIGINAL_LABELS.any { label.contains(it) }) return true
-        }
-        return false
-    }
-
-    /**
-     * 相册预览页的数量变化回调（包含宿主自身埋点字符串 updateSendAsMediaGroupViews）。
-     * 必须锁定 declaredClass：早前只按字符串匹配，可能解析到宿主别处同名埋点的方法，
-     * args[3] 便不是原图开关 → 越界/改错参数被 hook 框架吞掉，功能静默失效。
-     */
-    private val methodUpdateSendAsMediaGroupViews by dexMethod(allowFailure = true) {
-        matcher {
-            declaredClass = ALBUM_PREVIEW_UI
-            usingEqStrings("updateSendAsMediaGroupViews")
-        }
+            WeLogger.i(
+                TAG,
+                "original row: label=${label?.let { (it as TextView).text }} " +
+                    "compoundChecked=${checkedBox ?: "n/a"} parents=$parentChain"
+            )
+        }.onFailure { WeLogger.w(TAG, "original row diagnose failed", it) }
     }
 }

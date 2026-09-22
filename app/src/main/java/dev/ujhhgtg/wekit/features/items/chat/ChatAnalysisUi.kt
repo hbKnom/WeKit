@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -91,11 +92,20 @@ internal object ChatAnalysisUi {
     }
 
     /**
-     * 分节标题的实际渲染：3dp 竖条（accent）+ titleSmall/Bold。
+     * 分节标题的实际渲染：3dp 竖条（accent）+ 序号徽章 + titleSmall/Bold。
      * 竖条先 clip 再 background，保证圆角外不会溢出颜色。
+     *
+     * @param index 分节序号（从 1 开始）。传 null 表示不是报告分节（如设置页的小标题），
+     *              不显示序号徽章 —— 报告里加了序号后，读者能一眼看出共有几大块、
+     *              现在读到第几块，长篇报告的"结构感"明显更强。
      */
     @Composable
-    private fun SectionHeaderRow(title: String, accent: Color, modifier: Modifier = Modifier) {
+    private fun SectionHeaderRow(
+        title: String,
+        accent: Color,
+        modifier: Modifier = Modifier,
+        index: Int? = null,
+    ) {
         Row(
             modifier = modifier
                 .fillMaxWidth()
@@ -110,6 +120,23 @@ internal object ChatAnalysisUi {
                     .background(accent)
             )
             Spacer(Modifier.width(8.dp))
+            if (index != null) {
+                Box(
+                    Modifier
+                        .size(18.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        index.toString(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        fontWeight = FontWeight.Bold,
+                        color = accent,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+            }
             Text(
                 title,
                 style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.5.sp),
@@ -210,10 +237,14 @@ internal object ChatAnalysisUi {
         features: Set<String>,
         maxCount: Int,
         sampleLimit: Int,
+        lineMax: Int,
+        transcriptMaxChars: Int,
         selectedModelName: String,
         onToggleFeature: (String, Boolean) -> Unit,
         onEditMaxCount: () -> Unit,
         onEditSampleLimit: () -> Unit,
+        onEditLineMax: () -> Unit,
+        onEditTranscriptMaxChars: () -> Unit,
         onModelManager: () -> Unit,
         onTestModel: () -> Unit,
         onClose: () -> Unit,
@@ -255,7 +286,11 @@ internal object ChatAnalysisUi {
                             icon = MaterialSymbols.Outlined.Tune,
                             iconPlaceholder = true,
                             title = "分析条数上限",
-                            description = if (maxCount <= 0) "0 = 全部（越大越慢）" else "当前：$maxCount 条",
+                            description = if (maxCount <= 0) {
+                                "0 = 全部（读该时段所有消息，越大越慢）"
+                            } else {
+                                "当前：$maxCount 条（0 = 全部）"
+                            },
                             onClick = onEditMaxCount,
                             trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
                         )
@@ -263,8 +298,25 @@ internal object ChatAnalysisUi {
                             icon = MaterialSymbols.Outlined.Tune,
                             iconPlaceholder = true,
                             title = "抽样上限",
-                            description = "喂给 AI 的最大文本条数（当前：$sampleLimit）",
+                            description = "喂给 AI 的最大文本条数（当前：$sampleLimit）；大群建议 5000~20000",
                             onClick = onEditSampleLimit,
+                            trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
+                        )
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Tune,
+                            iconPlaceholder = true,
+                            title = "单条文本上限",
+                            description = "一条消息喂给 AI 的最多字数（当前：$lineMax 字）",
+                            onClick = onEditLineMax,
+                            trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
+                        )
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Tune,
+                            iconPlaceholder = true,
+                            title = "喂给 AI 的文本上限",
+                            description = "整段记录的总字数上限（当前：$transcriptMaxChars 字）；" +
+                                "模型上下文小就要调小，否则服务端会报上下文超限",
+                            onClick = onEditTranscriptMaxChars,
                             trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
                         )
                     }
@@ -580,6 +632,7 @@ internal object ChatAnalysisUi {
         title: String?,
         accent: Color,
         modifier: Modifier = Modifier,
+        index: Int? = null,
         content: @Composable () -> Unit,
     ) {
         Surface(
@@ -593,7 +646,7 @@ internal object ChatAnalysisUi {
                     .fillMaxWidth()
                     .padding(14.dp)
             ) {
-                if (title != null) SectionHeaderRow(title, accent)
+                if (title != null) SectionHeaderRow(title, accent, index = index)
                 content()
             }
         }
@@ -605,6 +658,12 @@ internal object ChatAnalysisUi {
         accent: Color = MaterialTheme.colorScheme.primary,
     ) {
         val blocks = remember(units) { groupIntoBlocks(units) }
+        // 分节序号预计算（只数"有标题"的块）。不能放在 itemsIndexed 里用可变计数器累加：
+        // 列表项在滚动/重组时会反复执行，累加会导致序号越滚越大。
+        val sectionNos = remember(blocks) {
+            var n = 0
+            blocks.map { b -> if (b.title != null) ++n else null }
+        }
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
@@ -613,13 +672,85 @@ internal object ChatAnalysisUi {
         ) {
             itemsIndexed(blocks) { index, block ->
                 val blockAccent = sectionAccent(block.title, accent)
+                val no = sectionNos.getOrNull(index)
                 SectionCard(
                     title = block.title,
                     accent = blockAccent,
+                    index = no,
                     modifier = Modifier.padding(top = if (index == 0) 0.dp else 18.dp),
                 ) {
-                    block.units.forEach { unit -> ReportUnitView(unit, blockAccent) }
+                    // 「核心指标」这类纯 key/value 段改用 KPI 网格（大数字卡片）渲染：
+                    // 一行行"指标 … 数值"读起来像表格，网格卡片才像数据看板，
+                    // 这是用户要求的"数据分析的美化"里最直观的一处。
+                    if (block.isKpiLike) {
+                        KpiGrid(block.units.filterIsInstance<ReportUnit.KeyValue>(), blockAccent)
+                    } else {
+                        block.units.forEach { unit -> ReportUnitView(unit, blockAccent) }
+                    }
                 }
+            }
+        }
+    }
+
+    /** 是否是「核心指标」式的纯 KeyValue 段（≥3 项且没有其它类型），适合用 KPI 网格渲染。 */
+    private val ReportBlock.isKpiLike: Boolean
+        get() = units.size >= 3 && units.all { it is ReportUnit.KeyValue }
+
+    /**
+     * KPI 网格：每行 2 张大数字卡片。
+     * 这里手写 Column + Row 而不是 LazyVerticalGrid —— 后者嵌在 LazyColumn 里高度无界会直接崩。
+     */
+    @Composable
+    private fun KpiGrid(items: List<ReportUnit.KeyValue>, accent: Color) {
+        val shape = RoundedCornerShape(CornerRadius)
+        Column(Modifier.fillMaxWidth()) {
+            items.chunked(2).forEachIndexed { rowIndex, row ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = if (rowIndex == 0) 0.dp else 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    row.forEach { item ->
+                        KpiCell(item, accent, shape, Modifier.weight(1f))
+                    }
+                    // 奇数个指标时补一个空占位，保证最后一张卡片不会被拉伸成整行
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun KpiCell(
+        item: ReportUnit.KeyValue,
+        accent: Color,
+        shape: androidx.compose.ui.graphics.Shape,
+        modifier: Modifier = Modifier,
+    ) {
+        Box(
+            modifier
+                .clip(shape)
+                .background(accent.copy(alpha = 0.08f))
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Column {
+                Text(
+                    item.key,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    item.value,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -695,7 +826,12 @@ internal object ChatAnalysisUi {
                         .fillMaxWidth(ratio)
                         .fillMaxHeight()
                         .clip(barShape)
-                        .background(accent)
+                        // 渐变填充（浅→实）比纯色更有"数据条"的层次感，且不改变任何布局尺寸
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(accent.copy(alpha = 0.55f), accent)
+                            )
+                        )
                 )
             }
         }
@@ -798,7 +934,7 @@ internal object ChatAnalysisUi {
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = text,
-                        onValueChange = { text = it.filter { c -> c.isDigit() }.take(7) },
+                        onValueChange = { text = it.filter { c -> c.isDigit() }.take(9) },
                         singleLine = true,
                         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                             keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,

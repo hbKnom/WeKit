@@ -288,11 +288,21 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
      * 所以这里用 pointerInput 在 [PointerEventPass.Initial] 阶段（早于所有子节点的手势识别器）
      * 监听：按下瞬间对全部祖先调 [disallowParentIntercept]（true），抬手/取消恢复 false；
      * 一旦判定为「明确的横向滑动」（分组横向切换手势）也立即恢复 false，把事件让回原有的
-     * 横向滑动接管逻辑，避免分组横滑失效。全程**不消费**任何事件，tab 点击、长按菜单、
-     * 长按排序拖拽都照常工作。
+     * 横向滑动接管逻辑，避免分组横滑失效。
+     *
+     * 2026-09-22 真机补充：只关掉「父容器拦截」还不够 —— 微信的下拉小程序面板有一部分是走
+     * **嵌套滚动**（列表在顶部继续往下拖时把滚动交给父容器，日志里的 TaskBarAnimController
+     * updateScrollOffset 就是那套），而嵌套滚动不经过 onInterceptTouchEvent，[disallowParentIntercept]
+     * 对它无效。所以在 [PointerEventPass.Initial] 阶段把**纵向拖动**直接消费掉（不消费横向），
+     * 祖先既拿不到 MOVE 也就不会把它当成一次下拉手势；tab 点击（DOWN+UP）与横向横滑均不受影响。
+     * 排序模式（长按拖拽）本身就是纵向手势，此时关闭消费以免拖拽失效。
      */
-    private fun Modifier.guardAgainstParentIntercept(view: View, slopPx: Float): Modifier =
-        pointerInput(view, slopPx) {
+    private fun Modifier.guardAgainstParentIntercept(
+        view: View,
+        slopPx: Float,
+        consumeVertical: Boolean = true,
+    ): Modifier =
+        pointerInput(view, slopPx, consumeVertical) {
             awaitPointerEventScope {
                 while (true) {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -310,6 +320,9 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                                 val dx = abs(change.position.x - down.position.x)
                                 val dy = abs(change.position.y - down.position.y)
                                 if (dx > dy && dx > slopPx) break
+                                if (consumeVertical && dy > dx && dy > slopPx) {
+                                    change.consume()
+                                }
                             }
                         }
                     }
@@ -323,13 +336,21 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         val header = tabsHeaderView.get() ?: return
         if (!pinTabsState.value) {
             header.translationY = 0f
+            header.translationZ = 0f
             return
         }
         if (recycler == null) return
         // The header is the first child of the list; when it scrolls past the top edge,
         // translate it back down so it visually sticks under the title bar.
         val top = header.top
-        header.translationY = if (top < 0) (-top).toFloat() else 0f
+        val pinned = top < 0
+        header.translationY = if (pinned) (-top).toFloat() else 0f
+        // 只改 translationY 会出现「看得见、点不到 / 点到别的行」的错位：ViewGroup 的触摸派发按
+        // 子 View 的 Z 排序（先派发给 Z 更大的子 View），而列表项默认 Z=0 且索引在 header 之后，
+        // 于是被 header 盖住的那条会话会抢走落在分组按钮上（尤其按钮偏上位置）的 DOWN，事件随即
+        // 由列表/下拉面板处理 → 表现为「点分组按钮却把小程序面板拉下来」。
+        // 固定住的时候把 header 的 translationZ 抬到 1px，让它同时在上层绘制与上层命中测试。
+        header.translationZ = if (pinned) 1f else 0f
     }
 
     private fun hookScrollMemory() {
@@ -348,7 +369,15 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         val target = scrollPositions[groupId ?: ALL_TAB_ID] ?: return
         if (target <= 0) return
         Handler(Looper.getMainLooper()).postDelayed({
-            lastConversationRecycler.get()?.let { recyclerViewScrollTo(it, target) }
+            val recycler = lastConversationRecycler.get() ?: return@postDelayed
+            // 切换分组时的「向上跳」会被宿主的下拉小程序面板误判：TaskBarAnimController 跟随
+            // 会话列表的滚动偏移，列表在顶部附近发生一次性大幅反向滚动就会被当成下拉手势，
+            // 面板随即跟着拉下来（真机日志里 updateScrollOffset 就是这么被喂出来的）。
+            // 只有当目标位置确实在当前可视位置之下时才滚动，等价于原来的「恢复上次位置」，
+            // 但不会因为列表本来就在顶部而制造一次虚假的向上滚动。
+            val current = recyclerViewFirstVisible(recycler)
+            if (current != null && current <= target) return@postDelayed
+            recyclerViewScrollTo(recycler, target)
         }, 120)
     }
 
@@ -1311,7 +1340,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
             modifier = modifier
                 .fillMaxWidth()
                 .background(containerColor)
-                .guardAgainstParentIntercept(guardView, guardSlopPx)
+                .guardAgainstParentIntercept(guardView, guardSlopPx, consumeVertical = !sortMode)
         ) {
             if (sortMode) {
                 SortableTabsRow(

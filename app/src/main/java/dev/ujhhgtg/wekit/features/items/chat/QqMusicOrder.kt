@@ -66,6 +66,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     internal const val KEY_COVER_AS_AVATAR = "qq_music_order_replace_cover_with_avatar"
     internal const val KEY_APP_ID = "qq_music_order_app_id"
     internal const val KEY_INTERCEPT_OWN = "qq_music_order_intercept_own_command"
+    internal const val KEY_ONLY_OWN = "qq_music_order_only_own_command"
     internal const val KEY_ALLOWED_TALKERS = "qq_music_order_allowed_talkers"
     internal const val KEY_COOKIE = "qq_music_order_cookie"
 
@@ -140,6 +141,16 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     fun appId(): String = WePrefs.getStringOrDef(KEY_APP_ID, DEFAULT_APP_ID).ifBlank { DEFAULT_APP_ID }
 
     fun interceptOwnCommand(): Boolean = WePrefs.getBoolOrDef(KEY_INTERCEPT_OWN, false)
+
+    /**
+     * 「仅识别自己发出的指令」：开启后其它人发的点歌指令一律不触发（不发卡片、不发语音）。
+     * 与原 [interceptOwnCommand]（= 连自己发的也识别）是两个独立维度，用户明确想要的
+     * 是「只认我自己的指令」，所以这里必须是**互斥**语义而不是叠加：
+     *  - onlyOwn 开 → 只处理 isSend == 1（消息表里 `isSend=1` 表示这条是账号本人发的），
+     *    别人发的一律丢弃；
+     *  - onlyOwn 关 → 沿用原行为（默认只认别人发的 isSend == 0，除非 interceptOwn 也打开）。
+     */
+    fun onlyOwnCommand(): Boolean = WePrefs.getBoolOrDef(KEY_ONLY_OWN, false)
 
     fun allowedTalkers(): Set<String> = WePrefs.getStringSetOrDef(KEY_ALLOWED_TALKERS, emptySet())
 
@@ -221,7 +232,13 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         if (MessageType.fromCode(type)?.isText != true) return
 
         val isSend = values.getAsInteger("isSend") ?: 1
-        if (isSend != 0 && !interceptOwnCommand()) return
+        if (onlyOwnCommand()) {
+            // 「仅识别自己发出的指令」（用户 2026-09-22 明确要求）：别人发的消息一律不触发，
+            // 无论 interceptOwn 怎么设。这是一条**互斥**规则，不是叠加。
+            if (isSend != 1) return
+        } else if (isSend != 0 && !interceptOwnCommand()) {
+            return
+        }
 
         val talker = values.getAsString("talker") ?: return
         val content = values.getAsString("content") ?: return
@@ -233,8 +250,11 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
         val query = parseCommand(content) ?: return
 
-        WeLogger.i(TAG, "order detected: talker=$talker song=${query.song} singer=${query.singer}")
-        scope.launch { process(talker, sender, query) }
+        WeLogger.i(
+            TAG,
+            "order detected: talker=$talker isSend=$isSend song=${query.song} singer=${query.singer}",
+        )
+        scope.launch { process(talker, sender, query, isSend == 1) }
     }
 
     data class SongQuery(val song: String, val singer: String?)
@@ -288,7 +308,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
     // ------------------------------------------------------------------ pipeline
 
-    private fun process(talker: String, sender: String, query: SongQuery) {
+    private fun process(talker: String, sender: String, query: SongQuery, own: Boolean) {
         try {
             if (!sendAsCard() && !sendAsVoice()) {
                 notice(talker, R.string.qq_music_order_need_a_channel)
@@ -313,8 +333,12 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
             val lyric = fetchLyric(hit.mid)
             val audioUrl = resolveAudioUrl(detail)
-            val thumbUrl = resolveCoverUrl(detail)
-            val singer = resolveSinger(talker, sender, detail)
+            // 「用头像替换封面」/「用昵称替换歌手」都用**点歌人**的身份：以前封面传的是歌曲 mid
+            // （detail.mid），拿歌名 mid 去 img_flag 里查人永远查不到 → 覆盖开关等于没生效；
+            // 昵称则在单聊里用 selfWxId 兜底，导致"对方点歌却显示我的昵称"。
+            val requester = requesterWxId(talker, sender, own)
+            val thumbUrl = resolveCoverUrl(detail, requester)
+            val singer = resolveSinger(talker, requester, detail)
 
             val wantsCard = sendAsCard()
             val wantsVoice = sendAsVoice()
@@ -735,11 +759,10 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      * silently did nothing. For our own commands the row usually has no sender, hence the
      * self-wxId fallback.
      */
-    private fun resolveSinger(talker: String, sender: String, detail: SongDetail): String {
+    private fun resolveSinger(talker: String, memberId: String, detail: SongDetail): String {
         if (!singerAsNickname()) return detail.singer
 
         val fallback = defaultSinger().ifBlank { detail.singer }
-        val memberId = sender.ifBlank { runCatching { WeApi.selfWxId }.getOrDefault("") }
         if (memberId.isBlank()) return fallback
 
         val nick = runCatching {
@@ -755,19 +778,38 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     }
 
     /**
+     * 点歌人的 wxId（「用头像替换封面」要用的那个）。
+     *  - 自己发的指令：自己（`WeApi.selfWxId`）
+     *  - 群里别人点歌：插入行里的 `sender`
+     *  - 单聊里对方点歌：会话本身就是对方，用 `talker`
+     */
+    private fun requesterWxId(talker: String, sender: String, own: Boolean): String {
+        if (own) return runCatching { WeApi.selfWxId }.getOrDefault("").ifBlank { sender }
+        if (sender.isNotBlank()) return sender
+        return if (talker.isGroupChatWxId) "" else talker
+    }
+
+    /**
      * 卡片的缩略图地址。
      *
      * 之前这里下载封面字节再传给发送接口，但 `WeMessageApi.sendXmlAppMsg` 的 url/data 参数恒为
      * null（封面由 XML 里的 `thumburl` 交给微信自己去下），所以那次下载完全是白跑的网络请求
-     * —— 去掉后卡片依旧正常，还少一次请求。`coverAsAvatar` 现在真正生效（用歌手头像做封面）。
+     * —— 去掉后卡片依旧正常，还少一次请求。
+     *
+     * 「用头像替换封面」的修复（2026-09-22 用户反馈不生效）：旧实现把**歌曲 mid** 当成 wxId
+     * 去查头像，`img_flag` 里当然没有这一行，于是永远回退到专辑封面 —— 开关看起来完全没效果。
+     * 现在传点歌人的 wxId，并且只接受 http(s) 直链（本地路径塞进 thumburl 微信下不下来）。
      */
-    private fun resolveCoverUrl(detail: SongDetail): String {
+    private fun resolveCoverUrl(detail: SongDetail, avatarWxId: String): String {
         val album = detail.albumPmid?.let { "$COVER_PREFIX$it.jpg" }.orEmpty()
         if (!coverAsAvatar()) return album
-        return runCatching { WeDatabaseApi.getAvatarUrl(detail.mid) }
-            .getOrDefault("")
-            .takeIf { it.isNotBlank() }
-            ?: album
+        val avatar = runCatching { WeDatabaseApi.getAvatarHttpUrl(avatarWxId) }.getOrDefault("")
+        if (avatar.isBlank()) {
+            WeLogger.i(TAG, "avatar cover unavailable (wxid='$avatarWxId'), fallback to album cover")
+            return album
+        }
+        WeLogger.i(TAG, "avatar cover for '$avatarWxId' -> ${avatar.take(80)}")
+        return avatar
     }
 
     // ------------------------------------------------------------------ send
@@ -781,6 +823,10 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         thumbUrl: String,
     ): Boolean = runCatching {
         val xml = buildSongXml(detail, singer, lyric, audioUrl, thumbUrl)
+        // 用户反馈「音乐卡片没有带 appid / 自定义的 appid 不生效」：把**真正生效的 appid**
+        // 打进 INFO 日志，配合 WeMessageApi 的 `appmsg info: appid=…` 就能一眼确认是
+        // 设置没保存、还是宿主把 appid 吃掉了，不用再靠猜。
+        WeLogger.i(TAG, "send card appid='${effectiveAppId()}' thumb=${thumbUrl.take(72)} xmlLen=${xml.length}")
         val ok = WeMessageApi.sendXmlAppMsg(talker, xml)
         WeLogger.i(TAG, "send card result=$ok xmlLen=${xml.length}")
         ok
@@ -810,12 +856,15 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         val play = audioUrl.orEmpty()
         return buildString {
             append("<msg>")
-            append("<appmsg appid=\"").append(escape(appId())).append("\" sdkver=\"0\">")
+            append("<appmsg appid=\"").append(escape(effectiveAppId())).append("\" sdkver=\"0\">")
             append("<title>").append(escape(detail.name)).append("</title>")
             append("<des>").append(escape(singer)).append("</des>")
             append("<action>view</action>")
             append("<type>3</type>")
             append("<showtype>0</showtype>")
+            // 宿主自己的音乐卡片都是 soundtype=0；补上它能让微信更稳地按「音乐」渲染，
+            // 而不是退化成普通链接卡（字段缺失时部分版本会走通用 appmsg 分支）。
+            append("<soundtype>0</soundtype>")
             append("<content></content>")
             append("<url>").append(escape(url)).append("</url>")
             append("<lowurl>").append(escape(url)).append("</lowurl>")
@@ -824,12 +873,38 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             append("<thumburl>").append(escape(cover)).append("</thumburl>")
             append("<songalbumurl>").append(escape(cover)).append("</songalbumurl>")
             append("<songlyric>").append(escape(lyric)).append("</songlyric>")
+            // 卡片右下角显示的「来源应用」；缺了它有些版本不显示来源，用户会以为
+            // appid 没带上（真机反馈「音乐卡片没有带 appid」）。
+            append("<sourcedisplayname>").append(escape(appName())).append("</sourcedisplayname>")
             append("<appattach><totallen>0</totallen><attachid></attachid><fileext></fileext></appattach>")
             append("<frommsgid>0</frommsgid>")
             append("</appmsg>")
             append("</msg>")
         }
     }
+
+    /**
+     * 真正写进卡片的 appid。
+     *
+     * 用户可以在设置里填自己的 appid；这里做两步清洗，避免一个格式不对的值把整张卡片弄坏：
+     *  - 去掉首尾空白与不可见字符（从网页/文档里复制粘贴时很常见）；
+     *  - 微信 appid 的规范形式是 `wx` + 16 位十六进制，不符就记一条日志但仍然按用户填的发
+     *    （尊重用户，同时留下可排查的痕迹），为空才回退默认值。
+     */
+    internal fun effectiveAppId(): String {
+        val raw = appId().filter { !it.isWhitespace() && it.code > 0x1F }
+        if (raw.isEmpty()) return DEFAULT_APP_ID
+        if (!APP_ID_PATTERN.matches(raw)) {
+            WeLogger.w(TAG, "custom appid '$raw' does not look like wx+16 hex, sending as-is")
+        }
+        return raw
+    }
+
+    /** 卡片来源名：用户把 appid 换成自己的应用时，这里也跟着换，避免显示成 QQ音乐。 */
+    private fun appName(): String =
+        if (effectiveAppId() == DEFAULT_APP_ID) "QQ音乐" else "音乐"
+
+    private val APP_ID_PATTERN = Regex("^wx[0-9a-fA-F]{16}$")
 
     private fun sendVoice(talker: String, audioUrl: String): Boolean = runCatching {
         val ext = audioUrl.substringBefore('?').substringAfterLast('.', "").lowercase()

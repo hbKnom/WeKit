@@ -4026,4 +4026,27 @@
     <string name="qq_music_order_this_chat_off">取消本聊天生效</string>
     <string name="text_speech_this_chat_only">僅播報本聊天</string>
     <string name="text_speech_this_chat_off">取消播報本聊天</string>
+
+    <!-- WeKit: 会话选择器 / TTS 引擎枚举 / 点歌仅自己指令 (2026-09-22) -->
+    <string name="conversation_picker_loading">正在載入聊天…</string>
+    <string name="conversation_picker_empty">沒有讀取到任何聊天</string>
+    <string name="conversation_picker_group">群組</string>
+    <string name="text_speech_engine_system_default">系統預設引擎</string>
+    <string name="text_speech_engine_not_ready">TTS 引擎尚未就緒，請稍後重試或更換引擎</string>
+    <string name="text_speech_test_utterance">你好，這是微信文字轉語音播報的測試。</string>
+    <string name="text_speech_test_speak">測試播報</string>
+    <string name="text_speech_engine_pick">選擇 TTS 引擎</string>
+    <string name="text_speech_engine_switched">已切換引擎，正在重新初始化…</string>
+    <string name="qq_music_order_only_own">僅識別自己發出的指令</string>
+    <string name="qq_music_order_only_own_summary">開啟後只有你自己發出的點歌指令會觸發，其他人發的訊息不會發送音樂卡片和語音。</string>
+    <string name="qq_music_order_pick_talkers">選擇生效聊天（拉取全部會話）</string>
+    <string name="qq_music_order_talkers_loading">正在載入聊天…</string>
+
+    <string name="conversation_picker_search">搜尋會話</string>
+    <string name="conversation_picker_counts">已選 %1$d 個 · 共 %2$d 個會話</string>
+    <string name="conversation_picker_no_match">沒有符合的會話</string>
+    <string name="conversation_picker_truncated">僅顯示前 %1$d 個（共 %2$d 個），繼續輸入關鍵字可縮小範圍</string>
+    <string name="qq_music_order_app_id_hint">寫進卡片的 AppID，留空則使用 QQ音樂預設值。注意：微信對第三方 AppID 不一定以音樂卡片呈現。</string>
+    <string name="qq_music_order_app_id_reset">恢復預設 AppID</string>
+    <string name="qq_music_order_allowed_talkers_count">已選 %1$d 個會話</string>
 </resources>
