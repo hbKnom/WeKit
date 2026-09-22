@@ -38,6 +38,8 @@ data class StickerPack(
     val itemCount: Int = 0,
     val badge: String? = null,
     val uploadTime: Long = 0,
+    /** 最后一次更新时间（服务器 `updated_at`）；0 = 未知，与 uploadTime 同源时 UI 只显示上传时间。 */
+    val updateTime: Long = 0,
     val downloadCount: Int = 0,
     val items: List<StickerItem> = emptyList(),
 )

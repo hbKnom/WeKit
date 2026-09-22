@@ -18,6 +18,7 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.ui.utils.ChatInfoIcon
 import dev.ujhhgtg.wekit.ui.utils.ShowComposeDialogScope
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
@@ -603,6 +604,9 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                 var text = ""
                 var budget = gTranscript.length.coerceAtLeast(MIN_AI_BUDGET)
                 var attempt = 0
+                // 必须声明在循环**外**：循环结束后 mainHandler.post 的提示要用"最后一次真实错误"，
+                // 放在循环体内会因作用域结束而编译不过（CI 实测 Unresolved reference 'errText'）。
+                var errText = ""
                 while (true) {
                     attempt++
                     val body = cutTranscript(gTranscript, budget)
@@ -616,7 +620,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                         val shown = body.length
                         mainHandler.post { showToast("记录过长，已压缩到 $shown 字重试（第 $attempt 次）…") }
                     }
-                    var errText = ""
+                    errText = ""
                     var lastToastLen = 0
                     try {
                         text = ChatAnalysisAi.stream(model, sys, user) { delta ->

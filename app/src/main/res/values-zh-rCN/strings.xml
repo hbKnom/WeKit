@@ -1531,10 +1531,15 @@
     <string name="sticker_panel_local_search_hint">输入文件名或表情包名称</string>
     <string name="sticker_panel_my_uploads">我的上传</string>
     <string name="sticker_panel_new_pack">新建表情包</string>
+    <string name="sticker_panel_online_pack_total">共 %1$d 个在线表情包</string>
     <string name="sticker_panel_online_packs">在线表情包</string>
+    <string name="sticker_panel_pack_count_loading">加载中…</string>
     <string name="sticker_panel_pack_created">表情包已创建</string>
     <string name="sticker_panel_pack_deleted">表情包已删除</string>
     <string name="sticker_panel_pack_renamed">表情包已重命名</string>
+    <string name="sticker_panel_pack_time_unknown">时间未知</string>
+    <string name="sticker_panel_pack_update_time">更新于 %1$s</string>
+    <string name="sticker_panel_pack_upload_time">上传于 %1$s</string>
     <string name="sticker_panel_progress_fetch_pack">正在获取在线表情包“%1$s”</string>
     <string name="sticker_panel_progress_import">正在导入表情…</string>
     <string name="sticker_panel_progress_prepare_recovery">正在准备恢复在线包来源</string>
@@ -1764,6 +1769,9 @@
     </plurals>
     <plurals name="sticker_panel_delete_selected_message">
         <item quantity="other">从本地表情包中删除选中的 %1$d 个表情？</item>
+    </plurals>
+    <plurals name="sticker_panel_pack_downloads">
+        <item quantity="other">%1$d 次下载</item>
     </plurals>
     <plurals name="sticker_panel_upload_pack_message">
         <item quantity="other">将“%1$s”中的 %2$d 个表情上传到 FunBox？</item>

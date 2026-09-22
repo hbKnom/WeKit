@@ -63,6 +63,7 @@ object FunBoxStickerRepository {
                     source = PanelSource.ONLINE,
                     badge = localizedChatString(R.string.chat_funbox_click_download_badge, clickCount, downloadCount),
                     uploadTime = uploadTime,
+                    updateTime = uploadTime,
                     downloadCount = downloadCount,
                 )
             }
@@ -99,6 +100,7 @@ object FunBoxStickerRepository {
                     source = PanelSource.ONLINE,
                     badge = localizedChatString(R.string.chat_funbox_status_click_download_badge, reviewState, clickCount, downloadCount),
                     uploadTime = uploadTime,
+                    updateTime = uploadTime,
                     downloadCount = downloadCount,
                 )
             }
@@ -363,6 +365,7 @@ private data class FunBoxStickerPackSnapshot(
         source = PanelSource.ONLINE,
         badge = localizedChatString(R.string.chat_funbox_click_download_badge, clickCount, downloadCount),
         uploadTime = updatedAt,
+        updateTime = updatedAt,
         downloadCount = downloadCount,
     )
 }

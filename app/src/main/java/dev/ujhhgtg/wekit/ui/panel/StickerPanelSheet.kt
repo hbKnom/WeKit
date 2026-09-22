@@ -66,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -315,6 +316,9 @@ private fun StickerPanelContent(
     var onlinePackSearchExpanded by remember { mutableStateOf(false) }
     var onlinePacksState by remember { mutableStateOf<PanelUiState<List<StickerPack>>>(PanelUiState.Loading) }
     var onlinePacksRequest by remember { mutableIntStateOf(0) }
+    // The catalog response carries no per-pack sticker count, so counts are fetched lazily as a
+    // pack scrolls into view and cached here for the lifetime of the sheet.
+    var onlinePackItemCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var myUploadsState by remember { mutableStateOf<PanelUiState<List<StickerPack>>>(PanelUiState.Loading) }
     var myUploadsRequest by remember { mutableIntStateOf(0) }
     var showingMyUploads by remember { mutableStateOf(rememberedNavigation?.showingMyUploads == true) }
@@ -437,6 +441,19 @@ private fun StickerPanelContent(
                 },
                 { PanelUiState.Error(it.toPanelUiText(R.string.sticker_panel_error_item_load)) },
             )
+        }
+    }
+
+    /**
+     * The FunBox catalog response carries no per-pack sticker count, so the count of each pack is
+     * fetched on demand as it scrolls into view and cached for the lifetime of the sheet.
+     */
+    fun loadOnlinePackItemCount(pack: StickerPack) {
+        if (pack.id in onlinePackItemCounts) return
+        scope.launch {
+            val count = actions.loadOnlineItems(pack).getOrNull()?.size
+            // 失败也记账(-1=未知),否则元数据永远挂"加载中"
+            onlinePackItemCounts = onlinePackItemCounts + (pack.id to (count ?: -1))
         }
     }
 
@@ -753,7 +770,7 @@ private fun StickerPanelContent(
     val unsortedOnlinePacks = (activeOnlineState as? PanelUiState.Content)?.value.orEmpty()
     val onlinePacks = remember(unsortedOnlinePacks, onlineSortMode) {
         when (onlineSortMode) {
-            1 -> unsortedOnlinePacks.sortedByDescending(StickerPack::uploadTime)
+            1 -> unsortedOnlinePacks.sortedByDescending { maxOf(it.uploadTime, it.updateTime) }
             2 -> unsortedOnlinePacks.sortedByDescending(StickerPack::downloadCount)
             else -> unsortedOnlinePacks
         }
@@ -1217,7 +1234,7 @@ private fun StickerPanelContent(
                         if (showingMyUploads) ::loadMyUploads else ::loadOnlinePacks,
                     ) { packs ->
                         val visiblePacks = when (onlineSortMode) {
-                            1 -> packs.sortedByDescending(StickerPack::uploadTime)
+                            1 -> packs.sortedByDescending { maxOf(it.uploadTime, it.updateTime) }
                             2 -> packs.sortedByDescending(StickerPack::downloadCount)
                             else -> packs
                         }.filter { pack ->
@@ -1226,22 +1243,34 @@ private fun StickerPanelContent(
                         if (visiblePacks.isEmpty() && onlinePackQuery.isNotBlank()) {
                             PanelEmptyAction(stringResource(R.string.sticker_panel_empty_no_online_pack_match))
                         } else {
-                            StickerPackCatalog(
-                                packs = visiblePacks,
-                                layout = onlinePackLayout,
-                                columnCount = PanelSettings.stickerColumnCount.coerceIn(1, 15),
-                                gridState = onlinePackGridState,
-                                listState = onlinePackListState,
-                                onSelectPack = { pack ->
-                                    onlinePackSearchExpanded = false
-                                    onlinePackQuery = ""
-                                    multiSelectMode = false
-                                    selectedStickerKeys = emptySet()
-                                    selectedOnlinePackId = pack.id
-                                    scope.launch { onlineItemGridState.scrollToItem(0) }
-                                    loadOnlinePack(pack)
-                                },
-                            )
+                            Column(Modifier.fillMaxSize()) {
+                                Text(
+                                    text = stringResource(R.string.sticker_panel_online_pack_total, visiblePacks.size),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                                StickerPackCatalog(
+                                    packs = visiblePacks,
+                                    layout = onlinePackLayout,
+                                    overlayTitle = true,
+                                    gridState = onlinePackGridState,
+                                    listState = onlinePackListState,
+                                    metadataLabel = { pack ->
+                                        onlinePackMetadata(pack, onlinePackItemCounts[pack.id])
+                                    },
+                                    onPackVisible = { pack -> loadOnlinePackItemCount(pack) },
+                                    onSelectPack = { pack ->
+                                        onlinePackSearchExpanded = false
+                                        onlinePackQuery = ""
+                                        multiSelectMode = false
+                                        selectedStickerKeys = emptySet()
+                                        selectedOnlinePackId = pack.id
+                                        scope.launch { onlineItemGridState.scrollToItem(0) }
+                                        loadOnlinePack(pack)
+                                    },
+                                )
+                            }
                         }
                     }
                 } else {
@@ -2357,7 +2386,6 @@ private fun LocalPacksContent(
             StickerPackCatalog(
                 packs = packs,
                 layout = layout,
-                columnCount = PanelSettings.stickerColumnCount.coerceIn(1, 15),
                 gridState = gridState,
                 listState = listState,
                 onSelectPack = onSelectPack,
@@ -2480,48 +2508,125 @@ private fun StickerItemReorderContent(
 }
 
 @Composable
+private fun OnlineOverlayPackCell(pack: StickerPack, onSelectPack: (StickerPack) -> Unit) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { onSelectPack(pack) },
+    ) {
+        StickerAsyncImage(
+            request = stickerImageRequest(
+                context,
+                pack.cover,
+                securedObject = pack.source == PanelSource.ONLINE || pack.source == PanelSource.SHARED,
+            ),
+            contentDescription = pack.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        val chip = if (pack.downloadCount > 0) "\u2b07${pack.downloadCount}" else "NEW"
+        Text(
+            text = chip,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(3.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = 5.dp, vertical = 1.dp),
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)),
+                    ),
+                )
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+        ) {
+            Text(
+                text = pack.title,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+
+@Composable
 private fun StickerPackCatalog(
     packs: List<StickerPack>,
     layout: StickerPackLayout,
-    columnCount: Int,
     gridState: LazyGridState,
     listState: LazyListState,
     onSelectPack: (StickerPack) -> Unit,
+    metadataLabel: (@Composable (StickerPack) -> String)? = null,
+    onPackVisible: ((StickerPack) -> Unit)? = null,
+    overlayTitle: Boolean = false,
 ) {
     if (layout == StickerPackLayout.GRID) {
         LazyVerticalGrid(
-            columns = GridCells.Fixed(columnCount),
+            columns = if (overlayTitle) GridCells.Fixed(5) else GridCells.Adaptive(minSize = 152.dp),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(packs, key = { it.id }) { pack ->
-                Column(
-                    modifier = Modifier
-                        .animateItem()
-                        .fillMaxWidth()
-                        .clickable { onSelectPack(pack) }
-                        .padding(4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    StickerPackThumbnail(
-                        pack = pack,
+                if (onPackVisible != null) {
+                    LaunchedEffect(pack.id) { onPackVisible(pack) }
+                }
+                if (overlayTitle) {
+                    OnlineOverlayPackCell(pack = pack, onSelectPack = onSelectPack)
+                } else {
+                    Column(
                         modifier = Modifier
+                            .animateItem()
                             .fillMaxWidth()
-                            .aspectRatio(1f),
-                    )
-                    Text(
-                        text = pack.title,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                            .clickable { onSelectPack(pack) }
+                            .padding(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        StickerPackThumbnail(
+                            pack = pack,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(1f),
+                        )
+                        Text(
+                            text = pack.title,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (metadataLabel != null) {
+                            Text(
+                                text = metadataLabel(pack),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2532,6 +2637,9 @@ private fun StickerPackCatalog(
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             items(packs, key = { it.id }) { pack ->
+                if (onPackVisible != null) {
+                    LaunchedEffect(pack.id) { onPackVisible(pack) }
+                }
                 Row(
                     modifier = Modifier
                         .animateItem()
@@ -2543,30 +2651,44 @@ private fun StickerPackCatalog(
                     StickerPackThumbnail(pack, Modifier.size(48.dp))
                     BoxWithConstraints(Modifier.weight(1f)) {
                         val metadataMaxWidth = maxWidth * 0.55f
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = pack.title,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(start = 10.dp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                text = pack.badge ?: stringResource(R.string.sticker_count_short, pack.itemCount),
-                                modifier = Modifier
-                                    .widthIn(max = metadataMaxWidth)
-                                    .padding(start = 12.dp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.End,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                        Column(Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = pack.title,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 10.dp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = pack.badge ?: stringResource(R.string.sticker_count_short, pack.itemCount),
+                                    modifier = Modifier
+                                        .widthIn(max = metadataMaxWidth)
+                                        .padding(start = 12.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.End,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            if (metadataLabel != null) {
+                                Text(
+                                    text = metadataLabel(pack),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 10.dp, top = 2.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                     }
                 }
@@ -2575,12 +2697,42 @@ private fun StickerPackCatalog(
     }
 }
 
+/**
+ * Online pack secondary line: sticker count, upload time, and the server update time when the pack
+ * was modified after it was first uploaded.
+ */
+@Composable
+private fun onlinePackMetadata(pack: StickerPack, knownItemCount: Int?): String {
+    val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US) }
+    val count = when {
+        knownItemCount == null -> stringResource(R.string.sticker_panel_pack_count_loading)
+        knownItemCount < 0 -> null // 拉取失败:显示未知,别永远"加载中"
+        else -> pluralStringResource(R.plurals.sticker_count, knownItemCount, knownItemCount)
+    }
+    val downloads = if (pack.downloadCount > 0) {
+        pluralStringResource(R.plurals.sticker_panel_pack_downloads, pack.downloadCount, pack.downloadCount)
+    } else {
+        null
+    }
+    // 第一行:数量+下载量（网格模式只显示这一行）
+    val firstLine = listOfNotNull(count, downloads).joinToString(" · ")
+    // 第二行:只保留一个日期（有更新时间就显示更新时间，否则上传时间）
+    val date = if (pack.updateTime > 0 && pack.updateTime != pack.uploadTime) {
+        stringResource(R.string.sticker_panel_pack_update_time, dateFormat.format(java.util.Date(pack.updateTime)))
+    } else if (pack.uploadTime > 0) {
+        stringResource(R.string.sticker_panel_pack_upload_time, dateFormat.format(java.util.Date(pack.uploadTime)))
+    } else {
+        stringResource(R.string.sticker_panel_pack_time_unknown)
+    }
+    return listOf(firstLine, date).joinToString("\n")
+}
+
 @Composable
 private fun StickerPackThumbnail(pack: StickerPack, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         StickerAsyncImage(
