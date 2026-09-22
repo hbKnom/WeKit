@@ -490,7 +490,25 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      *
      * 尝试顺序：Lite 限免额度 → 用户 Cookie（会员/全集）→ Lite 身份 UrlGetVkey flowurl。
      */
-    private fun resolveAudioUrl(detail: SongDetail): String? {
+    private fun resolveAudioUrl(detail: SongDetail): String? = secureUrl(resolveRawAudioUrl(detail))
+
+    /**
+     * 宿主进程里跑的是微信自己的 NetworkSecurityPolicy：targetSdk≥28 且未开 usesCleartextTraffic 时，
+     * OkHttp 对 `http://` 会直接抛 CleartextNotPermitted（宿主清单我们改不了，也没法覆盖）。
+     * QQ 音乐的取流主机两种协议都实测可用（`https://sjy.stream.qqmusic.qq.com/…ogg?…vkey=…` 同样 206），
+     * 所以统一升级成 https：卡片里播放更稳，下载也不会被明文策略拦。
+     */
+    private fun secureUrl(url: String): String {
+        if (!url.startsWith("http://")) return url
+        val host = url.removePrefix("http://").substringBefore('/').substringAfter('@').substringBefore(':')
+        return if (host.endsWith(".qq.com")) {
+            "https://" + url.removePrefix("http://")
+        } else {
+            url
+        }
+    }
+
+    private fun resolveRawAudioUrl(detail: SongDetail): String? {
         resolveViaFreeQuota(detail)?.let {
             WeLogger.i(TAG, "audio url resolved via lite free-quota vkey")
             return it
