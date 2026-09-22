@@ -152,8 +152,12 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
                 return
             }
 
-            WeChatService.insertSystemMessage(talker, text, System.currentTimeMillis())
-                .onFailure { WeLogger.e(TAG, "插入系统消息失败", it) }
+            // 注意：WeChatService.Result 是本项目自己的 sealed class（Success/Error），不是 kotlin.Result，
+            // 没有 onFailure/onSuccess 这类扩展 —— 必须 when 穷举处理。
+            when (val r = WeChatService.insertSystemMessage(talker, text, System.currentTimeMillis())) {
+                is WeChatService.Result.Success -> WeLogger.i(TAG, "分析结果已作为系统消息插入")
+                is WeChatService.Result.Error -> WeLogger.e(TAG, "插入系统消息失败：${r.message}")
+            }
         } catch (e: Throwable) {
             WeLogger.e(TAG, "分析异常", e)
         }
