@@ -640,9 +640,6 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             val thumbUrl = resolveCoverUrl(detail, requester)
             val singer = resolveSinger(talker, requester, detail)
 
-            val wantsCard = kind == CommandKind.CARD && sendAsCard()
-            val wantsVoice = kind == CommandKind.VOICE && sendAsVoice()
-
             var cardOk = false
             if (wantsCard) cardOk = sendCard(talker, detail, singer, lyric, audioUrl, thumbUrl)
 

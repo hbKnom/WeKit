@@ -1276,7 +1276,7 @@ object ChatAnalysisPng {
 
         // 页脚内部节奏全部来自常量：上留白 → 文字行 → 间距 → 品牌条，
         // 文字行与品牌条严格分离（避免文字下缘与渐变条压在一起）
-        val textTop = top + FOOTER_TOP_GAP
+        val textTop = (top + FOOTER_TOP_GAP).toFloat()
         val textH = FOOTER_TEXT_H.toFloat()
         val limitBottom = textTop + textH
         val pageP = paint(FS_SMALL, COLOR_ACCENT, bold = true)
