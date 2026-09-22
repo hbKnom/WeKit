@@ -83,7 +83,9 @@ class SqlitePrefsImpl(@Suppress("UNUSED_PARAMETER") name: String) : WePrefs() {
         TYPE_LONG -> bytes?.let { String(it, Charsets.UTF_8).toLongOrNull() }
         TYPE_FLOAT -> bytes?.let { String(it, Charsets.UTF_8).toFloatOrNull() }
         TYPE_STRING -> bytes?.toString(Charsets.UTF_8)
-        TYPE_STRING_SET -> bytes?.toString(Charsets.UTF_8)?.split(SEP)?.toSet()
+        // 空集合会被存成零长度 blob，而 "".split(SEP) == [""]：不滤空串就会读回 {""}，
+        // 让「清空生效聊天 / 关掉全部特性」变成永远匹配不上任何人的死状态（点歌、TTS 播报、分析项都中招）。
+        TYPE_STRING_SET -> bytes?.toString(Charsets.UTF_8)?.split(SEP)?.filter { it.isNotEmpty() }?.toSet()
         TYPE_BYTES -> bytes
         TYPE_SERIALIZABLE -> bytes?.let { raw ->
             runCatching { ObjectInputStream(ByteArrayInputStream(raw)).readObject() }

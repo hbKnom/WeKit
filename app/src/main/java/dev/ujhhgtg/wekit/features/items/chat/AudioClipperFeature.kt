@@ -157,8 +157,11 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
                     .onSuccess { (sourceInfo, scratchFile) ->
                         info = sourceInfo
                         scratch = scratchFile
-                        range = 0f..minOf(sourceInfo.totalMs, AudioClipper.MAX_CLIP_MS)
-                            .coerceAtLeast(1L).toFloat()
+                        // 滑块区间单位是**秒**（valueRange = 0f..totalSeconds、clipMs = span * 1000）。
+                        // 这里原先误用毫秒：区间比 valueRange 大 1000 倍 → 一开窗 clipMs 就超 MAX_CLIP_MS，
+                        // tooLong=true、两个导出按钮全灰，用户看到的就是"音频剪辑点了没有任何反应"。
+                        range = 0f..minOf(sourceInfo.totalSeconds, AudioClipper.MAX_CLIP_MS / 1000f)
+                            .coerceAtLeast(1f)
                     }
                     .onFailure {
                         WeLogger.e("AudioClipperFeature", "prepare failed", it)
@@ -258,8 +261,8 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
                                     icon = MaterialSymbols.Outlined.Content_cut,
                                     title = stringResource(R.string.audio_clipper_reset),
                                     onClick = {
-                                        range = 0f..minOf(source.totalMs, AudioClipper.MAX_CLIP_MS)
-                                            .coerceAtLeast(1L).toFloat()
+                                        range = 0f..minOf(source.totalSeconds, AudioClipper.MAX_CLIP_MS / 1000f)
+                                            .coerceAtLeast(1f)
                                     },
                                     trailingDivider = true,
                                 )

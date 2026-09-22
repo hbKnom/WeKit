@@ -116,12 +116,12 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
     }
 
     private fun submit(talker: String, content: String) {
-        if (inFlight.get() >= MAX_CONCURRENT_ANALYSES) {
+        // 原子占位：先自增再判定，避免两条消息同时通过 check-then-act 把并发上限打穿。
+        if (inFlight.incrementAndGet() > MAX_CONCURRENT_ANALYSES) {
+            inFlight.decrementAndGet()
             WeLogger.w(TAG, "并发分析已达上限($MAX_CONCURRENT_ANALYSES)，本条消息跳过")
             return
         }
-
-        inFlight.incrementAndGet()
         val submitted = runCatching {
             analyzePool.execute {
                 try {
@@ -142,7 +142,7 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
 
     private fun runAnalysis(talker: String, content: String) {
         try {
-            val history = buildHistory(talker)
+            val history = buildHistory(talker, content)
             val text = JevApiClient.analyze(apiKey(), content, history, padChars()) ?: return
             if (text.isBlank()) return
 
@@ -165,7 +165,7 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
      * 取最近 [contextRounds] 轮「已入库」的文本消息，时间升序，最旧在前。
      * 会跳过最新那一条（= 当前正在分析的这条），与原脚本一致。
      */
-    internal fun buildHistory(talker: String): List<String> {
+    internal fun buildHistory(talker: String, current: String = ""): List<String> {
         val limit = contextRounds()
         if (limit <= 0) return emptyList()
 
@@ -173,14 +173,17 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
             // 多取一条：最新那条就是「当前这条」，要排除掉
             val rows = WeDatabaseApi.getMessages(talker, pageIndex = 1, pageSize = limit + 1)
             // getMessages 按 createTime DESC 返回，反转成时间升序
-            rows.asReversed()
-                .mapNotNull { msg ->
-                    if (msg.type?.isText != true) return@mapNotNull null
-                    val line = formatHistoryLine(talker, msg.content, msg.isSend != 0)
-                    if (line.isEmpty()) null else line
-                }
-                .dropLast(1)
-                .takeLast(limit)
+            val pairs = rows.asReversed().mapNotNull { msg ->
+                if (msg.type?.isText != true) return@mapNotNull null
+                val line = formatHistoryLine(talker, msg.content, msg.isSend != 0)
+                if (line.isEmpty()) null else msg.content.trim() to line
+            }
+            // 按**内容**剔除当前这条，而不是按位置 dropLast(1)：插入监听器与本次查询未必在同一事务，
+            // 位置法既可能漏删（当前消息留在历史里）也可能误删（把真正的上一条上下文丢给模型）。
+            val cur = current.trim()
+            val idx = if (cur.isEmpty()) -1 else pairs.indexOfLast { it.first == cur || it.second.endsWith(cur) }
+            val kept = if (idx >= 0) pairs.filterIndexed { i, _ -> i != idx } else pairs
+            kept.map { it.second }.takeLast(limit)
         }.getOrElse {
             WeLogger.e(TAG, "读取历史消息异常", it)
             emptyList()
@@ -191,7 +194,13 @@ object JevChatAssistant : ClickableFeature(), WeDatabaseListenerApi.IInsertListe
     private fun formatHistoryLine(talker: String, rawContent: String, isSend: Boolean): String {
         val raw = rawContent.trim()
         if (raw.isEmpty()) return ""
-        if (isSend) return "我：$raw"
+        if (isSend) {
+            // 自己发的群消息同样可能带 "wxid_xxx:\n" 前缀，不剥掉会让历史行出现多行
+            // "我：wxid_xxx:" 这种把 prompt 结构顶坏的内容。
+            val own = if (talker.isGroupChatWxId) normalizedContent(talker, rawContent) else raw
+            if (own.isEmpty()) return ""
+            return "我：$own"
+        }
         if (!talker.isGroupChatWxId) return "对方：$raw"
 
         val parsed = splitGroupSender(raw)

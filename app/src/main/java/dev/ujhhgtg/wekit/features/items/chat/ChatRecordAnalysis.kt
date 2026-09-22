@@ -94,6 +94,28 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 耗时扫描/AI 回到主线程要弹窗前，先确认宿主 Activity 还活着。
+     *
+     * 扫描可能跑几十秒甚至几分钟，这期间用户完全可能已经退出会话页；此时 `Dialog.show()`
+     * 会因窗口 token 已死抛 `BadTokenException` —— 这是在**宿主主线程**上，会直接打死微信。
+     * 拿不到 Activity（ContextWrapper 链里没有）时按"可以弹"处理，与改动前行为一致。
+     */
+    private fun canShowDialog(view: View): Boolean {
+        val act = activityOf(view.context) ?: return true
+        return !act.isFinishing && !act.isDestroyed
+    }
+
+    private fun activityOf(ctx: android.content.Context?): android.app.Activity? {
+        var c = ctx
+        var depth = 0
+        while (c is android.content.ContextWrapper && depth++ < 8) {
+            if (c is android.app.Activity) return c
+            c = c.baseContext
+        }
+        return c as? android.app.Activity
+    }
+
     private fun loadFeatures(): Set<String> {
         val cur = WePrefs.getStringSet("chat_analysis_features")
         return cur?.filter { it in ChatAnalysisEngine.ALL_FEATURES }?.toSet()
@@ -116,7 +138,11 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
      * 于是用户升级后看到的仍是「20000 条 / 240000 字」，以为没改。这里只在取值**恰好等于某个历史
      * 默认值**时上迁到当前默认值；用户自己填过的其它数值一律原样保留（0 = 不限制也不会被改动）。
      */
+    /** 「历史默认值上迁」是否已执行：一次性，避免每次开机把用户手填的 5000/20000/50000 又打回 0。 */
+    private const val KEY_LIMITS_MIGRATED = "chat_analysis_limits_migrated_v7"
+
     private fun migrateLimits() {
+        if (WePrefs.getBoolOrFalse(KEY_LIMITS_MIGRATED)) return
         val legacyCounts = setOf(500, 1000, 1500, 5000, 20000, 50000)
         val legacyLineMax = setOf(500, 2000)
         val legacyChars = setOf(60000, 240000)
@@ -124,6 +150,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         if (sampleLimit in legacyCounts) sampleLimit = 0
         if (lineMax in legacyLineMax) lineMax = ChatAnalysisEngine.TRANSCRIPT_LINE_MAX_DEFAULT
         if (transcriptMaxChars in legacyChars) transcriptMaxChars = ChatAnalysisEngine.TRANSCRIPT_MAX_CHARS_DEFAULT
+        WePrefs.putBool(KEY_LIMITS_MIGRATED, true)
         android.util.Log.i("WeKit/分析", "limits: maxCount=$maxCount sampleLimit=$sampleLimit lineMax=$lineMax chars=$transcriptMaxChars")
     }
 
@@ -470,12 +497,18 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                         "已读取纯文本 ${result.textN} 条 · 喂 AI 正文 ${result.transcript.length} 字" +
                             "（可在设置里调上限）",
                     )
+                    if (!canShowDialog(view)) {
+                        WeLogger.w("WeKit/分析", "分析完成时宿主页面已销毁，跳过弹窗")
+                        return@post
+                    }
                     showReport(view)
                 }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
+                // 必须兜 Throwable：48 万字正文 + 512MB 宿主堆下 OOM 是 Error 而非 Exception，
+                // 漏掉会让 busy 永远为 true，之后每次点分析都静默 return（功能看着就"死了"）。
                 mainHandler.post {
                     busy = false
-                    showToast("分析失败：${e.message}")
+                    showToast("分析失败：${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }.start()
@@ -595,9 +628,9 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                                 lastToastLen = 0
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (t: Throwable) {
                         // 流式失败 → 非流式降级（同一份正文）
-                        errText = e.message.orEmpty()
+                        errText = t.message ?: t.javaClass.simpleName
                         text = runCatching { ChatAnalysisAi.plain(model, sys, user).orEmpty() }
                             .getOrDefault("")
                     }
@@ -615,7 +648,16 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                 mainHandler.post {
                     busy = false
                     if (text.isBlank()) {
-                        showToast("AI 返回为空，请检查模型配置")
+                        // 重试全失败时别再笼统说"返回为空"：把最后一次真实错误带出来（上下文超限/鉴权都能一眼看出）。
+                        showToast(
+                            if (errText.isBlank()) {
+                                "AI 返回为空，请检查模型配置"
+                            } else {
+                                "AI 失败：${errText.take(120)}"
+                            },
+                        )
+                    } else if (!canShowDialog(view)) {
+                        WeLogger.w("WeKit/分析", "AI 完成时宿主页面已销毁，跳过弹窗")
                     } else {
                         gAi = text
                         gReportDismiss?.invoke()
@@ -623,10 +665,10 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                         showAiReport(view)
                     }
                 }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 mainHandler.post {
                     busy = false
-                    showToast("AI 失败：${e.message}")
+                    showToast("AI 失败：${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }.start()
@@ -667,10 +709,10 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     busy = false
                     showToast("已导出：$path")
                 }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 mainHandler.post {
                     busy = false
-                    showToast("导出失败：${e.message}")
+                    showToast("导出失败：${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }.start()

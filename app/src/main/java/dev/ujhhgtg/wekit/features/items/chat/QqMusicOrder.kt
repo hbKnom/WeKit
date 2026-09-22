@@ -257,7 +257,9 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             val n1 = Class.forName("com.tencent.mm.pluginsdk.ui.chat.n1", false, ClassLoaders.HOST)
             val onClick = n1.getDeclaredMethod("onClick", View::class.java)
             onClick.isAccessible = true
-            onClick.hookBefore(90) { handleSendGuard(thisObject) }
+            // 优先级必须**高于**「群聊自定义艾特」的 100：insertCallback 按优先级降序排、高的先跑。
+            // 否则本拦截器读到的是已被 CustomAt 改写过的输入框文本，改写结果还会被之后的清空动作丢弃。
+            onClick.hookBefore(110) { handleSendGuard(thisObject) }
             WeLogger.i(TAG, "点歌指令发送拦截 Hook 已安装")
         }.onFailure {
             WeLogger.w(TAG, "点歌指令发送拦截 Hook 安装失败（指令将照常发出）", it)
@@ -279,7 +281,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             CustomAt.setFooterText(footer, "")
             // 拦下之后我们自己出歌；宿主如果仍然把这条落库，onInsert 那边会看到同文案而跳过，
             // 避免同一句指令出两份卡片。
-            guardSuppress[talker] = text to System.currentTimeMillis()
+            guardSuppress[talker] = text.trim() to System.currentTimeMillis()
             WeLogger.i(TAG, "已拦截自己的点歌指令：talker=$talker song=${query.song} singer=${query.singer}")
             scope.launch { process(talker, "", query, true) }
         }.onFailure { WeLogger.e(TAG, "发送拦截异常", it) }
@@ -311,11 +313,15 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         val allow = allowedTalkers()
         if (allow.isNotEmpty() && talker !in allow) return
 
-        val query = parseCommand(content) ?: return
+        // 群聊带 `发送者:\n` 前缀时先剥掉再匹配，否则群里点歌的"指令在句首"永远不成立。
+        val body = commandBody(talker, content, sender)
+        val query = parseCommand(body) ?: return
 
         // 指令已经在"发送点击"阶段被拦下并单独出过歌了，宿主要是仍把它落库就跳过，别出两份。
         guardSuppress[talker]?.let { (guardedText, at) ->
-            if (guardedText == content && System.currentTimeMillis() - at < 5_000) {
+            if ((guardedText == content.trim() || guardedText == body.trim()) &&
+                System.currentTimeMillis() - at < 5_000
+            ) {
                 WeLogger.i(TAG, "指令已被发送拦截，跳过重复处理")
                 return
             }
@@ -329,6 +335,30 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     }
 
     data class SongQuery(val song: String, val singer: String?)
+
+    /**
+     * 取消息里真正承载指令的那段文本。
+     *
+     * 群聊 content 形如 `发送者:\n正文`，前缀会让 [parseCommand] 里「触发词必须在句首」的判定失败，
+     * 于是群里别人点歌**永远出不了卡**。只有【前缀像发送者】且【剥掉后确实能解析出指令】时才剥，
+     * 否则原样返回 —— 剥不动时行为与改动前完全一致，1:1 聊天不受影响。
+     */
+    private fun commandBody(talker: String, content: String, sender: String): String {
+        if (!talker.isGroupChatWxId) return content
+        val nl = content.indexOf('\n')
+        if (nl <= 0) return content
+        val head = content.substring(0, nl)
+        if (!head.endsWith(":")) return content
+        val rest = content.substring(nl + 1)
+        if (parseCommand(rest) == null) return content
+        val name = head.dropLast(1)
+        val senderLike = (sender.isNotEmpty() && name == sender) ||
+            name.startsWith("wxid_") ||
+            name.endsWith("@chatroom") ||
+            name.endsWith("@im.chatroom") ||
+            head.length <= 64
+        return if (senderLike) rest else content
+    }
 
     /**
      * Returns the requested song when [text] contains one of the configured triggers.

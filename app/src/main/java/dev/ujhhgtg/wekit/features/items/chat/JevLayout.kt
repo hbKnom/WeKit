@@ -124,7 +124,9 @@ object JevLayout {
             sb.append(dividerLine(maxW, target)).append('\n')
             for (line in tail) sb.append(padLine(line, target)).append('\n')
         }
-        return sb.toString().trim()
+        // 只能用 trimEnd('\n')：Char.isWhitespace 把 NBSP(\u00A0) / U+3000 也算空白，
+        // 用 trim() 会把最后一行的补齐锚点整段吃掉 —— 正是本类要避免的"行尾空白被丢"。
+        return sb.toString().trimEnd('\n')
     }
 
     /** 概率转整数百分比 */

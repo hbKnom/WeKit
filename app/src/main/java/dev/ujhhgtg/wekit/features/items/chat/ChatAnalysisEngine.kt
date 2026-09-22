@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 
 import dev.ujhhgtg.wekit.features.api.core.WeApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
+import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
 import java.util.Calendar
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -101,7 +102,7 @@ object ChatAnalysisEngine {
         val range = timeRange(mode, now)
         val start = range.first
         val end = range.second
-        val isGroup = talker.endsWith("@chatroom")
+        val isGroup = talker.isGroupChatWxId
 
         val typeCount = mutableMapOf<String, Int>()
         val hourDist = IntArray(24)
@@ -191,7 +192,11 @@ object ChatAnalysisEngine {
                         senderKey = "对方"
                     }
                     if (body.startsWith("@") &&
-                        (body.contains(myWxid) || (myNick.isNotEmpty() && body.contains(myNick)) || body.contains("所有人"))
+                        (
+                            (myWxid.isNotEmpty() && body.contains(myWxid)) ||
+                                (myNick.isNotEmpty() && body.contains(myNick)) ||
+                                body.contains("所有人")
+                        )
                     ) {
                         atMe++
                     }
