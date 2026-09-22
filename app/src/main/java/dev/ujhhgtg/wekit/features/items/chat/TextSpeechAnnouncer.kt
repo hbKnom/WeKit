@@ -54,6 +54,11 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
 
     private const val TAG = "TextSpeechAnnouncer"
 
+    // AudioManager.VOLUME_CHANGED_ACTION / EXTRA_VOLUME_STREAM_TYPE 在本项目的编译 SDK 里不可见
+    // （平台标 @hide，部分 SDK 未暴露），这里用字面量常量，运行时行为与宿主一致。
+    private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
+    private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
+
     internal const val KEY_ALLOWED = "text_speech_allowed_contacts"
     internal const val KEY_ANNOUNCE_SENDER = "text_speech_announce_sender"
     internal const val KEY_TEMPLATE = "text_speech_announcement_template"
@@ -261,7 +266,7 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
     private fun resolveSenderName(talker: String, msgInfo: MessageInfo): String {
         if (!announceSender()) return ""
         return runCatching {
-            if (isGroupChatWxId(talker)) {
+            if (talker.isGroupChatWxId) {
                 WeDatabaseApi.getGroupMemberDisplayName(talker, msgInfo.sender)
                     .ifBlank { WeDatabaseApi.getDisplayName(msgInfo.sender) }
             } else {
@@ -271,7 +276,7 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
     }
 
     internal fun renderTemplate(talker: String, sender: String, body: String): String {
-        val groupName = if (isGroupChatWxId(talker)) {
+        val groupName = if (talker.isGroupChatWxId) {
             runCatching { WeDatabaseApi.getDisplayName(talker) }.getOrDefault(talker)
         } else ""
         return template()
@@ -408,8 +413,8 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
         val ctx = HostInfo.application
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action != AudioManager.VOLUME_CHANGED_ACTION) return
-                val stream = intent.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_TYPE, -1)
+                if (intent?.action != ACTION_VOLUME_CHANGED) return
+                val stream = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1)
                 if (stream != AudioManager.STREAM_MUSIC) return
                 // While speaking, remember the user's last volume so the announcement and any
                 // later playback stay consistent instead of fighting each other.
@@ -418,7 +423,7 @@ object TextSpeechAnnouncer : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
         }
 
         runCatching {
-            ctx.registerReceiver(receiver, IntentFilter(AudioManager.VOLUME_CHANGED_ACTION))
+            ctx.registerReceiver(receiver, IntentFilter(ACTION_VOLUME_CHANGED))
             volumeReceiver = receiver
             val session = MediaSession(ctx, "WeKitTextSpeech")
             session.isActive = true

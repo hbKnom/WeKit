@@ -498,7 +498,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         if (memberId.isBlank()) return fallback
 
         val nick = runCatching {
-            if (isGroupChatWxId(talker)) {
+            if (talker.isGroupChatWxId) {
                 WeDatabaseApi.getGroupMemberDisplayName(talker, memberId)
                     .ifBlank { WeDatabaseApi.getDisplayName(memberId) }
             } else {
