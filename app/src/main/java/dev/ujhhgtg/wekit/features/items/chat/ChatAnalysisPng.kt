@@ -575,15 +575,15 @@ object ChatAnalysisPng {
         val metaP = paint(FS_META, COLOR_META)
         val smallP = paint(FS_SMALL, COLOR_META)
         drawTextLines(
-            cv, spec.nameLines, spec.textLeft.toFloat(), inner + spec.nameTop,
+            cv, spec.nameLines, spec.textLeft.toFloat(), (inner + spec.nameTop).toFloat(),
             HEADER_TITLE_LINE_H, titleP, spec.textRight.toFloat(), innerBottom,
         )
         drawTextLines(
-            cv, spec.subLines, spec.textLeft.toFloat(), inner + spec.subTop,
+            cv, spec.subLines, spec.textLeft.toFloat(), (inner + spec.subTop).toFloat(),
             HEADER_META_LINE_H, metaP, spec.textRight.toFloat(), innerBottom,
         )
         drawTextLines(
-            cv, spec.genLines, spec.textLeft.toFloat(), inner + spec.genTop,
+            cv, spec.genLines, spec.textLeft.toFloat(), (inner + spec.genTop).toFloat(),
             HEADER_META_LINE_H, smallP, spec.textRight.toFloat(), innerBottom,
         )
     }

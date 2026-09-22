@@ -3965,9 +3965,9 @@
     <string name="qq_music_order_both_failed">音樂卡片和歌曲語音傳送失敗</string>
     <string name="qq_music_order_card_failed">音樂卡片傳送失敗</string>
     <string name="qq_music_order_voice_failed">歌曲語音傳送失敗</string>
-    <string name="qq_music_order_voice_unavailable">沒取到可播放直連（多為版權限制，或未填 QQ 音樂 Cookie），已只發音樂卡片</string>
+    <string name="qq_music_order_voice_unavailable">這首歌取不到可播放直連（QQ 音樂限免額度未涵蓋此曲），已只發音樂卡片</string>
     <string name="qq_music_order_cookie">QQ音樂 Cookie（可選）</string>
-    <string name="qq_music_order_cookie_hint">登入 y.qq.com 後在開發者工具複製，例如 uin=123456; qm_keyst=xxx。只有要傳「語音條」時才需要填。</string>
+    <string name="qq_music_order_cookie_hint">登入 y.qq.com 後在開發者工具複製，例如 uin=123456; qm_keyst=xxx。會員曲要傳「語音條」時才需要填。</string>
     <string name="qq_music_order_settings_title">QQ音樂點歌</string>
     <string name="qq_music_order_triggers">觸發詞</string>
     <string name="qq_music_order_triggers_summary">多個觸發詞用逗號分隔，預設“點歌”</string>

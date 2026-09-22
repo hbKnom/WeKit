@@ -82,6 +82,11 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     private const val LYRIC =
         "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?format=json&nobase64=1&songmid="
     private const val STREAM_PREFIX = "https://sjy.stream.qqmusic.qq.com/"
+
+    /** QQ音乐 Lite 身份用的 uid / guid（与侧边栏音乐卡片一致，实测能拿到限免 ppurl）。 */
+    private const val LITE_UID = "3449496653"
+    private const val TEMP_GUID = "yun"
+    private const val LITE_BASE_URL = "http://aqqmusic.tc.qq.com/"
     private const val COVER_PREFIX = "https://y.gtimg.cn/music/photo_new/T002R500x500M000"
     private const val SONG_PAGE = "https://y.qq.com/n/ryqq/songDetail/"
     private const val NO_LYRIC = "[99:99.99]暂无歌词"
@@ -271,13 +276,15 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         return SongQuery(after, null)
     }
 
-    private companion object {
-        /** 只允许一个 `@某人` 前缀出现在触发词之前。 */
-        val MENTION_ONLY = Regex("^@[^\\s@]{1,24}\\s*$")
+    /** 歌名 + 歌手的合理长度上限，超过就当成普通聊天。 */
+    private const val MAX_SONG_QUERY_CHARS = 40
 
-        /** 歌名 + 歌手的合理长度上限，超过就当成普通聊天。 */
-        const val MAX_SONG_QUERY_CHARS = 40
-    }
+    /** 只允许一个 `@某人` 前缀出现在触发词之前。 */
+    private val MENTION_ONLY = Regex("^@[^\\s@]{1,24}\\s*$")
+
+    // 注意：这是个 standalone object，**不能**再包一层 `companion object`
+    // （Kotlin 报 "Modifier 'companion' is not applicable inside 'standalone object'"，且 KSP 生成的
+    //  FeaturesProvider 会去访问不存在的 QqMusicOrder.Companion 一起报错）。
 
     // ------------------------------------------------------------------ pipeline
 
@@ -467,140 +474,142 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     /**
      * 解析可播放直链。
      *
-     * 真机实测结论（2026-09-22，容器内直连 QQ 音乐接口验证）：
-     *  - 旧实现只读 `flowurl`，而取流接口返回的可播放字段是 **`purl`**（相对路径，需拼 `sip` 主机），
-     *    所以哪怕是免费曲也永远拿不到链接 → 语音条从来没发出去过；
-     *  - `MtLimitFreeSvr.Obtain` 对会员曲只回空 ppurl，且旧实现里 `CgiGetTempVkey` 的 `mediamid`
-     *    写死成 "Yun"（应该是歌曲的 media_mid），链路根本走不通；
-     *  - 免 vkey 直链（ws.stream.qqmusic.qq.com/C400<media>.m4a）现在一律 403，不要再依赖；
-     *  - 匿名请求（不带账号凭据）对**免费曲**也返回空 purl/ppurl —— 2026-09-22 容器内实测：
-     *    UrlGetVkey(M500/C400/M800)、CgiGetVkey(uin=0)、MtLimitFreeSvr 全部为空，
-     *    第三方 Meting 公共实例同样拿不到直链。所以"语音条"只有两条路：填 QQ 音乐 Cookie
-     *    （走 [resolveViaCookie] 换正式 vkey），或者不发语音只发卡片。
-     *  - 会员曲（is_vip）即便有 Cookie 也要账号有对应权益，取不到就如实告知，不是 bug。
+     * 真机 / 接口实测（2026-09-22，容器内直连 u.y.qq.com 验证）：
+     *  - 旧实现只读 `flowurl`，而真正可取流的字段是 **`purl`**，所以语音条从来没成功过；
+     *  - **可用链路 = 侧边栏负一屏音乐卡片（HomeSidePanelMusic）那一套**：用 QQ音乐 Lite 身份
+     *    （`ct=11, cv=22060004, tmeAppID=ztelite, OpenUDID=nouid, uid=3449496653`）调
+     *    `music.qqmusiclite.MtLimitFreeSvr/Obtain` 拿限免 `ppurl`，再用 `music.vkey.GetVkey/CgiGetTempVkey`
+     *    （`guid=yun`、`mediamid` 也填 `yun`）换临时 vkey，取 `request.data.data.yun.purl`
+     *    —— 绝对地址（`http://sjy.stream.qqmusic.qq.com/O400….ogg?…vkey=…`），实测下载 HTTP 206 / audio/x-ogg；
+     *  - 同一请求换成网页身份（`ct=19, cv=1882`）或 `CgiGetVkey(uin=0)`、`UrlGetVkey(M500…)`，
+     *    ppurl / purl / flowurl **全为空** → 必须带 Lite 身份，别再用网页那套；
+     *  - 免 vkey 直链（`ws.stream.qqmusic.qq.com/C400<media>.m4a`）一律 403，不要依赖；
+     *  - 限免额度**按曲目**给（同歌手另一首可能没有 ppurl）；拿不到就只发卡片，提示里要说清原因。
+     *  - 返回的音频可能是 **ogg/vorbis**，所以 native 侧 symphonia 必须开 `vorbis` feature，
+     *    否则 anyToSilk 解不了码、发出去的语音条在微信里放不了。
      *
-     * 尝试顺序：Cookie 正式 vkey → UrlGetVkey（M500/C400/M800）→ CgiGetVkey → MtLimitFreeSvr+TempVkey。
+     * 尝试顺序：Lite 限免额度 → 用户 Cookie（会员/全集）→ Lite 身份 UrlGetVkey flowurl。
      */
     private fun resolveAudioUrl(detail: SongDetail): String? {
-        val media = detail.mediaMid ?: detail.mid
-
-        // 没有 Cookie 就直接收手：匿名请求（UrlGetVkey / CgiGetVkey(uin=0) / MtLimitFreeSvr）
-        // 已被实测证明对免费曲也一律返回空，继续跑等于白发 5 个网络请求、拖慢点歌响应。
-        // 调用方会据此提示"只发了卡片 + 建议填 Cookie"。
-        if (cookieAuth() == null) {
-            WeLogger.i(TAG, "no qq music cookie configured: skip stream resolution, card only")
-            return null
+        resolveViaFreeQuota(detail)?.let {
+            WeLogger.i(TAG, "audio url resolved via lite free-quota vkey")
+            return it
         }
-
-        // 0) 带账号凭据的取流 —— 唯一能拿到正式 vkey 的方式（vkey 直链正是官方/侧边栏
-        //    音乐卡片组件用的那种 URL，只是它们由客户端带登录态去换）。
         resolveViaCookie(detail)?.let {
             WeLogger.i(TAG, "audio url resolved via cookie vkey")
             return it
         }
-
-        for (name in listOf("M500$media.mp3", "C400$media.m4a", "M800$media.mp3")) {
-            val url = runCatching {
-                val param = JSONObject()
-                    .put("guid", "Yun")
-                    .put("songmid", JSONArray().put(detail.mid))
-                    .put("filename", JSONArray().put(name))
-                val request = JSONObject()
-                    .put("module", "music.vkey.GetVkey")
-                    .put("method", "UrlGetVkey")
-                    .put("param", param)
-                val body = JSONObject()
-                    .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
-                    .put("request", request)
-                extractPurl(musicu(body), "midurlinfo")
-            }.onFailure { WeLogger.w(TAG, "UrlGetVkey($name) failed", it) }.getOrNull()
-            if (!url.isNullOrBlank()) {
-                WeLogger.i(TAG, "audio url resolved via UrlGetVkey($name)")
-                return url
-            }
+        resolveViaFlowUrl(detail)?.let {
+            WeLogger.i(TAG, "audio url resolved via lite flowurl")
+            return it
         }
+        WeLogger.i(TAG, "no playable audio url for mid=${detail.mid} (no free quota / vip only)")
+        return null
+    }
 
-        val viaCgi = runCatching {
-            val param = JSONObject()
-                .put("guid", "10000")
-                .put("songmid", JSONArray().put(detail.mid))
-                .put("songtype", JSONArray().put(0))
-                .put("uin", "0")
-                .put("loginflag", 1)
-                .put("platform", "20")
-            val request = JSONObject()
-                .put("module", "vkey.GetVkeyServer")
-                .put("method", "CgiGetVkey")
-                .put("param", param)
-            val body = JSONObject()
-                .put("comm", JSONObject().put("ct", "24").put("cv", "0").put("uin", "0"))
-                .put("req", request)
-            extractPurl(musicu(body), "midurlinfo")
-        }.onFailure { WeLogger.w(TAG, "CgiGetVkey failed", it) }.getOrNull()
-        if (!viaCgi.isNullOrBlank()) {
-            WeLogger.i(TAG, "audio url resolved via CgiGetVkey")
-            return viaCgi
-        }
+    /** QQ音乐 Lite（车载/精简版）身份：取流接口必须带这个 comm 才给 ppurl。 */
+    private fun liteComm(): JSONObject = JSONObject()
+        .put("ct", "11")
+        .put("cv", "22060004")
+        .put("tmeAppID", "ztelite")
+        .put("OpenUDID", "nouid")
+        .put("uid", LITE_UID)
 
-        // 最后一条路：会员限免额度（部分非会员曲目会给出临时 ppurl），再用它换临时 vkey。
-        if (detail.songId > 0) {
-            val temp = runCatching {
-                val param = JSONObject()
-                    .put("songid", JSONArray().put(detail.songId))
-                    .put("need_ppurl", true)
-                val request = JSONObject()
-                    .put("module", "music.qqmusiclite.MtLimitFreeSvr")
-                    .put("method", "Obtain")
-                    .put("param", param)
-                val body = JSONObject()
-                    .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
-                    .put("request", request)
-                musicu(body)?.optJSONObject("request")
-                    ?.optJSONObject("data")
-                    ?.optJSONArray("tracks")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("control")
-                    ?.optString("ppurl")
-                    ?.takeIf { it.isNotBlank() }
-            }.onFailure { WeLogger.w(TAG, "MtLimitFreeSvr failed", it) }.getOrNull()
+    /**
+     * 限免额度链路：`MtLimitFreeSvr/Obtain` → `control.ppurl` → `CgiGetTempVkey` → 绝对 purl。
+     * 与 HomeSidePanelMusic 的实现保持一致（那条链路是现网可用的）。
+     */
+    private fun resolveViaFreeQuota(detail: SongDetail): String? {
+        if (detail.songId <= 0L) return null
+        return runCatching {
+            val obtain = JSONObject()
+                .put("comm", liteComm())
+                .put(
+                    "request",
+                    JSONObject()
+                        .put("module", "music.qqmusiclite.MtLimitFreeSvr")
+                        .put("method", "Obtain")
+                        .put(
+                            "param",
+                            JSONObject()
+                                .put("songid", JSONArray().put(detail.songId))
+                                .put("need_ppurl", true),
+                        ),
+                )
+            val ppurl = musicu(obtain)
+                ?.optJSONObject("request")
+                ?.optJSONObject("data")
+                ?.optJSONArray("tracks")
+                ?.optJSONObject(0)
+                ?.optJSONObject("control")
+                ?.optString("ppurl")
+                ?.takeIf { it.isNotBlank() }
+                ?: return@runCatching null
 
-            if (!temp.isNullOrBlank()) {
-                val url = runCatching {
-                    val request = JSONObject()
+            val temp = musicu(
+                JSONObject().put(
+                    "request",
+                    JSONObject()
                         .put("module", "music.vkey.GetVkey")
                         .put("method", "CgiGetTempVkey")
                         .put(
                             "param",
                             JSONObject()
-                                .put("guid", "Yun")
+                                .put("guid", TEMP_GUID)
                                 .put(
                                     "songlist",
                                     JSONArray().put(
                                         JSONObject()
-                                            .put("mediamid", media)
-                                            .put("tempVkey", temp)
+                                            .put("mediamid", TEMP_GUID)
+                                            .put("tempVkey", ppurl)
                                             .put("songMID", detail.mid),
                                     ),
                                 ),
-                        )
-                    val body = JSONObject().put("request", request)
-                    musicu(body)?.optJSONObject("request")
-                        ?.optJSONObject("data")
-                        ?.optJSONObject("data")
-                        ?.optString("purl")
-                        ?.takeIf { it.isNotBlank() }
-                }.onFailure { WeLogger.w(TAG, "CgiGetTempVkey failed", it) }.getOrNull()
-
-                if (!url.isNullOrBlank()) {
-                    WeLogger.i(TAG, "audio url resolved via MtLimitFreeSvr")
-                    return if (url.startsWith("http")) url else STREAM_PREFIX + url
-                }
+                        ),
+                ),
+            )
+            val data = temp?.optJSONObject("request")?.optJSONObject("data")
+                ?: return@runCatching null
+            val item = data.optJSONObject("data")?.optJSONObject(TEMP_GUID)
+                ?: return@runCatching null
+            if (item.optInt("result", 0) != 0) {
+                WeLogger.w(TAG, "temp vkey rejected: result=${item.optInt("result")}")
+                return@runCatching null
             }
-        }
-
-        WeLogger.i(TAG, "no playable audio url for mid=${detail.mid} (vip/limited or unavailable)")
-        return null
+            val purl = item.optString("purl").takeIf { it.isNotBlank() }
+                ?: return@runCatching null
+            // 这条链路回的是绝对地址；万一回相对路径，补 sip 主机。
+            if (purl.startsWith("http")) {
+                purl
+            } else {
+                data.optJSONArray("sip")?.optString(0).orEmpty().ifBlank { STREAM_PREFIX } + purl
+            }
+        }.onFailure { WeLogger.w(TAG, "lite free-quota chain failed", it) }.getOrNull()
     }
+
+    /** Lite 身份再试 `UrlGetVkey`（M500 mp3）：`flowurl` 是相对路径，要拼 `aqqmusic.tc.qq.com`。 */
+    private fun resolveViaFlowUrl(detail: SongDetail): String? = runCatching {
+        val media = detail.mediaMid ?: detail.mid
+        val request = JSONObject()
+            .put("module", "music.vkey.GetVkey")
+            .put("method", "UrlGetVkey")
+            .put(
+                "param",
+                JSONObject()
+                    .put("guid", TEMP_GUID)
+                    .put("songmid", JSONArray().put(detail.mid))
+                    .put("filename", JSONArray().put("M500$media.mp3")),
+            )
+        val flowurl = musicu(JSONObject().put("comm", liteComm()).put("request", request))
+            ?.optJSONObject("request")
+            ?.optJSONObject("data")
+            ?.optJSONArray("midurlinfo")
+            ?.optJSONObject(0)
+            ?.optString("flowurl")
+            ?.takeIf { it.isNotBlank() }
+            ?: return@runCatching null
+        if (flowurl.startsWith("http")) flowurl else LITE_BASE_URL + flowurl
+    }.onFailure { WeLogger.w(TAG, "lite UrlGetVkey failed", it) }.getOrNull()
 
     /**
      * 用用户填的 QQ 音乐 Cookie 换取正式 vkey（相当于官方客户端/侧边栏音乐卡片那条路）。
@@ -642,8 +651,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      * 解析用户填写的 QQ 音乐 Cookie（可选）。
      *
      * 支持整段 Cookie（登录 y.qq.com 后从开发者工具复制：`uin=123456; qm_keyst=xxx; ...`），
-     * 键顺序无关，`o123456` 这类带前缀的 uin 会自动去掉前缀。拿不到 uin 或密钥时返回 null
-     * —— 此时只发卡片，不再空跑后面的匿名取流（匿名对免费曲也拿不到链接）。
+     * 键顺序无关，`o123456` 这类带前缀的 uin 会自动去掉前缀。没填或填不全时返回 null
+     * —— 此时仍会走 Lite 限免额度那条匿名链路（那条不需要登录）。
      */
     private fun cookieAuth(): Pair<String, String>? {
         val raw = cookie()

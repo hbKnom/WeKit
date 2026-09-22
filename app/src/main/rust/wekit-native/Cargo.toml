@@ -19,6 +19,9 @@ symphonia = { version = "0.6", features = [
     "mkv",
     "mp3",
     "ogg",
+    # QQ 音乐限免直链给的是 Ogg/Vorbis（O400….ogg）。symphonia 0.6 起 "ogg" 只开容器、
+    # 解码器要单独开 "vorbis"，否则 anyToSilk 解不了这类文件、语音条在微信里放不出声。
+    "vorbis",
     "opt-simd",
     "pcm",
     "wav",
