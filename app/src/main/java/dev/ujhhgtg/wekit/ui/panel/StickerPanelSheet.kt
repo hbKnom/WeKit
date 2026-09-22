@@ -2575,7 +2575,13 @@ private fun StickerPackCatalog(
 ) {
     if (layout == StickerPackLayout.GRID) {
         LazyVerticalGrid(
-            columns = if (overlayTitle) GridCells.Fixed(5) else GridCells.Adaptive(minSize = 152.dp),
+            // 覆盖式卡面的列数跟随设置页的「表情包列数」（默认 5，视觉与新版设计一致），
+            // 夹在 3..8 之间：少于 3 列卡面过大、多于 8 列标题/角标会挤成一团。
+            columns = if (overlayTitle) {
+                GridCells.Fixed(PanelSettings.stickerColumnCount.coerceIn(3, 8))
+            } else {
+                GridCells.Adaptive(minSize = 152.dp)
+            },
             state = gridState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(6.dp),
