@@ -4021,6 +4021,24 @@
     <string name="contacts_custom_avatar_shortcut_hint">创建快捷方式时生效；已有快捷方式需重新创建以更新图标。</string>
 
     <!-- QQ音乐点歌 -->
+    <!-- Jev 聊天助手（由「元启Jev聊天助手」移植） -->
+    <string name="feature_jev_chat_assistant_name">Jev聊天实时决策分析</string>
+    <string name="feature_jev_chat_assistant_description">用 Jev 分析对方消息，把结论以系统消息插入聊天</string>
+    <string name="jev_chat_assistant_settings_title">Jev聊天实时决策分析</string>
+    <string name="jev_chat_assistant_scope">作用域（同时只开启一个会话）</string>
+    <string name="jev_chat_assistant_scope_on">本会话：已开启（%1$s）</string>
+    <string name="jev_chat_assistant_scope_off">点击开启本会话（%1$s）</string>
+    <string name="jev_chat_assistant_scope_no_chat">请先进入一个聊天会话</string>
+    <string name="jev_chat_assistant_scope_hint">当前开启的会话</string>
+    <string name="jev_chat_assistant_scope_none">未开启 — 点击清空</string>
+    <string name="jev_chat_assistant_api_key">API Key</string>
+    <string name="jev_chat_assistant_api_key_summary">api.typesafe.ai 的 Bearer 令牌，进交流群获取</string>
+    <string name="jev_chat_assistant_auto_analyze">自动分析对方消息</string>
+    <string name="jev_chat_assistant_auto_analyze_summary">仅对方发来的文本消息会触发分析</string>
+    <string name="jev_chat_assistant_context_rounds">上下文轮数</string>
+    <string name="jev_chat_assistant_context_rounds_summary">0 表示不启用上下文，最大 30。模型：%1$s</string>
+    <string name="jev_chat_assistant_pad_chars">排版宽度</string>
+    <string name="jev_chat_assistant_pad_chars_summary">全角字符数 8-40。留 0 按屏幕自动估算；偏右就调小，折行就调大</string>
     <string name="feature_qq_music_order_name">QQ音乐点歌</string>
     <string name="feature_qq_music_order_description">在聊天中发送触发词即可点歌，支持卡片与语音</string>
     <string name="qq_music_order_need_a_channel">请至少开启音乐卡片或歌曲语音发送</string>
@@ -4043,6 +4061,8 @@
     <string name="qq_music_order_singer_as_nickname">用昵称替换歌手</string>
     <string name="qq_music_order_cover_as_avatar">用头像替换封面</string>
     <string name="qq_music_order_app_id">音乐卡片 AppID</string>
+    <string name="qq_music_order_app_name_hint">写进卡片 appinfo/appname 的来源应用名。留空按 AppID 推断（默认 QQ音乐）；换成自定义 AppID 时请填对应应用名，微信才会显示对应来源。</string>
+    <string name="qq_music_order_app_name">音乐卡片来源应用名</string>
     <string name="qq_music_order_intercept_own">也响应自己发的消息</string>
     <string name="qq_music_order_allowed_talkers">生效聊天</string>
     <string name="qq_music_order_allowed_talkers_summary">留空表示所有聊天</string>
@@ -4067,6 +4087,7 @@
     <string name="text_speech_tts_engine_summary">留空使用系统默认引擎</string>
     <string name="text_speech_allowed_contacts">允许播报的聊天</string>
     <string name="text_speech_allowed_contacts_summary">留空表示所有聊天</string>
+    <string name="text_speech_allowed_contacts_count">已选 %1$d 个聊天</string>
     <string name="text_speech_clear_contacts">清空允许播报的聊天</string>
     <string name="text_speech_this_chat_off">取消播报本聊天</string>
     <string name="text_speech_this_chat_only">仅播报本聊天</string>
@@ -4107,6 +4128,8 @@
     <string name="text_speech_engine_switched">已切换引擎，正在重新初始化…</string>
     <string name="qq_music_order_only_own">仅识别自己发出的指令</string>
     <string name="qq_music_order_only_own_summary">开启后只有你自己发出的点歌指令会触发，其他人发的消息不会发送音乐卡片和语音。</string>
+    <string name="qq_music_order_hide_own_command_summary">自己发「点歌 xxx」时，指令文字不进入聊天（发之前就被拦下），只发音乐卡片/音乐语音。不影响点歌开关本身。</string>
+    <string name="qq_music_order_hide_own_command">拦截自己发出的点歌指令</string>
     <string name="qq_music_order_pick_talkers">选择生效聊天（拉取全部会话）</string>
     <string name="qq_music_order_talkers_loading">正在加载会话…</string>
 

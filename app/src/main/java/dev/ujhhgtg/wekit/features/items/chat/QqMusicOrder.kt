@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 
 import android.content.ContentValues
 import android.media.MediaMetadataRetriever
+import android.view.View
 import androidx.activity.ComponentActivity
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeApi
@@ -18,6 +19,7 @@ import dev.ujhhgtg.wekit.utils.AudioUtils
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
+import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import dev.ujhhgtg.wekit.utils.strings.isGroupChatWxId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,6 +71,14 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     internal const val KEY_ONLY_OWN = "qq_music_order_only_own_command"
     internal const val KEY_ALLOWED_TALKERS = "qq_music_order_allowed_talkers"
     internal const val KEY_COOKIE = "qq_music_order_cookie"
+    internal const val KEY_APP_NAME = "qq_music_order_app_name"
+
+    /**
+     * 「拦截自己发出的点歌指令」（用户 2026-09-22 二轮要求）：
+     * 自己发「点歌 xxx」时，指令文字**不进聊天**，只出音乐卡片/音乐语音。
+     * 与 [KEY_INTERCEPT_OWN]（连自己发的也识别）、[KEY_ONLY_OWN]（只认自己发的）都是独立维度。
+     */
+    internal const val KEY_HIDE_OWN_COMMAND = "qq_music_order_hide_own_command"
 
     internal const val DEFAULT_TRIGGER = "点歌"
     const val DEFAULT_APP_ID = "wx485a97c844086dc9"
@@ -152,6 +162,12 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      */
     fun onlyOwnCommand(): Boolean = WePrefs.getBoolOrDef(KEY_ONLY_OWN, false)
 
+    /**
+     * 拦截自己发出的点歌指令文字（默认开）：指令在"发送点击"阶段就被清掉，不落进聊天。
+     * 只影响指令那一句，不影响点歌功能是否开启。
+     */
+    fun hideOwnCommand(): Boolean = WePrefs.getBoolOrDef(KEY_HIDE_OWN_COMMAND, true)
+
     fun allowedTalkers(): Set<String> = WePrefs.getStringSetOrDef(KEY_ALLOWED_TALKERS, emptySet())
 
     /** 用户填写的 QQ 音乐 Cookie（可选，仅用于换取可播放直链）。 */
@@ -218,12 +234,59 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     override fun onEnable() {
         WeDatabaseListenerApi.addListener(this)
         WeConversationContextMenuApi.addProvider(this)
+        installSendGuard()
     }
 
     override fun onDisable() {
         WeDatabaseListenerApi.removeListener(this)
         WeConversationContextMenuApi.removeProvider(this)
+        unhookAll()
     }
+
+    /**
+     * 「拦截自己发出的点歌指令」的注入点。
+     *
+     * 数据库 listener 只能**事后**看到消息已经落库，拦不住它进聊天；能拦的是发送点击本身。
+     * 这里 hook 微信输入栏 `com.tencent.mm.pluginsdk.ui.chat.n1#onClick(View)`（与「群聊自定义艾特」
+     * 同一个注入点，该方法是 void，hookBefore 安全）：点击前读出输入框文本，若是点歌指令就
+     * **清空输入框**（宿主随后读到空文本 → 什么都不会发出去），再由我们自己走点歌流程。
+     * 类名变化时会失败并只记日志：这种情况下指令照常发出去，点歌功能本身不受影响。
+     */
+    private fun installSendGuard() {
+        runCatching {
+            val n1 = Class.forName("com.tencent.mm.pluginsdk.ui.chat.n1", false, ClassLoaders.HOST)
+            val onClick = n1.getDeclaredMethod("onClick", View::class.java)
+            onClick.isAccessible = true
+            onClick.hookBefore(90) { handleSendGuard(thisObject) }
+            WeLogger.i(TAG, "点歌指令发送拦截 Hook 已安装")
+        }.onFailure {
+            WeLogger.w(TAG, "点歌指令发送拦截 Hook 安装失败（指令将照常发出）", it)
+        }
+    }
+
+    /** 发送点击前：识别"自己发出的点歌指令"，按开关决定是否把它拦在聊天之外。 */
+    private fun handleSendGuard(thisObject: Any?) {
+        if (!hideOwnCommand()) return
+        runCatching {
+            val footer = CustomAt.findFooterFromListener(thisObject) ?: return
+            val text = CustomAt.getFooterText(footer)
+            if (text.isBlank()) return
+            val query = parseCommand(text) ?: return
+            val talker = CustomAt.findTalkerFromFooter(footer)
+            if (talker.isBlank()) return
+            val allow = allowedTalkers()
+            if (allow.isNotEmpty() && talker !in allow) return
+            CustomAt.setFooterText(footer, "")
+            // 拦下之后我们自己出歌；宿主如果仍然把这条落库，onInsert 那边会看到同文案而跳过，
+            // 避免同一句指令出两份卡片。
+            guardSuppress[talker] = text to System.currentTimeMillis()
+            WeLogger.i(TAG, "已拦截自己的点歌指令：talker=$talker song=${query.song} singer=${query.singer}")
+            scope.launch { process(talker, "", query, true) }
+        }.onFailure { WeLogger.e(TAG, "发送拦截异常", it) }
+    }
+
+    /** talker → (指令原文, 拦截时间)：拦截后短时间内宿主仍可能落库同一条指令，用它去重。 */
+    private val guardSuppress = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
 
     override fun onInsert(table: String, values: ContentValues) {
         if (table != "message") return
@@ -249,6 +312,14 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         if (allow.isNotEmpty() && talker !in allow) return
 
         val query = parseCommand(content) ?: return
+
+        // 指令已经在"发送点击"阶段被拦下并单独出过歌了，宿主要是仍把它落库就跳过，别出两份。
+        guardSuppress[talker]?.let { (guardedText, at) ->
+            if (guardedText == content && System.currentTimeMillis() - at < 5_000) {
+                WeLogger.i(TAG, "指令已被发送拦截，跳过重复处理")
+                return
+            }
+        }
 
         WeLogger.i(
             TAG,
@@ -826,7 +897,12 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         // 用户反馈「音乐卡片没有带 appid / 自定义的 appid 不生效」：把**真正生效的 appid**
         // 打进 INFO 日志，配合 WeMessageApi 的 `appmsg info: appid=…` 就能一眼确认是
         // 设置没保存、还是宿主把 appid 吃掉了，不用再靠猜。
-        WeLogger.i(TAG, "send card appid='${effectiveAppId()}' thumb=${thumbUrl.take(72)} xmlLen=${xml.length}")
+        WeLogger.i(
+            TAG,
+            "send card appid='${effectiveAppId()}' appname='${appName()}' statextstr='${appIdStateExtStr()}' " +
+                "thumb=${thumbUrl.take(72)} xmlLen=${xml.length}",
+        )
+        WeLogger.i(TAG, "card xml=${xml.take(700)}")
         val ok = WeMessageApi.sendXmlAppMsg(talker, xml)
         WeLogger.i(TAG, "send card result=$ok xmlLen=${xml.length}")
         ok
@@ -870,6 +946,10 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             append("<lowurl>").append(escape(url)).append("</lowurl>")
             append("<dataurl>").append(escape(play)).append("</dataurl>")
             append("<lowdataurl>").append(escape(play)).append("</lowdataurl>")
+            // `statextstr`：微信用它把卡片绑定到来源应用（实测报文里 `<appmsg appid>` 之外还有这一段）。
+            // 只有 `<appmsg appid>` 而没有 statextstr 时，微信会把卡片降级渲染成"无来源"的灰卡，
+            // 这就是用户看到的"卡片没有带 appid、自定义 appid 不生效"。
+            append("<statextstr>").append(escape(appIdStateExtStr())).append("</statextstr>")
             append("<thumburl>").append(escape(cover)).append("</thumburl>")
             append("<songalbumurl>").append(escape(cover)).append("</songalbumurl>")
             append("<songlyric>").append(escape(lyric)).append("</songlyric>")
@@ -879,6 +959,12 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             append("<appattach><totallen>0</totallen><attachid></attachid><fileext></fileext></appattach>")
             append("<frommsgid>0</frommsgid>")
             append("</appmsg>")
+            // 完整报文里"来源应用"是 `<msg>` 的**同级** `<appinfo>`，不是 appmsg 的子节点。
+            // 对照用户提供的网易云音乐卡片实测报文：
+            //   <appinfo><version>52</version><appname>网易云音乐</appname></appinfo>
+            // 缺了它微信不认来源应用，卡片只能按通用 appmsg 渲染。
+            append("<appinfo><version>52</version><appname>").append(escape(appName()))
+                .append("</appname></appinfo>")
             append("</msg>")
         }
     }
@@ -900,9 +986,40 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         return raw
     }
 
-    /** 卡片来源名：用户把 appid 换成自己的应用时，这里也跟着换，避免显示成 QQ音乐。 */
-    private fun appName(): String =
-        if (effectiveAppId() == DEFAULT_APP_ID) "QQ音乐" else "音乐"
+    /**
+     * 卡片来源名（同时用于 `<sourcedisplayname>` 与同级 `<appinfo><appname>`）。
+     *
+     * 用户把 appid 换成自己的应用时，来源名也该跟着换（微信按 appname 显示"来自 XX"）。
+     * 设置里留空则按 appid 推断：默认 appid → QQ音乐，其它 → 音乐。
+     */
+    internal fun appName(): String {
+        val custom = WePrefs.getStringOrDef(KEY_APP_NAME, "").trim()
+        if (custom.isNotEmpty()) return custom
+        return if (effectiveAppId() == DEFAULT_APP_ID) "QQ音乐" else "音乐"
+    }
+
+    /**
+     * `statextstr` = protobuf `{ field3 { field1: appid } }` 的 base64。
+     *
+     * 对照实测报文反解：`GhQKEnd4OGRkNmVjZDgxOTA2ZmQ4NA==`
+     *   → `1a 14 | 0a 12 | "wx8dd6ecd81906fd84"`（1a = field3, 14 = 20 字节；0a = field1, 12 = 18 字节）
+     * 这里按同样的结构编码当前生效的 appid（appid 定长 18 字节，varint 长度只占 1 字节）。
+     */
+    internal fun appIdStateExtStr(): String = runCatching {
+        val bytes = effectiveAppId().toByteArray(Charsets.UTF_8)
+        val inner = ByteArray(2 + bytes.size)
+        inner[0] = 0x0a
+        inner[1] = bytes.size.toByte()
+        System.arraycopy(bytes, 0, inner, 2, bytes.size)
+        val out = ByteArray(2 + inner.size)
+        out[0] = 0x1a
+        out[1] = inner.size.toByte()
+        System.arraycopy(inner, 0, out, 2, inner.size)
+        android.util.Base64.encodeToString(out, android.util.Base64.NO_WRAP)
+    }.getOrElse {
+        WeLogger.w(TAG, "statextstr encode failed", it)
+        ""
+    }
 
     private val APP_ID_PATTERN = Regex("^wx[0-9a-fA-F]{16}$")
 

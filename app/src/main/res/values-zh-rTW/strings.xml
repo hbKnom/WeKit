@@ -3957,6 +3957,24 @@
     <string name="contacts_add_time_value">新增時間: %1$s</string>
 
     <!-- QQ 点歌 / 文字转语音播报 / 音频剪辑（由 FunBox 与 Hchat 移植） -->
+    <!-- Jev 聊天助手（由「元啟Jev聊天助手」移植） -->
+    <string name="feature_jev_chat_assistant_name">Jev聊天即時決策分析</string>
+    <string name="feature_jev_chat_assistant_description">用 Jev 分析對方訊息，把結論以系統訊息插入聊天</string>
+    <string name="jev_chat_assistant_settings_title">Jev聊天即時決策分析</string>
+    <string name="jev_chat_assistant_scope">作用域（同時只開啟一個會話）</string>
+    <string name="jev_chat_assistant_scope_on">本會話：已開啟（%1$s）</string>
+    <string name="jev_chat_assistant_scope_off">點擊開啟本會話（%1$s）</string>
+    <string name="jev_chat_assistant_scope_no_chat">請先進入一個聊天會話</string>
+    <string name="jev_chat_assistant_scope_hint">目前開啟的會話</string>
+    <string name="jev_chat_assistant_scope_none">未開啟 — 點擊清空</string>
+    <string name="jev_chat_assistant_api_key">API Key</string>
+    <string name="jev_chat_assistant_api_key_summary">api.typesafe.ai 的 Bearer 權杖，進交流群取得</string>
+    <string name="jev_chat_assistant_auto_analyze">自動分析對方訊息</string>
+    <string name="jev_chat_assistant_auto_analyze_summary">僅對方傳來的文字訊息會觸發分析</string>
+    <string name="jev_chat_assistant_context_rounds">上下文輪數</string>
+    <string name="jev_chat_assistant_context_rounds_summary">0 表示不啟用上下文，最大 30。模型：%1$s</string>
+    <string name="jev_chat_assistant_pad_chars">排版寬度</string>
+    <string name="jev_chat_assistant_pad_chars_summary">全形字元數 8-40。留 0 依螢幕自動估算；偏右就調小，折行就調大</string>
     <string name="feature_qq_music_order_name">QQ音樂點歌</string>
     <string name="feature_qq_music_order_description">在聊天中傳送觸發詞即可點歌，支援卡片與語音</string>
     <string name="qq_music_order_need_a_channel">請至少開啟音樂卡片或歌曲語音傳送</string>
@@ -3979,6 +3997,8 @@
     <string name="qq_music_order_singer_as_nickname">用暱稱替換歌手</string>
     <string name="qq_music_order_cover_as_avatar">用頭像替換封面</string>
     <string name="qq_music_order_app_id">音樂卡片 AppID</string>
+    <string name="qq_music_order_app_name_hint">寫進卡片 appinfo/appname 的來源應用名。留空依 AppID 推斷（預設 QQ音樂）；換成自訂 AppID 時請填對應應用名，微信才會顯示對應來源。</string>
+    <string name="qq_music_order_app_name">音樂卡片來源應用名</string>
     <string name="qq_music_order_intercept_own">也響應自己發的訊息</string>
     <string name="qq_music_order_allowed_talkers">生效聊天</string>
     <string name="qq_music_order_allowed_talkers_summary">留空表示所有聊天</string>
@@ -4000,6 +4020,7 @@
     <string name="text_speech_tts_engine_summary">留空使用系統預設引擎</string>
     <string name="text_speech_allowed_contacts">允許播報的聊天</string>
     <string name="text_speech_allowed_contacts_summary">留空表示所有聊天</string>
+    <string name="text_speech_allowed_contacts_count">已選 %1$d 個聊天</string>
     <string name="text_speech_clear_contacts">清空允許播報的聊天</string>
     <string name="text_speech_voice_message">[語音訊息]</string>
     <string name="feature_audio_clipper_name">音訊剪輯</string>
@@ -4039,6 +4060,8 @@
     <string name="text_speech_engine_switched">已切換引擎，正在重新初始化…</string>
     <string name="qq_music_order_only_own">僅識別自己發出的指令</string>
     <string name="qq_music_order_only_own_summary">開啟後只有你自己發出的點歌指令會觸發，其他人發的訊息不會發送音樂卡片和語音。</string>
+    <string name="qq_music_order_hide_own_command_summary">自己發「點歌 xxx」時，指令文字不進入聊天（送出前就被攔下），只送音樂卡片/音樂語音。不影響點歌開關本身。</string>
+    <string name="qq_music_order_hide_own_command">攔截自己發出的點歌指令</string>
     <string name="qq_music_order_pick_talkers">選擇生效聊天（拉取全部會話）</string>
     <string name="qq_music_order_talkers_loading">正在載入聊天…</string>
 

@@ -3993,6 +3993,24 @@
     <string name="contacts_custom_avatar_shortcut_hint">Applies when the shortcut is created; existing shortcuts must be recreated to update their icon.</string>
 
     <!-- QQ Music Order -->
+    <!-- Jev chat assistant (JevChatAssistant.kt / JevChatAssistantSettings.kt) -->
+    <string name="feature_jev_chat_assistant_name">Jev realtime chat analysis</string>
+    <string name="feature_jev_chat_assistant_description">Analyse the other side\u2019s message with Jev and insert the verdict as a system message</string>
+    <string name="jev_chat_assistant_settings_title">Jev realtime chat analysis</string>
+    <string name="jev_chat_assistant_scope">Scope (one chat at a time)</string>
+    <string name="jev_chat_assistant_scope_on">Enabled: %1$s</string>
+    <string name="jev_chat_assistant_scope_off">Tap to enable: %1$s</string>
+    <string name="jev_chat_assistant_scope_no_chat">Open a chat first</string>
+    <string name="jev_chat_assistant_scope_hint">Currently enabled chat</string>
+    <string name="jev_chat_assistant_scope_none">None \u2014 tap to clear</string>
+    <string name="jev_chat_assistant_api_key">API Key</string>
+    <string name="jev_chat_assistant_api_key_summary">Bearer token for api.typesafe.ai; get one from the community group</string>
+    <string name="jev_chat_assistant_auto_analyze">Auto-analyse incoming messages</string>
+    <string name="jev_chat_assistant_auto_analyze_summary">Only the other side\u2019s text messages trigger an analysis</string>
+    <string name="jev_chat_assistant_context_rounds">Context rounds</string>
+    <string name="jev_chat_assistant_context_rounds_summary">0 disables context; up to 30. Model: %1$s</string>
+    <string name="jev_chat_assistant_pad_chars">Layout width</string>
+    <string name="jev_chat_assistant_pad_chars_summary">Full-width chars, 8-40. 0 auto-estimates from the screen; lower if shifted right, higher if wrapping</string>
     <string name="feature_qq_music_order_name">QQ Music Order</string>
     <string name="feature_qq_music_order_description">Request songs by sending a trigger word in chat</string>
     <string name="qq_music_order_need_a_channel">Enable at least the music card or the song voice</string>
@@ -4015,6 +4033,8 @@
     <string name="qq_music_order_singer_as_nickname">Replace singer with nickname</string>
     <string name="qq_music_order_cover_as_avatar">Replace cover with avatar</string>
     <string name="qq_music_order_app_id">Music card AppID</string>
+    <string name="qq_music_order_app_name_hint">Source app name written into the card appinfo/appname. Leave empty to infer from the AppID (QQ Music by default).</string>
+    <string name="qq_music_order_app_name">Card source app name</string>
     <string name="qq_music_order_intercept_own">Also react to your own messages</string>
     <string name="qq_music_order_allowed_talkers">Enabled chats</string>
     <string name="qq_music_order_allowed_talkers_summary">Empty means all chats</string>
@@ -4039,6 +4059,7 @@
     <string name="text_speech_tts_engine_summary">Leave empty to use the system default</string>
     <string name="text_speech_allowed_contacts">Chats to announce</string>
     <string name="text_speech_allowed_contacts_summary">Empty means all chats</string>
+    <string name="text_speech_allowed_contacts_count">%1$d chat(s) selected</string>
     <string name="text_speech_clear_contacts">Clear announcement chats</string>
     <string name="text_speech_this_chat_off">Stop announcing this chat</string>
     <string name="text_speech_this_chat_only">Announce this chat only</string>
@@ -4079,6 +4100,8 @@
     <string name="text_speech_engine_switched">Engine switched, re-initialising…</string>
     <string name="qq_music_order_only_own">Only react to commands you send</string>
     <string name="qq_music_order_only_own_summary">When enabled, songs are only ordered by your own messages; messages from other people never trigger a card or a voice message.</string>
+    <string name="qq_music_order_hide_own_command_summary">When you send an order command yourself, the text is swallowed (never sent to the chat) and only the music card / voice is delivered.</string>
+    <string name="qq_music_order_hide_own_command">Hide my own order command in chat</string>
     <string name="qq_music_order_pick_talkers">Choose enabled chats (loads every conversation)</string>
     <string name="qq_music_order_talkers_loading">Loading chats…</string>
 

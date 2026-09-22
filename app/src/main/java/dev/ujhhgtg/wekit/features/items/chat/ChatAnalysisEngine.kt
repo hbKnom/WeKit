@@ -30,17 +30,17 @@ object ChatAnalysisEngine {
      * 转发的长文、长公告）几乎只剩开头。默认放到 2000 字，并且改成可以由
      * [ChatAnalysisEngine.analyze] 的 `lineMax` 参数覆盖（设置页可调）。
      */
-    const val TRANSCRIPT_LINE_MAX_DEFAULT = 2000
+    const val TRANSCRIPT_LINE_MAX_DEFAULT = 4000
 
     /**
      * 喂给 AI 的整段对话文本总量的**默认**硬上限。
      *
-     * 用户反馈原值 60000 字太少、内容不够 AI 容易答错，这里默认放到 240000 字
+     * 用户反馈原值 60000 字太少（2026-09-22 二轮反馈「内容文本的上限极少」，再放到 48 万字）、内容不够 AI 容易答错，这里默认放到 240000 字
      * （中文约 1 字 ≈ 0.6~1 token，24 万字约 15~24 万 token，适配 32 万上下文的模型；
      * 小上下文模型请把设置里的「喂给 AI 的文本上限」调小，否则服务端会返回上下文超限）。
      * 真正的硬上限由调用方按设置传入，这里只是兜底默认值。
      */
-    const val TRANSCRIPT_MAX_CHARS_DEFAULT = 240_000
+    const val TRANSCRIPT_MAX_CHARS_DEFAULT = 480_000
 
     /** 数据库未就绪时的提示，由调用方展示 */
     val dbReady: Boolean get() = runCatching { WeDatabaseApi.isReady }.getOrDefault(false)
@@ -212,7 +212,10 @@ object ChatAnalysisEngine {
         }
 
         // 等距抽样，保留时间分布（脚本 step 语义）
-        val limit = if (sampleLimit < 1) 1 else sampleLimit
+        // sampleLimit <= 0 = 不抽样：该时段的纯文本消息**全部**喂给 AI。
+        // 用户 2026-09-22 第二次反馈「条数只有 20000 的上限真的极少」——真正的兜底是下面
+        // 的整段字数上限（transcriptMaxChars），条数不该再额外卡一道。
+        val limit = if (sampleLimit <= 0) Int.MAX_VALUE else sampleLimit
         val sampledIdx: List<Int> = if (textN > limit) {
             val step = ceil(textN.toDouble() / limit).toInt().coerceAtLeast(1)
             (0 until textN step step).toList()
@@ -241,10 +244,13 @@ object ChatAnalysisEngine {
             countWords(body, wordMap)
             included++
         }
-        if (included < sampledIdx.size) {
-            sb.append("…（已达 ").append(effectiveMaxChars).append(" 字上限，本次收录 ")
-                .append(included).append("/").append(sampledIdx.size).append(" 条抽样消息）\n")
-        }
+        // 不论有没有截断都注明一次收录情况：用户反馈"看不出上限到底是多少"，
+        // 这行会一起进 AI 正文和报告，条数/字数上限一目了然。
+        // 正文字数必须在**追加这行之前**取，否则量到的是"正文 + 本行已写的部分"。
+        val bodyChars = sb.length
+        sb.append("…（本次共读取该时段纯文本 ").append(textN).append(" 条，收录 ")
+            .append(included).append(" 条，正文 ").append(bodyChars).append(" 字 / 上限 ")
+            .append(effectiveMaxChars).append(" 字）\n")
         val transcript = sb.toString()
 
         val report = if (features.contains(FEATURE_STATS)) {

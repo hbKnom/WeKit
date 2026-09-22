@@ -3,8 +3,6 @@ package dev.ujhhgtg.wekit.features.items.chat
 import android.app.Activity
 import android.content.Context
 import android.media.MediaPlayer
-import android.os.Handler
-import android.os.Looper
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
@@ -85,47 +83,44 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
             isSupported = { msgInfo -> msgInfo.typeCode == MessageType.VOICE.code },
             multiSelect = WeChatMessageContextMenuApi.MultiSelectSupport.Unsupported,
             onClick = { view, _, msgInfo ->
-                // 真机反馈「点了没反应」——之前这条路径没有任何日志，异常也只进日志不留痕。
-                // 现在每一步都有记录，且任何异常都会变成用户可见的 toast，不再静默失败。
-                runCatching {
-                    val encPath = msgInfo.imagePath
-                    WeLogger.i(
-                        TAG,
-                        "menu click: type=${msgInfo.typeCode} path=${if (encPath.isNullOrBlank()) "blank" else "ok"}",
-                    )
-                    if (encPath.isNullOrBlank()) {
-                        showToast(
-                            view.context,
-                            view.context.getString(R.string.audio_clipper_source_missing),
-                        )
-                    } else {
-                        // 宿主菜单是 PopupWindow：等它彻底关闭再弹对话框，避免窗口事务互相打断
-                        // 导致"对话框没出现"（延迟很短，用户感知不到）。
-                        //
-                        // 真机教训（2026-09-22，日志只有 "menu click" 之后再无任何输出）：
-                        // 这里原先用 hostView.postDelayed(...)。菜单一点就关闭，锚点 View 立刻
-                        // detach，而 View.postDelayed 在 View 未 attach 时会把 runnable 塞进
-                        // 它的 RunQueue，等"重新 attach"才执行 —— 这个 View 永远不会再 attach，
-                        // 于是对话框**永远不会弹出**（且不抛异常、不打日志，表现为"点了没反应"）。
-                        // 修法：用主线程 Handler 投递，并在点击瞬间就把 context 取出来，
-                        // 不要等 150ms 之后再去碰可能已 detach 的 View。
-                        val dialogContext = view.context.activityOrNull() ?: view.context
-                        Handler(Looper.getMainLooper()).postDelayed({
+                // 真机三轮反馈「点了没反应」的根因（对照已验证可用的「分析」菜单项 ChatRecordAnalysis）：
+                // 能用的那条路径是 **点击回调里同步** 执行 `showComposeDialog(view.context)`，
+                // 既不延迟、也不做任何 Context 解包。前几轮死磕"等宿主 PopupWindow 关干净"：
+                //   · 第 5 轮 hostView.postDelayed → View 已 detach，runnable 永不执行；
+                //   · 第 6 轮主线程 Handler + 150ms → 依旧不弹，连 `opening` 日志都没有。
+                // 因此这里改成与「分析」逐字一致的同步路径，并保留一次"换 Activity Context 重试"的兜底。
+                //
+                // 日志放在第一条语句：任何字段访问异常都不会再吃掉"点击到底有没有进来"这个事实。
+                WeLogger.i(TAG, "menu click received: type=${msgInfo.typeCode}")
+
+                // 路径要在 runCatching 之外取得：失败分支重试时还要用它
+                val encPath = runCatching { msgInfo.imagePath }.getOrNull()
+                if (encPath.isNullOrBlank()) {
+                    showToast(view.context, view.context.getString(R.string.audio_clipper_source_missing))
+                } else {
+                    runCatching {
+                        WeLogger.i(TAG, "opening audio clipper dialog (sync, ctx=${view.context.javaClass.name})")
+                        showAudioClipper(view.context, encPath)
+                    }.onFailure { primary ->
+                        // 唯一可能失败的原因是 Context 里没有窗口 token（BadTokenException）：
+                        // 换成解包出来的 Activity 再试一次，仍失败才把原因告诉用户。
+                        WeLogger.e(TAG, "sync open failed, retrying with unwrapped activity context", primary)
+                        val activityContext = view.context.activityOrNull()
+                        if (activityContext == null || activityContext === view.context) {
                             runCatching {
-                                WeLogger.i(TAG, "opening audio clipper dialog")
-                                showAudioClipper(dialogContext, encPath)
-                            }.onFailure {
-                                WeLogger.e(TAG, "failed to open audio clipper dialog", it)
+                                showToast(view.context, primary.message ?: "音频剪辑打开失败")
+                            }
+                        } else {
+                            runCatching {
+                                WeLogger.i(TAG, "opening audio clipper dialog (retry, ctx=${activityContext.javaClass.name})")
+                                showAudioClipper(activityContext, encPath)
+                            }.onFailure { secondary ->
+                                WeLogger.e(TAG, "failed to open audio clipper dialog", secondary)
                                 runCatching {
-                                    showToast(dialogContext, it.message ?: "音频剪辑打开失败")
+                                    showToast(view.context, secondary.message ?: "音频剪辑打开失败")
                                 }
                             }
-                        }, 150L)
-                    }
-                }.onFailure {
-                    WeLogger.e(TAG, "menu click failed", it)
-                    runCatching {
-                        showToast(view.context, it.message ?: "音频剪辑打开失败")
+                        }
                     }
                 }
             },

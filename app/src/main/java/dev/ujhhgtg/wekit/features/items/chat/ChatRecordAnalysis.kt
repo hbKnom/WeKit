@@ -51,18 +51,21 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
     /**
      * 本地统计读取的消息条数上限（0 = 不限制，读该时段全部）。
      *
-     * 用户 2026-09-22 反馈「条数只有 20000 的上限真的极少」：默认值从 20000 提到 50000，
-     * 输入框位数上限同步从 7 位放到 9 位（最大 999,999,999），并且明确提示 0 = 全部。
+     * 用户 2026-09-22 二轮反馈「条数只有 20000 的上限真的极少」：默认值直接放到 **0 = 不限制**，
+     * 输入框位数上限同步从 7 位放到 9 位（最大 999,999,999）。
      * 引擎是分页读取（PAGE_SIZE=1000），调大只会变慢，不会一次性撑爆内存。
+     * 历史默认值（1500/5000/20000/50000）由 [migrateLimits] 自动上迁——**改默认值不会覆盖已落盘的旧值**，
+     * 不迁的话用户装上新版看到的还是 20000。
      */
-    private var maxCount by prefOption("chat_analysis_max_count", 50000)
+    private var maxCount by prefOption("chat_analysis_max_count", 0)
 
     /**
-     * 喂给 AI 的抽样条数上限。
-     * 旧默认 500 条、上一版 1500 条，用户仍反馈太少 → 默认 5000 条；
-     * 单条长度与整段总量上限见下方 [lineMax] / [transcriptMaxChars]。
+     * 喂给 AI 的抽样条数上限。**0 = 不抽样，该时段的纯文本消息全部喂进去**。
+     * 历史沿革：500 → 1500 → 5000，用户三次反馈"太少"，索性取消条数限制；
+     * 真正的兜底是整段字数上限 [transcriptMaxChars]（配 [ChatRecordAnalysis.aiWithDowngrade]
+     * 的自动缩量重试），条数不再额外卡一道。
      */
-    private var sampleLimit by prefOption("chat_analysis_sample_limit", 5000)
+    private var sampleLimit by prefOption("chat_analysis_sample_limit", 0)
 
     /** 单条消息喂给 AI 的字符上限（默认 2000）。 */
     private var lineMax by prefOption("chat_analysis_line_max", ChatAnalysisEngine.TRANSCRIPT_LINE_MAX_DEFAULT)
@@ -103,6 +106,46 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
 
     override fun onEnable() {
         WeChatMessageContextMenuApi.addProvider(this)
+        migrateLimits()
+    }
+
+    /**
+     * 一次性上迁历史默认值。
+     *
+     * prefOption 只在键不存在时返回默认值，旧版本**已经写进 SP 的旧默认值**不会被新默认值覆盖，
+     * 于是用户升级后看到的仍是「20000 条 / 240000 字」，以为没改。这里只在取值**恰好等于某个历史
+     * 默认值**时上迁到当前默认值；用户自己填过的其它数值一律原样保留（0 = 不限制也不会被改动）。
+     */
+    private fun migrateLimits() {
+        val legacyCounts = setOf(500, 1000, 1500, 5000, 20000, 50000)
+        val legacyLineMax = setOf(500, 2000)
+        val legacyChars = setOf(60000, 240000)
+        if (maxCount in legacyCounts) maxCount = 0
+        if (sampleLimit in legacyCounts) sampleLimit = 0
+        if (lineMax in legacyLineMax) lineMax = ChatAnalysisEngine.TRANSCRIPT_LINE_MAX_DEFAULT
+        if (transcriptMaxChars in legacyChars) transcriptMaxChars = ChatAnalysisEngine.TRANSCRIPT_MAX_CHARS_DEFAULT
+        android.util.Log.i("WeKit/分析", "limits: maxCount=$maxCount sampleLimit=$sampleLimit lineMax=$lineMax chars=$transcriptMaxChars")
+    }
+
+    /** AI 缩量重试次数上限（原尺寸 → 1/2 → 1/4 → 1/8）。 */
+    private const val MAX_AI_ATTEMPTS = 4
+
+    /** 缩量重试的字数下限：再小就失去分析意义了。 */
+    private const val MIN_AI_BUDGET = 8_000
+
+    /** 按行边界截断，避免把一条消息切成半句。 */
+    private fun cutTranscript(text: String, budget: Int): String {
+        if (text.length <= budget) return text
+        val head = text.substring(0, budget)
+        val idx = head.lastIndexOf('\n')
+        return if (idx > budget / 2) head.substring(0, idx) else head
+    }
+
+    /** 错误像不像「上下文超限 / 请求体过大」。 */
+    private fun isContextOverflow(message: String): Boolean {
+        val m = message.lowercase()
+        return listOf("context", "too long", "too many token", "maximum", "length", "413", "truncat", "reduce")
+            .any { m.contains(it) }
     }
 
     override fun onDisable() {
@@ -169,7 +212,8 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     editInt(
                         view,
                         "分析条数上限",
-                        "0 = 全部（读该时段所有消息）。数值越大读取越慢、越全；建议大群 20000~200000。",
+                        "0 = 全部（默认，读该时段所有消息，无上限）。数值越大读取越慢、越全；" +
+                            "本地读取是分页的，调到 0 也不会 OOM。",
                         maxCount,
                     ) { maxCount = it }
                 },
@@ -177,7 +221,8 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     editInt(
                         view,
                         "抽样上限",
-                        "喂给 AI 的最大文本条数，建议 1000~20000。条数越多 AI 看得越全，但请求也越大。",
+                        "0 = 全部（默认，该时段纯文本消息全部喂给 AI，无条数上限）。" +
+                            "AI 实际能读多少由下面的「单条文本上限 / 文本上限」决定。",
                         sampleLimit,
                     ) { sampleLimit = it }
                 },
@@ -185,7 +230,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     editInt(
                         view,
                         "单条文本上限（字）",
-                        "一条消息最多喂给 AI 多少字（超出截断），默认 2000。长文多可调到 5000~10000。",
+                        "一条消息最多喂给 AI 多少字（超出截断），默认 4000。长文多可调到 5000~10000。",
                         lineMax,
                     ) { lineMax = it }
                 },
@@ -193,8 +238,8 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     editInt(
                         view,
                         "喂给 AI 的文本上限（字）",
-                        "整段聊天记录的总字数上限，默认 240000。模型上下文小（如 32K/128K）请调小，" +
-                            "否则服务端会返回上下文超限错误。",
+                        "整段聊天记录喂给 AI 的总字数上限，默认 480000（约 48 万字）。" +
+                            "上下文小的模型（32K/128K）请调小；超限时分析会自动缩量重试，不会直接失败。",
                         transcriptMaxChars,
                     ) { transcriptMaxChars = it }
                 },
@@ -420,6 +465,11 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     gStats = result.statsReport
                     gTranscript = result.transcript
                     gAi = ""
+                    // 让用户直接看到"这次到底读了多少、喂给 AI 多少字"，不用再去猜上限。
+                    showToast(
+                        "已读取纯文本 ${result.textN} 条 · 喂 AI 正文 ${result.transcript.length} 字" +
+                            "（可在设置里调上限）",
+                    )
                     showReport(view)
                 }
             } catch (e: Exception) {
@@ -514,27 +564,53 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                     "   - 风险与机会（可能踩的坑、值得抓住的点）\n" +
                     "4. 引用对话原文时保留说话人称呼，让报告读起来有据可依。\n" +
                     "5. 使用小标题（【】）和编号要点，段落完整，不要使用过于口语化的表达。"
-                val user = buildString {
-                    if (extra.isNotBlank()) {
-                        append("【附加要求】").append(extra).append("\n\n")
-                    }
-                    append("【聊天记录（抽样）】\n").append(gTranscript)
-                }
+                // 上限放开后真正会炸的是「上下文超长」（服务端 400 / context length exceeded）：
+                // 这里做自动缩量重试 —— 失败且错误像长度/上下文问题时把正文砍半再来一次，
+                // 最多 MAX_AI_ATTEMPTS 次。这样用户把条数/字数上限调得很大也不会只拿到一条错误提示。
                 var text = ""
-                var lastToastLen = 0
-                try {
-                    text = ChatAnalysisAi.stream(model, sys, user) { delta ->
-                        // 流式进度反馈：每累计约 600 字提示一次，避免长时间无反馈
-                        lastToastLen += delta.length
-                        if (lastToastLen >= 600) {
-                            val n = lastToastLen
-                            mainHandler.post { showToast("AI 生成中… 已生成 $n 字") }
-                            lastToastLen = 0
+                var budget = gTranscript.length.coerceAtLeast(MIN_AI_BUDGET)
+                var attempt = 0
+                while (true) {
+                    attempt++
+                    val body = cutTranscript(gTranscript, budget)
+                    val user = buildString {
+                        if (extra.isNotBlank()) {
+                            append("【附加要求】").append(extra).append("\n\n")
                         }
+                        append("【聊天记录】\n").append(body)
                     }
-                } catch (e: Exception) {
-                    // 流式失败 → 非流式降级
-                    text = ChatAnalysisAi.plain(model, sys, user).orEmpty()
+                    if (attempt > 1) {
+                        val shown = body.length
+                        mainHandler.post { showToast("记录过长，已压缩到 $shown 字重试（第 $attempt 次）…") }
+                    }
+                    var errText = ""
+                    var lastToastLen = 0
+                    try {
+                        text = ChatAnalysisAi.stream(model, sys, user) { delta ->
+                            // 流式进度反馈：每累计约 600 字提示一次，避免长时间无反馈
+                            lastToastLen += delta.length
+                            if (lastToastLen >= 600) {
+                                val n = lastToastLen
+                                mainHandler.post { showToast("AI 生成中… 已生成 $n 字") }
+                                lastToastLen = 0
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // 流式失败 → 非流式降级（同一份正文）
+                        errText = e.message.orEmpty()
+                        text = runCatching { ChatAnalysisAi.plain(model, sys, user).orEmpty() }
+                            .getOrDefault("")
+                    }
+                    if (text.isNotBlank()) {
+                        if (attempt > 1) {
+                            android.util.Log.i("WeKit/分析", "AI 缩量重试成功：第 $attempt 次，正文 ${body.length} 字")
+                        }
+                        break
+                    }
+                    if (attempt >= MAX_AI_ATTEMPTS || budget <= MIN_AI_BUDGET) break
+                    // 第一次失败一律再试一次（可能是瞬时错误）；之后只有"像上下文超限"才继续缩量
+                    if (attempt > 1 && errText.isNotBlank() && !isContextOverflow(errText)) break
+                    budget = (budget / 2).coerceAtLeast(MIN_AI_BUDGET)
                 }
                 mainHandler.post {
                     busy = false

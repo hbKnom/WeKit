@@ -48,9 +48,11 @@ object QqMusicOrderSettings {
             var singerAsNickname by remember { mutableStateOf(QqMusicOrder.singerAsNickname()) }
             var coverAsAvatar by remember { mutableStateOf(QqMusicOrder.coverAsAvatar()) }
             var appId by remember { mutableStateOf(QqMusicOrder.appId()) }
+            var appName by remember { mutableStateOf(WePrefs.getStringOrDef(QqMusicOrder.KEY_APP_NAME, "")) }
             var cookie by remember { mutableStateOf(QqMusicOrder.cookie()) }
             var interceptOwn by remember { mutableStateOf(QqMusicOrder.interceptOwnCommand()) }
             var onlyOwn by remember { mutableStateOf(QqMusicOrder.onlyOwnCommand()) }
+            var hideOwn by remember { mutableStateOf(QqMusicOrder.hideOwnCommand()) }
             var talkers by remember { mutableStateOf(QqMusicOrder.refreshTalkers()) }
 
             AlertDialogContent(
@@ -107,6 +109,16 @@ object QqMusicOrderSettings {
                                     title = stringResource(R.string.qq_music_order_intercept_own),
                                     checked = interceptOwn,
                                     onCheckedChange = { interceptOwn = it },
+                                    trailingDivider = true,
+                                )
+                            }
+                            item {
+                                SwitchWidget(
+                                    icon = MaterialSymbols.Outlined.Music_note,
+                                    title = stringResource(R.string.qq_music_order_hide_own_command),
+                                    description = stringResource(R.string.qq_music_order_hide_own_command_summary),
+                                    checked = hideOwn,
+                                    onCheckedChange = { hideOwn = it },
                                     trailingDivider = true,
                                 )
                             }
@@ -170,6 +182,18 @@ object QqMusicOrderSettings {
                                 )
                             }
 
+                            item {
+                                OutlinedTextField(
+                                    value = appName,
+                                    onValueChange = { appName = it },
+                                    label = { Text(stringResource(R.string.qq_music_order_app_name)) },
+                                    supportingText = {
+                                        Text(stringResource(R.string.qq_music_order_app_name_hint))
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                )
+                            }
                             item {
                                 OutlinedTextField(
                                     value = appId,
@@ -275,6 +299,7 @@ object QqMusicOrderSettings {
                         WePrefs.putBool(QqMusicOrder.KEY_SEND_AS_VOICE, sendVoice)
                         WePrefs.putBool(QqMusicOrder.KEY_INTERCEPT_OWN, interceptOwn)
                         WePrefs.putBool(QqMusicOrder.KEY_ONLY_OWN, onlyOwn)
+                        WePrefs.putBool(QqMusicOrder.KEY_HIDE_OWN_COMMAND, hideOwn)
                         WePrefs.putBool(QqMusicOrder.KEY_CUSTOM_SINGER, customSinger)
                         WePrefs.putString(QqMusicOrder.KEY_DEFAULT_SINGER, defaultSinger.trim())
                         WePrefs.putBool(QqMusicOrder.KEY_SINGER_AS_NICKNAME, singerAsNickname)
@@ -283,6 +308,7 @@ object QqMusicOrderSettings {
                             QqMusicOrder.KEY_APP_ID,
                             appId.trim().ifBlank { QqMusicOrder.DEFAULT_APP_ID },
                         )
+                        WePrefs.putString(QqMusicOrder.KEY_APP_NAME, appName.trim())
                         WePrefs.putString(QqMusicOrder.KEY_COOKIE, cookie.trim())
                         onDismiss()
                     }) {

@@ -659,7 +659,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
     )
 
     /** 从 n1 发送监听器上取 ChatFooter（原脚本 n1.d；兜底遍历字段/当前会话） */
-    private fun findFooterFromListener(listener: Any?): ChatFooter? {
+    internal fun findFooterFromListener(listener: Any?): ChatFooter? {
         if (listener == null) return null
         if (listener is ChatFooter) return listener
         runCatching {
@@ -681,7 +681,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         }.getOrNull()
     }
 
-    private fun findTalkerFromFooter(footer: ChatFooter): String {
+    internal fun findTalkerFromFooter(footer: ChatFooter): String {
         // 1) x0.e keySet（与脚本一致：找第一个 @chatroom key）
         runCatching {
             val atState = footer.reflekt().firstFieldOrNull { name = "x0" }?.get()
@@ -704,7 +704,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         return ""
     }
 
-    private fun getFooterText(footer: ChatFooter): String {
+    internal fun getFooterText(footer: ChatFooter): String {
         val lastText = runCatching {
             footer.reflekt().firstMethodOrNull { name = "getLastText" }?.invoke()?.toString().orEmpty()
         }.getOrDefault("")
@@ -714,7 +714,7 @@ object CustomAt : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvide
         }.getOrDefault("")
     }
 
-    private fun setFooterText(footer: ChatFooter, text: String) {
+    internal fun setFooterText(footer: ChatFooter, text: String) {
         runCatching { footer.reflekt().firstMethodOrNull { name = "setLastText" }?.invoke(text) }
         runCatching { footer.reflekt().firstMethodOrNull { name = "setLastContent" }?.invoke(text) }
         runCatching {

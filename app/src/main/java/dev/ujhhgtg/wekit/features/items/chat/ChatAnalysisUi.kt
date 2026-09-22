@@ -1,5 +1,6 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,7 +74,6 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
-import dev.ujhhgtg.wekit.ui.content.m3.CornerRadius
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 
 /**
@@ -84,11 +84,42 @@ import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
  */
 internal object ChatAnalysisUi {
 
+    // ---------------- 视觉规范常量（美化改造：尺寸 / 圆角 / 间距集中在此，不散落魔法数字）----------------
+
+    /** 卡片 / KPI 单元 / 章节卡片统一圆角 */
+    private val CardRadius = 20.dp
+
+    /** 卡片内边距（四边一致，统一 16dp） */
+    private val CardPad = 16.dp
+
+    /** 各 section 之间的留白（统一 16dp 节奏） */
+    private val SectionGap = 16.dp
+
+    /** 卡片内部元素之间的留白 */
+    private val ItemGap = 8.dp
+
+    /** 信息胶囊圆角 */
+    private val ChipRadius = 8.dp
+
+    /** 统一卡片描边：浅色细边 + 极轻投影，深浅主题下都规整（替代原来看不出来的立体感） */
+    private val CardStroke: BorderStroke
+        @Composable get() = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
     // ---------------- 通用小组件 ----------------
 
+    /**
+     * 分节标题。
+     *
+     * @param index 可选的序号（从 1 开始）。报告各分节带序号后，读者能一眼看出结构，
+     *              设置页的三大块也用同一套序号视觉，全弹窗观感一致。
+     */
     @Composable
-    fun SectionHeader(title: String, accent: Color = MaterialTheme.colorScheme.primary) {
-        SectionHeaderRow(title, accent, Modifier.padding(top = 18.dp))
+    fun SectionHeader(
+        title: String,
+        accent: Color = MaterialTheme.colorScheme.primary,
+        index: Int? = null,
+    ) {
+        SectionHeaderRow(title, accent, Modifier.padding(top = SectionGap), index = index)
     }
 
     /**
@@ -123,19 +154,19 @@ internal object ChatAnalysisUi {
             if (index != null) {
                 Box(
                     Modifier
-                        .size(18.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(accent.copy(alpha = 0.16f)),
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(accent.copy(alpha = 0.18f)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         index.toString(),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                         fontWeight = FontWeight.Bold,
                         color = accent,
                     )
                 }
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(7.dp))
             }
             Text(
                 title,
@@ -161,6 +192,31 @@ internal object ChatAnalysisUi {
             modifier = modifier.fillMaxWidth(),
             enabled = enabled,
         ) { content() }
+    }
+
+    /**
+     * 元信息胶囊（时段 / 条数 / 模型名这类次级信息）：小字号 + 强调色浅底，
+     * 与标题形成明确的字号层级，长文本按测量宽度省略，绝不顶破弹窗。
+     */
+    @Composable
+    private fun MetaChip(
+        text: String,
+        accent: Color = MaterialTheme.colorScheme.primary,
+    ) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(ChipRadius))
+                .background(accent.copy(alpha = 0.13f))
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 
     // ---------------- 时间范围选择 ----------------
@@ -190,9 +246,28 @@ internal object ChatAnalysisUi {
             "上个月整月",
         )
         AlertDialogContent(
-            title = { Text("分析时间范围") },
+            title = {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        "分析时间范围",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "本地统计与 AI 总结都只使用所选范围内的纯文本消息。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
             text = {
-                LazyColumn(Modifier.heightIn(max = 430.dp)) {
+                LazyColumn(
+                    Modifier.heightIn(max = 430.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
                     itemsIndexed(labels) { index, label ->
                         BaseWidget(
                             icon = icons[index],
@@ -202,7 +277,11 @@ internal object ChatAnalysisUi {
                             onClick = { onPick(index) },
                             trailingDivider = true,
                             trailingContent = {
-                                Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                                Icon(
+                                    MaterialSymbols.Outlined.Chevron_right,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             },
                         )
                     }
@@ -218,13 +297,17 @@ internal object ChatAnalysisUi {
                             onClick = onSettings,
                             trailingDivider = true,
                             trailingContent = {
-                                Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                                Icon(
+                                    MaterialSymbols.Outlined.Chevron_right,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             },
                         )
                     }
                 }
             },
-            confirmButton = {
+            dismissButton = {
                 Button(onClose) { Text("关闭") }
             },
         )
@@ -254,7 +337,7 @@ internal object ChatAnalysisUi {
             text = {
                 LazyColumn(Modifier.heightIn(max = 440.dp)) {
                     item {
-                        SectionHeader("功能开关")
+                        SectionHeader("功能开关", index = 1)
                         SwitchWidget(
                             icon = MaterialSymbols.Outlined.Smart_toy,
                             iconPlaceholder = true,
@@ -281,7 +364,7 @@ internal object ChatAnalysisUi {
                         )
                     }
                     item {
-                        SectionHeader("分析参数")
+                        SectionHeader("分析参数", index = 2)
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Tune,
                             iconPlaceholder = true,
@@ -321,7 +404,7 @@ internal object ChatAnalysisUi {
                         )
                     }
                     item {
-                        SectionHeader("AI 模型")
+                        SectionHeader("AI 模型", index = 3)
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Memory,
                             iconPlaceholder = true,
@@ -330,7 +413,11 @@ internal object ChatAnalysisUi {
                             onClick = onModelManager,
                             trailingDivider = true,
                             trailingContent = {
-                                Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                                Icon(
+                                    MaterialSymbols.Outlined.Chevron_right,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             },
                         )
                         BaseWidget(
@@ -352,7 +439,7 @@ internal object ChatAnalysisUi {
                     }
                 }
             },
-            confirmButton = {
+            dismissButton = {
                 Button(onClose) { Text("关闭") }
             },
         )
@@ -416,12 +503,15 @@ internal object ChatAnalysisUi {
                     }
                 }
             },
+            dismissButton = {
+                Button(onClose) { Text("关闭") }
+            },
             confirmButton = {
                 Button(onAdd) {
-                    Icon(MaterialSymbols.Outlined.Add, null)
+                    Icon(MaterialSymbols.Outlined.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("新增模型")
                 }
-                Button(onClose) { Text("关闭") }
             },
         )
     }
@@ -509,9 +599,13 @@ internal object ChatAnalysisUi {
                     }
                 }
             },
+            dismissButton = {
+                Button(onClose) { Text("取消") }
+            },
             confirmButton = {
                 Button(onTest) {
-                    Icon(MaterialSymbols.Outlined.Bolt, null)
+                    Icon(MaterialSymbols.Outlined.Bolt, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("测试")
                 }
                 Button({
@@ -524,8 +618,11 @@ internal object ChatAnalysisUi {
                             path = path.trim().ifEmpty { "/chat/completions" },
                         )
                     )
-                }) { Text("保存") }
-                Button(onClose) { Text("取消") }
+                }) {
+                    Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("保存")
+                }
             },
         )
     }
@@ -626,7 +723,10 @@ internal object ChatAnalysisUi {
         else -> fallback
     }
 
-    /** 统一分节卡片：圆角取自项目常量 CornerRadius，卡内 padding 14dp。 */
+    /**
+     * 统一分节卡片：20dp 圆角 + 浅色细描边 + 极轻投影，顶部一条渐变发丝线标明归属色。
+     * 卡片宽度始终 fillMaxWidth，卡内所有文本都限行/省略，绝不会顶出卡片。
+     */
     @Composable
     private fun SectionCard(
         title: String?,
@@ -636,18 +736,36 @@ internal object ChatAnalysisUi {
         content: @Composable () -> Unit,
     ) {
         Surface(
-            shape = RoundedCornerShape(CornerRadius),
+            shape = RoundedCornerShape(CardRadius),
             color = MaterialTheme.colorScheme.surfaceBright,
             tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
             modifier = Modifier.fillMaxWidth().then(modifier),
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp)
-            ) {
-                if (title != null) SectionHeaderRow(title, accent, index = index)
-                content()
+            Column(Modifier.fillMaxWidth()) {
+                // 顶部渐变发丝线（章节主色 → 透明）：卡片有自己的"归属色"，分区一眼可辨
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(accent, accent.copy(alpha = 0.04f))
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(CardPad)
+                ) {
+                    if (title != null) {
+                        SectionHeaderRow(title, accent, index = index)
+                        Spacer(Modifier.height(ItemGap))
+                    }
+                    content()
+                }
             }
         }
     }
@@ -677,7 +795,7 @@ internal object ChatAnalysisUi {
                     title = block.title,
                     accent = blockAccent,
                     index = no,
-                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 18.dp),
+                    modifier = Modifier.padding(top = if (index == 0) 0.dp else SectionGap),
                 ) {
                     // 「核心指标」这类纯 key/value 段改用 KPI 网格（大数字卡片）渲染：
                     // 一行行"指标 … 数值"读起来像表格，网格卡片才像数据看板，
@@ -696,20 +814,24 @@ internal object ChatAnalysisUi {
     private val ReportBlock.isKpiLike: Boolean
         get() = units.size >= 3 && units.all { it is ReportUnit.KeyValue }
 
+    /** 数值 / 单位拆分用的正则（与 PNG 导出用同一套规则，弹窗与导图观感一致） */
+    private val ValueUnitRegex = Regex("^([0-9][0-9 .,%:+\\-]*)(.*)$")
+
     /**
      * KPI 网格：每行 2 张大数字卡片。
      * 这里手写 Column + Row 而不是 LazyVerticalGrid —— 后者嵌在 LazyColumn 里高度无界会直接崩。
+     * 数值按"数字 + 单位"拆开：数字大而重、单位小而轻，读起来才像数据看板而不是表格。
      */
     @Composable
     private fun KpiGrid(items: List<ReportUnit.KeyValue>, accent: Color) {
-        val shape = RoundedCornerShape(CornerRadius)
+        val shape = RoundedCornerShape(CardRadius)
         Column(Modifier.fillMaxWidth()) {
             items.chunked(2).forEachIndexed { rowIndex, row ->
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(top = if (rowIndex == 0) 0.dp else 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(top = if (rowIndex == 0) 0.dp else 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     row.forEach { item ->
                         KpiCell(item, accent, shape, Modifier.weight(1f))
@@ -728,13 +850,14 @@ internal object ChatAnalysisUi {
         shape: androidx.compose.ui.graphics.Shape,
         modifier: Modifier = Modifier,
     ) {
+        val (number, unit) = remember(item.value) { splitValueUnit(item.value) }
         Box(
             modifier
                 .clip(shape)
-                .background(accent.copy(alpha = 0.08f))
-                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .background(accent.copy(alpha = 0.09f))
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            Column {
+            Column(Modifier.fillMaxWidth()) {
                 Text(
                     item.key,
                     style = MaterialTheme.typography.labelSmall,
@@ -742,17 +865,43 @@ internal object ChatAnalysisUi {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    item.value,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = accent,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        number,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (unit.isNotBlank()) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            unit,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * "12,345 条" → ("12,345", "条")：把数值和单位拆开渲染（单位用轻字号）。
+     * 非数字开头的值（如模型名）整串当数值，不丢字。
+     */
+    private fun splitValueUnit(value: String): Pair<String, String> {
+        val t = value.trim()
+        if (t.isEmpty()) return "" to ""
+        val m = ValueUnitRegex.find(t) ?: return t to ""
+        val number = m.groupValues[1].trim()
+        val unit = m.groupValues[2].trim()
+        return if (number.isEmpty()) t to "" else number to unit
     }
 
     @Composable
@@ -767,7 +916,8 @@ internal object ChatAnalysisUi {
                 val fs = LocalDensity.current.fontScale
                 Text(
                     unit.text,
-                    style = MaterialTheme.typography.bodyMedium,
+                    // 正文行距放开一点（bodyMedium 默认 20sp → 23sp）：长段落更透气
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 23.sp),
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -943,12 +1093,14 @@ internal object ChatAnalysisUi {
                     )
                 }
             },
+            dismissButton = {
+                Button(onClose) { Text("取消") }
+            },
             confirmButton = {
                 Button({
                     text.trim().toIntOrNull()?.let(onSave)
                     onClose()
                 }) { Text("保存") }
-                Button(onClose) { Text("取消") }
             },
         )
     }
@@ -977,9 +1129,11 @@ internal object ChatAnalysisUi {
                     )
                 }
             },
+            dismissButton = {
+                Button(onClose) { Text("取消") }
+            },
             confirmButton = {
                 Button({ onStart(text.trim()); onClose() }) { Text("开始") }
-                Button(onClose) { Text("取消") }
             },
         )
     }
@@ -1001,7 +1155,7 @@ internal object ChatAnalysisUi {
     ) {
         AlertDialogContent(
             title = {
-                Column {
+                Column(Modifier.fillMaxWidth()) {
                     Text(
                         "📊 $sessionName",
                         style = MaterialTheme.typography.titleLarge,
@@ -1009,41 +1163,77 @@ internal object ChatAnalysisUi {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "$periodLabel · 纯文本 ${countText(stats)} 条",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Spacer(Modifier.height(6.dp))
+                    // 时段 / 条数做成胶囊并自动换行：信息层级清晰，窄屏也不会顶破弹窗
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        MetaChip(periodLabel)
+                        MetaChip(
+                            "纯文本 ${countText(stats)} 条",
+                            MaterialTheme.colorScheme.tertiary,
+                        )
+                        if (ai.isNotBlank()) {
+                            MetaChip("已生成 AI 总结", MaterialTheme.colorScheme.secondary)
+                        }
+                    }
                 }
             },
             text = {
                 Column(Modifier.fillMaxWidth()) {
-                    // 导出/复制移到内容区右上角，避免 4 个按钮挤在一行导致窄屏溢出
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onExportPng) {
-                            Icon(MaterialSymbols.Outlined.Download, contentDescription = "导出 PNG")
-                        }
-                        IconButton(onClick = onCopy) {
-                            Icon(MaterialSymbols.Outlined.Content_copy, contentDescription = "复制")
-                        }
-                    }
                     if (hasTranscript) {
                         ReportContent(units)
                     } else {
-                        Text("分析完成，但该时段没有可统计的文本消息。")
+                        Text(
+                            "分析完成，但该时段没有可统计的文本消息。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
                     }
                 }
             },
             confirmButton = {
-                Button(onAiSummary) {
-                    Icon(MaterialSymbols.Outlined.Smart_toy, null)
-                    Text("AI 总结")
+                // 统一底部操作栏：次级动作（导出 / 复制）用图标按钮靠左，
+                // 主级动作（关闭 / AI 总结）等分宽度靠右；外层 Row fillMaxWidth + weight，
+                // 任何屏宽与字号下都不会换行、不会溢出弹窗。
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onExportPng) {
+                        Icon(
+                            MaterialSymbols.Outlined.Download,
+                            "导出 PNG",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = onCopy) {
+                        Icon(
+                            MaterialSymbols.Outlined.Content_copy,
+                            "复制报告",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClose,
+                        Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Button(
+                        onAiSummary,
+                        Modifier.weight(1.15f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text("AI 总结", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
-                Button(onClose) { Text("关闭") }
             },
         )
     }
@@ -1059,7 +1249,7 @@ internal object ChatAnalysisUi {
     ) {
         AlertDialogContent(
             title = {
-                Column {
+                Column(Modifier.fillMaxWidth()) {
                     Text(
                         "🤖 AI 总结 · $sessionName",
                         style = MaterialTheme.typography.titleLarge,
@@ -1067,28 +1257,18 @@ internal object ChatAnalysisUi {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "基于抽样转录的大模型洞察",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        MetaChip("基于抽样转录的大模型洞察", MaterialTheme.colorScheme.tertiary)
+                    }
                 }
             },
             text = {
                 Column(Modifier.fillMaxWidth()) {
-                    // 导出/复制移到内容区右上角，与报告弹窗保持一致
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onExportPng) {
-                            Icon(MaterialSymbols.Outlined.Download, contentDescription = "导出 PNG")
-                        }
-                        IconButton(onClick = onCopy) {
-                            Icon(MaterialSymbols.Outlined.Content_copy, contentDescription = "复制")
-                        }
-                    }
                     if (units.isEmpty()) {
                         // 长文本分支：显式限高 + 内部滚动，保证按钮行始终可见、内容能滚到底
                         Text(
@@ -1106,7 +1286,35 @@ internal object ChatAnalysisUi {
                 }
             },
             confirmButton = {
-                Button(onClose) { Text("关闭") }
+                // 与统计报告弹窗同一套底部操作栏规范
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onExportPng) {
+                        Icon(
+                            MaterialSymbols.Outlined.Download,
+                            "导出 PNG",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = onCopy) {
+                        Icon(
+                            MaterialSymbols.Outlined.Content_copy,
+                            "复制报告",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClose,
+                        Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             },
         )
     }
@@ -1141,7 +1349,26 @@ internal object ChatAnalysisUi {
                 if (state.result.success) "✅ 测试通过" else "❌ 测试失败"
         }
         AlertDialogContent(
-            title = { Text(titleText) },
+            title = {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        titleText,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val subtitle = when (state) {
+                        is TestUiState.Testing -> state.model
+                        is TestUiState.Result -> state.result.testedModel
+                        else -> ""
+                    }
+                    if (subtitle.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        MetaChip(subtitle)
+                    }
+                }
+            },
             text = {
                 when (state) {
                     is TestUiState.LoadingModels -> {
@@ -1177,7 +1404,11 @@ internal object ChatAnalysisUi {
                                         onClick = { onTestModel(m) },
                                         trailingDivider = true,
                                         trailingContent = {
-                                            Icon(MaterialSymbols.Outlined.Chevron_right, null)
+                                            Icon(
+                                                MaterialSymbols.Outlined.Chevron_right,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
                                         },
                                     )
                                 }
@@ -1220,19 +1451,22 @@ internal object ChatAnalysisUi {
                         Button(onClose) { Text("关闭") }
                     }
                     is TestUiState.Result -> {
-                        if (state.result.success && state.result.testedModel.isNotBlank()) {
-                            Button({ onUseModel(state.result.testedModel) }) {
-                                Icon(MaterialSymbols.Outlined.Check, null)
-                                Text("同步为当前模型")
-                            }
-                        }
+                        // 主次分明：dismissive（关闭）靠左，affirmative（同步为当前模型）靠右
+                        Button(onClose) { Text("关闭") }
                         if (state.result.testedModel.isNotBlank()) {
                             Button({ onTestModel(state.result.testedModel) }) {
-                                Icon(MaterialSymbols.Outlined.Refresh, null)
+                                Icon(MaterialSymbols.Outlined.Refresh, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
                                 Text("再测一次")
                             }
                         }
-                        Button(onClose) { Text("关闭") }
+                        if (state.result.success && state.result.testedModel.isNotBlank()) {
+                            Button({ onUseModel(state.result.testedModel) }) {
+                                Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("同步为当前模型")
+                            }
+                        }
                     }
                     else -> Unit
                 }

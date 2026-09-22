@@ -26,6 +26,7 @@ import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import dev.ujhhgtg.wekit.ui.utils.ConversationPickerSection
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.android.showToast
 
@@ -180,10 +181,26 @@ object TextSpeechSettings {
                                 description = if (contacts.isEmpty()) {
                                     stringResource(R.string.text_speech_allowed_contacts_summary)
                                 } else {
-                                    contacts.joinToString("\n")
+                                    stringResource(
+                                        R.string.text_speech_allowed_contacts_count,
+                                        contacts.size,
+                                    )
                                 },
                                 onClick = { },
                                 trailingDivider = true,
+                            )
+                        }
+                        // 用户 2026-09-22 反馈「允许播报的聊天没有任何选择」：以前只能靠聊天页右键
+                        // 一条条加、在设置里一条条删（列表为空时根本无从下手）。
+                        // 这里直接复用与「QQ点歌 → 生效聊天」同一个全量会话选择器：可搜索、勾选即生效，
+                        // 数据源与选中逻辑完全一致（宿主的会话列表 + WePrefs 落盘）。
+                        item {
+                            ConversationPickerSection(
+                                selected = contacts,
+                                onToggle = { wxId, enabled ->
+                                    TextSpeechAnnouncer.setContactEnabled(wxId, enabled)
+                                    contacts = TextSpeechAnnouncer.allowedContacts()
+                                },
                             )
                         }
                         if (contacts.isNotEmpty()) {
@@ -194,18 +211,6 @@ object TextSpeechSettings {
                                     onClick = {
                                         WePrefs.putStringSet(TextSpeechAnnouncer.KEY_ALLOWED, emptySet())
                                         contacts = emptySet()
-                                    },
-                                    trailingDivider = true,
-                                )
-                            }
-                            items(contacts.toList()) { wxid ->
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Text_to_speech,
-                                    title = wxid,
-                                    onTrailingClick = {
-                                        val next = contacts - wxid
-                                        WePrefs.putStringSet(TextSpeechAnnouncer.KEY_ALLOWED, next)
-                                        contacts = next
                                     },
                                     trailingDivider = true,
                                 )
