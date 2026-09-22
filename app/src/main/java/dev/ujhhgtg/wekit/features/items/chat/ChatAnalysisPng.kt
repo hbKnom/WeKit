@@ -211,20 +211,20 @@ object ChatAnalysisPng {
     private const val KPI_CELL_W = (CONTENT_W - KPI_COL_GAP) / 2               // 446
 
     // ---- 字号（px）：标题 56 / 章节 40 / 正文 30 / 注释 26 ----
-    private const val FS_BRAND = 28
-    private const val FS_TITLE = 56
-    private const val FS_META = 28
-    private const val FS_SMALL = 26
-    private const val FS_AVATAR = 48
-    private const val FS_BADGE = 26
-    private const val FS_GROUP = 30
-    private const val FS_SECTION = 40
-    private const val FS_SECTION_NO = 30
-    private const val FS_BODY = 30
-    private const val FS_ROW = 28
-    private const val FS_KPI_LABEL = 26
-    private const val FS_KPI_VALUE = 46
-    private const val FS_KPI_UNIT = 26
+    private const val FS_BRAND = 28f
+    private const val FS_TITLE = 56f
+    private const val FS_META = 28f
+    private const val FS_SMALL = 26f
+    private const val FS_AVATAR = 48f
+    private const val FS_BADGE = 26f
+    private const val FS_GROUP = 30f
+    private const val FS_SECTION = 40f
+    private const val FS_SECTION_NO = 30f
+    private const val FS_BODY = 30f
+    private const val FS_ROW = 28f
+    private const val FS_KPI_LABEL = 26f
+    private const val FS_KPI_VALUE = 46f
+    private const val FS_KPI_UNIT = 26f
 
     // ---- 配色（集中常量：主色 / 强调色 / 成功 / 警示 / 文本主次 / 分隔线）----
     private const val COLOR_BG_TOP = 0xFFF1F7FC.toInt()
