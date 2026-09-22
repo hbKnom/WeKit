@@ -4001,6 +4001,9 @@
     <string name="qq_music_order_both_failed">Both the music card and the song voice failed to send</string>
     <string name="qq_music_order_card_failed">Failed to send the music card</string>
     <string name="qq_music_order_voice_failed">Failed to send the song voice</string>
+    <string name="qq_music_order_voice_unavailable">No playable link for this song (copyright limited, or no QQ Music cookie set), sent the music card only</string>
+    <string name="qq_music_order_cookie">QQ Music cookie (optional)</string>
+    <string name="qq_music_order_cookie_hint">Copy it from a logged-in y.qq.com (e.g. uin=123456; qm_keyst=xxx). Only needed if you want the song sent as a voice note.</string>
     <string name="qq_music_order_settings_title">QQ Music Order</string>
     <string name="qq_music_order_triggers">Trigger words</string>
     <string name="qq_music_order_triggers_summary">Separate multiple triggers with commas; defaults to “点歌”</string>

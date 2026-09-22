@@ -47,6 +47,7 @@ object QqMusicOrderSettings {
             var singerAsNickname by remember { mutableStateOf(QqMusicOrder.singerAsNickname()) }
             var coverAsAvatar by remember { mutableStateOf(QqMusicOrder.coverAsAvatar()) }
             var appId by remember { mutableStateOf(QqMusicOrder.appId()) }
+            var cookie by remember { mutableStateOf(QqMusicOrder.cookie()) }
             var interceptOwn by remember { mutableStateOf(QqMusicOrder.interceptOwnCommand()) }
             var talkers by remember { mutableStateOf(QqMusicOrder.refreshTalkers()) }
 
@@ -170,6 +171,25 @@ object QqMusicOrderSettings {
                             item {
                                 BaseWidget(
                                     icon = MaterialSymbols.Outlined.Music_note,
+                                    title = stringResource(R.string.qq_music_order_cookie),
+                                    description = stringResource(R.string.qq_music_order_cookie_hint),
+                                    onClick = { },
+                                    trailingDivider = true,
+                                )
+                            }
+                            item {
+                                OutlinedTextField(
+                                    value = cookie,
+                                    onValueChange = { cookie = it },
+                                    label = { Text(stringResource(R.string.qq_music_order_cookie)) },
+                                    maxLines = 3,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                )
+                            }
+
+                            item {
+                                BaseWidget(
+                                    icon = MaterialSymbols.Outlined.Music_note,
                                     title = stringResource(R.string.qq_music_order_allowed_talkers),
                                     description = if (talkers.isEmpty()) {
                                         stringResource(R.string.qq_music_order_allowed_talkers_summary)
@@ -232,6 +252,7 @@ object QqMusicOrderSettings {
                             QqMusicOrder.KEY_APP_ID,
                             appId.trim().ifBlank { QqMusicOrder.DEFAULT_APP_ID },
                         )
+                        WePrefs.putString(QqMusicOrder.KEY_COOKIE, cookie.trim())
                         onDismiss()
                     }) {
                         Text(stringResource(R.string.action_save))

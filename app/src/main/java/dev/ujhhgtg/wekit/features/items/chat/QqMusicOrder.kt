@@ -27,7 +27,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -68,6 +67,7 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     internal const val KEY_APP_ID = "qq_music_order_app_id"
     internal const val KEY_INTERCEPT_OWN = "qq_music_order_intercept_own_command"
     internal const val KEY_ALLOWED_TALKERS = "qq_music_order_allowed_talkers"
+    internal const val KEY_COOKIE = "qq_music_order_cookie"
 
     internal const val DEFAULT_TRIGGER = "点歌"
     const val DEFAULT_APP_ID = "wx485a97c844086dc9"
@@ -87,7 +87,6 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     private const val NO_LYRIC = "[99:99.99]暂无歌词"
 
     private const val MAX_AUDIO_BYTES = 128L * 1024 * 1024
-    private const val MAX_COVER_BYTES = 128 * 1024
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -138,6 +137,9 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
     fun interceptOwnCommand(): Boolean = WePrefs.getBoolOrDef(KEY_INTERCEPT_OWN, false)
 
     fun allowedTalkers(): Set<String> = WePrefs.getStringSetOrDef(KEY_ALLOWED_TALKERS, emptySet())
+
+    /** 用户填写的 QQ 音乐 Cookie（可选，仅用于换取可播放直链）。 */
+    fun cookie(): String = WePrefs.getStringOrDef(KEY_COOKIE, "").trim()
 
     fun setTalkerEnabled(talker: String, enabled: Boolean) {
         val current = allowedTalkers().toMutableSet()
@@ -237,15 +239,28 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
      *
      * Mirrors Hchat `ge4.c`: a plain `contains` locates the trigger, everything after it becomes
      * the query, and an optional `歌名&歌手` suffix is honoured when custom singer is enabled.
+     *
+     * 但「全句 contains」太宽松：真机日志里用户发的一段普通聊天（"…qq点歌，发送电点歌无法发出
+     * 卡片和歌曲…"）被当成点歌指令，还去搜索了一个超长"歌名"。因此收紧为：
+     *  - 触发词必须出现在句首，或前面只允许一个 `@某人 ` 前缀（群里 @机器人 点歌的常见写法）；
+     *  - 整条消息不能含换行；
+     *  - 查询串长度上限 40 字（歌名+歌手）。
      */
     fun parseCommand(text: String): SongQuery? {
         val body = text.trim()
-        if (body.isEmpty()) return null
+        if (body.isEmpty() || body.contains('\n')) return null
 
         // The longest trigger wins, so "点歌 " style variants do not shadow longer ones.
-        val trigger = triggers().filter { body.contains(it) }.maxByOrNull { it.length } ?: return null
-        val after = body.substringAfter(trigger).trim()
-        if (after.isEmpty()) return null
+        val hit = triggers().mapNotNull { candidate ->
+            val idx = body.indexOf(candidate)
+            if (idx < 0) return@mapNotNull null
+            val prefix = body.substring(0, idx)
+            if (prefix.isNotEmpty() && !MENTION_ONLY.matches(prefix)) return@mapNotNull null
+            candidate to idx
+        }.maxByOrNull { it.first.length } ?: return null
+
+        val after = body.substring(hit.second + hit.first.length).trim()
+        if (after.isEmpty() || after.length > MAX_SONG_QUERY_CHARS) return null
 
         if (customSinger() && after.contains('&')) {
             val idx = after.indexOf('&')
@@ -254,6 +269,14 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             return if (song.isEmpty()) null else SongQuery(song, singer)
         }
         return SongQuery(after, null)
+    }
+
+    private companion object {
+        /** 只允许一个 `@某人` 前缀出现在触发词之前。 */
+        val MENTION_ONLY = Regex("^@[^\\s@]{1,24}\\s*$")
+
+        /** 歌名 + 歌手的合理长度上限，超过就当成普通聊天。 */
+        const val MAX_SONG_QUERY_CHARS = 40
     }
 
     // ------------------------------------------------------------------ pipeline
@@ -265,37 +288,54 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
                 return
             }
 
-            val mid = searchMid(query.song)
-            if (mid.isNullOrBlank()) {
+            val hit = searchMid(query.song)
+            if (hit == null) {
                 notice(talker, R.string.qq_music_order_not_found)
                 return
             }
 
-            val detail = fetchDetail(mid)
-            if (detail == null) {
-                notice(talker, R.string.qq_music_order_detail_failed)
-                return
-            }
+            // 详情接口偶发失败时不要整单放弃：搜索结果里的 mid / 媒体 mid / 歌曲 id 已经够发卡片和取流。
+            val detail = fetchDetail(hit.mid) ?: SongDetail(
+                mid = hit.mid,
+                name = hit.name,
+                singer = hit.singer,
+                songId = hit.songId,
+                albumPmid = null,
+                mediaMid = hit.mediaMid,
+            ).also { WeLogger.w(TAG, "detail unavailable, fallback to search hit ${hit.mid}") }
 
-            val lyric = fetchLyric(mid)
+            val lyric = fetchLyric(hit.mid)
             val audioUrl = resolveAudioUrl(detail)
-            val cover = fetchCover(detail)
+            val thumbUrl = resolveCoverUrl(detail)
             val singer = resolveSinger(talker, sender, detail)
 
+            val wantsCard = sendAsCard()
+            val wantsVoice = sendAsVoice()
+
             var cardOk = false
-            if (sendAsCard()) cardOk = sendCard(talker, detail, singer, lyric, cover)
+            if (wantsCard) cardOk = sendCard(talker, detail, singer, lyric, audioUrl, thumbUrl)
 
             var voiceOk = false
-            if (sendAsVoice() && !audioUrl.isNullOrBlank()) voiceOk = sendVoice(talker, audioUrl)
+            if (wantsVoice && !audioUrl.isNullOrBlank()) voiceOk = sendVoice(talker, audioUrl)
+
+            WeLogger.i(
+                TAG,
+                "order done: card=$wantsCard/$cardOk voice=$wantsVoice/$voiceOk " +
+                    "audioUrl=${if (audioUrl.isNullOrBlank()) "none" else "resolved"}",
+            )
 
             when {
-                sendAsCard() && sendAsVoice() && !cardOk && !voiceOk ->
+                wantsCard && wantsVoice && !cardOk && !voiceOk ->
                     notice(talker, R.string.qq_music_order_both_failed)
 
-                sendAsCard() && !cardOk ->
+                wantsCard && !cardOk ->
                     notice(talker, R.string.qq_music_order_card_failed)
 
-                sendAsVoice() && !voiceOk ->
+                // 取不到可播放直链（会员曲/版权限制）不是"发送失败"，要说清楚只发了卡片。
+                wantsVoice && audioUrl.isNullOrBlank() ->
+                    notice(talker, R.string.qq_music_order_voice_unavailable)
+
+                wantsVoice && !voiceOk ->
                     notice(talker, R.string.qq_music_order_voice_failed)
             }
         } catch (e: Throwable) {
@@ -313,7 +353,23 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
 
     // ------------------------------------------------------------------ QQ Music API
 
-    private fun searchMid(song: String): String? {
+    private data class SongHit(
+        val mid: String,
+        val name: String,
+        val singer: String,
+        val songId: Long,
+        val mediaMid: String?,
+    )
+
+    /**
+     * 搜索歌曲。
+     *
+     * 真机/接口实测（2026-09-22）：musicu 搜索的响应是
+     * `req.data.body.song.list[0]`，字段是 `title` / `mid` / `file.media_mid` / `id`；
+     * 而旧代码读的是 `data.song.itemlist`（那是 smartbox 的路径），所以**主路永远命中不了**，
+     * 只能靠 smartbox 兜底 —— 结果经常搜到翻唱、伴奏或干脆搜不到。
+     */
+    private fun searchMid(song: String): SongHit? {
         runCatching {
             val param = JSONObject()
                 .put("num_per_page", 10)
@@ -327,29 +383,44 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             val body = JSONObject()
                 .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
                 .put("req", req)
-                .toString()
 
-            val raw = getString(MUSICU + URLEncoder.encode(body, "UTF-8"), jsonHeaders())
-                ?: return@runCatching
-            val mid = JSONObject(raw).optJSONObject("data")
+            val item = musicu(body)?.optJSONObject("req")
+                ?.optJSONObject("data")
+                ?.optJSONObject("body")
                 ?.optJSONObject("song")
-                ?.optJSONArray("itemlist")
+                ?.optJSONArray("list")
                 ?.optJSONObject(0)
-                ?.optString("mid")
-            if (!mid.isNullOrBlank()) return@runCatching
-        }.onFailure { WeLogger.e(TAG, "musicu search failed", it) }
+            if (item != null) {
+                val hit = hitOf(item)
+                if (hit != null) {
+                    WeLogger.i(TAG, "search hit via musicu: ${hit.name} / ${hit.mid}")
+                    return hit
+                }
+            }
+        }.onFailure { WeLogger.w(TAG, "musicu search failed", it) }
 
-        // ② smartbox fallback
+        // ② smartbox 兜底（路径确实是 data.song.itemlist）
         return runCatching {
             val raw = getString(SMARTBOX + URLEncoder.encode(song, "UTF-8"), jsonHeaders())
                 ?: return@runCatching null
-            JSONObject(raw).optJSONObject("data")
+            val item = JSONObject(raw).optJSONObject("data")
                 ?.optJSONObject("song")
                 ?.optJSONArray("itemlist")
                 ?.optJSONObject(0)
-                ?.optString("mid")
-                ?.takeIf { it.isNotBlank() }
-        }.onFailure { WeLogger.e(TAG, "smartbox fallback failed", it) }.getOrNull()
+                ?: return@runCatching null
+            hitOf(item)?.also { WeLogger.i(TAG, "search hit via smartbox: ${it.name} / ${it.mid}") }
+        }.onFailure { WeLogger.w(TAG, "smartbox fallback failed", it) }.getOrNull()
+    }
+
+    private fun hitOf(item: JSONObject): SongHit? {
+        val mid = item.optString("mid").takeIf { it.isNotBlank() } ?: return null
+        return SongHit(
+            mid = mid,
+            name = item.optString("title").ifBlank { item.optString("name").ifBlank { mid } },
+            singer = item.optJSONArray("singer")?.optJSONObject(0)?.optString("name").orEmpty(),
+            songId = item.optLong("id", 0L),
+            mediaMid = item.optJSONObject("file")?.optString("media_mid")?.takeIf { it.isNotBlank() },
+        )
     }
 
     data class SongDetail(
@@ -393,9 +464,87 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         JSONObject(raw).optString("lyric").ifBlank { NO_LYRIC }
     }.getOrDefault(NO_LYRIC)
 
+    /**
+     * 解析可播放直链。
+     *
+     * 真机实测结论（2026-09-22，容器内直连 QQ 音乐接口验证）：
+     *  - 旧实现只读 `flowurl`，而取流接口返回的可播放字段是 **`purl`**（相对路径，需拼 `sip` 主机），
+     *    所以哪怕是免费曲也永远拿不到链接 → 语音条从来没发出去过；
+     *  - `MtLimitFreeSvr.Obtain` 对会员曲只回空 ppurl，且旧实现里 `CgiGetTempVkey` 的 `mediamid`
+     *    写死成 "Yun"（应该是歌曲的 media_mid），链路根本走不通；
+     *  - 免 vkey 直链（ws.stream.qqmusic.qq.com/C400<media>.m4a）现在一律 403，不要再依赖；
+     *  - 匿名请求（不带账号凭据）对**免费曲**也返回空 purl/ppurl —— 2026-09-22 容器内实测：
+     *    UrlGetVkey(M500/C400/M800)、CgiGetVkey(uin=0)、MtLimitFreeSvr 全部为空，
+     *    第三方 Meting 公共实例同样拿不到直链。所以"语音条"只有两条路：填 QQ 音乐 Cookie
+     *    （走 [resolveViaCookie] 换正式 vkey），或者不发语音只发卡片。
+     *  - 会员曲（is_vip）即便有 Cookie 也要账号有对应权益，取不到就如实告知，不是 bug。
+     *
+     * 尝试顺序：Cookie 正式 vkey → UrlGetVkey（M500/C400/M800）→ CgiGetVkey → MtLimitFreeSvr+TempVkey。
+     */
     private fun resolveAudioUrl(detail: SongDetail): String? {
+        val media = detail.mediaMid ?: detail.mid
+
+        // 没有 Cookie 就直接收手：匿名请求（UrlGetVkey / CgiGetVkey(uin=0) / MtLimitFreeSvr）
+        // 已被实测证明对免费曲也一律返回空，继续跑等于白发 5 个网络请求、拖慢点歌响应。
+        // 调用方会据此提示"只发了卡片 + 建议填 Cookie"。
+        if (cookieAuth() == null) {
+            WeLogger.i(TAG, "no qq music cookie configured: skip stream resolution, card only")
+            return null
+        }
+
+        // 0) 带账号凭据的取流 —— 唯一能拿到正式 vkey 的方式（vkey 直链正是官方/侧边栏
+        //    音乐卡片组件用的那种 URL，只是它们由客户端带登录态去换）。
+        resolveViaCookie(detail)?.let {
+            WeLogger.i(TAG, "audio url resolved via cookie vkey")
+            return it
+        }
+
+        for (name in listOf("M500$media.mp3", "C400$media.m4a", "M800$media.mp3")) {
+            val url = runCatching {
+                val param = JSONObject()
+                    .put("guid", "Yun")
+                    .put("songmid", JSONArray().put(detail.mid))
+                    .put("filename", JSONArray().put(name))
+                val request = JSONObject()
+                    .put("module", "music.vkey.GetVkey")
+                    .put("method", "UrlGetVkey")
+                    .put("param", param)
+                val body = JSONObject()
+                    .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
+                    .put("request", request)
+                extractPurl(musicu(body), "midurlinfo")
+            }.onFailure { WeLogger.w(TAG, "UrlGetVkey($name) failed", it) }.getOrNull()
+            if (!url.isNullOrBlank()) {
+                WeLogger.i(TAG, "audio url resolved via UrlGetVkey($name)")
+                return url
+            }
+        }
+
+        val viaCgi = runCatching {
+            val param = JSONObject()
+                .put("guid", "10000")
+                .put("songmid", JSONArray().put(detail.mid))
+                .put("songtype", JSONArray().put(0))
+                .put("uin", "0")
+                .put("loginflag", 1)
+                .put("platform", "20")
+            val request = JSONObject()
+                .put("module", "vkey.GetVkeyServer")
+                .put("method", "CgiGetVkey")
+                .put("param", param)
+            val body = JSONObject()
+                .put("comm", JSONObject().put("ct", "24").put("cv", "0").put("uin", "0"))
+                .put("req", request)
+            extractPurl(musicu(body), "midurlinfo")
+        }.onFailure { WeLogger.w(TAG, "CgiGetVkey failed", it) }.getOrNull()
+        if (!viaCgi.isNullOrBlank()) {
+            WeLogger.i(TAG, "audio url resolved via CgiGetVkey")
+            return viaCgi
+        }
+
+        // 最后一条路：会员限免额度（部分非会员曲目会给出临时 ppurl），再用它换临时 vkey。
         if (detail.songId > 0) {
-            val ppurl = runCatching {
+            val temp = runCatching {
                 val param = JSONObject()
                     .put("songid", JSONArray().put(detail.songId))
                     .put("need_ppurl", true)
@@ -406,21 +555,17 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
                 val body = JSONObject()
                     .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
                     .put("request", request)
-                    .toString()
-
-                val raw = getString(MUSICU + URLEncoder.encode(body, "UTF-8"), jsonHeaders())
-                    ?: return@runCatching null
-                JSONObject(raw).optJSONObject("request")
+                musicu(body)?.optJSONObject("request")
                     ?.optJSONObject("data")
                     ?.optJSONArray("tracks")
                     ?.optJSONObject(0)
                     ?.optJSONObject("control")
                     ?.optString("ppurl")
                     ?.takeIf { it.isNotBlank() }
-            }.onFailure { WeLogger.e(TAG, "MtLimitFreeSvr failed", it) }.getOrNull()
+            }.onFailure { WeLogger.w(TAG, "MtLimitFreeSvr failed", it) }.getOrNull()
 
-            if (!ppurl.isNullOrBlank()) {
-                val purl = runCatching {
+            if (!temp.isNullOrBlank()) {
+                val url = runCatching {
                     val request = JSONObject()
                         .put("module", "music.vkey.GetVkey")
                         .put("method", "CgiGetTempVkey")
@@ -432,54 +577,127 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
                                     "songlist",
                                     JSONArray().put(
                                         JSONObject()
-                                            .put("mediamid", "Yun")
-                                            .put("tempVkey", ppurl)
+                                            .put("mediamid", media)
+                                            .put("tempVkey", temp)
                                             .put("songMID", detail.mid),
                                     ),
                                 ),
                         )
-                    val body = JSONObject().put("request", request).toString()
-
-                    val raw = getString(MUSICU + URLEncoder.encode(body, "UTF-8"), jsonHeaders())
-                        ?: return@runCatching null
-                    JSONObject(raw).optJSONObject("request")
+                    val body = JSONObject().put("request", request)
+                    musicu(body)?.optJSONObject("request")
                         ?.optJSONObject("data")
                         ?.optJSONObject("data")
                         ?.optString("purl")
                         ?.takeIf { it.isNotBlank() }
-                }.onFailure { WeLogger.e(TAG, "CgiGetTempVkey failed", it) }.getOrNull()
+                }.onFailure { WeLogger.w(TAG, "CgiGetTempVkey failed", it) }.getOrNull()
 
-                if (!purl.isNullOrBlank()) return purl
+                if (!url.isNullOrBlank()) {
+                    WeLogger.i(TAG, "audio url resolved via MtLimitFreeSvr")
+                    return if (url.startsWith("http")) url else STREAM_PREFIX + url
+                }
             }
         }
 
-        // UrlGetVkey fallback
-        val media = detail.mediaMid ?: detail.mid
+        WeLogger.i(TAG, "no playable audio url for mid=${detail.mid} (vip/limited or unavailable)")
+        return null
+    }
+
+    /**
+     * 用用户填的 QQ 音乐 Cookie 换取正式 vkey（相当于官方客户端/侧边栏音乐卡片那条路）。
+     *
+     * 请求形状与 QQ 音乐客户端一致：`comm` 带 `uin` + `authst`（即 `qm_keyst`），
+     * `req` 走 `vkey.GetVkeyServer/CgiGetVkey`、`platform=20`、`loginflag=1`；
+     * 返回 `req.data.midurlinfo[0].purl` 是相对路径，要拼上 `req.data.sip[0]`。
+     */
+    private fun resolveViaCookie(detail: SongDetail): String? {
+        val (uin, authst) = cookieAuth() ?: return null
         return runCatching {
             val param = JSONObject()
-                .put("guid", "Yun")
+                .put("guid", "10000")
                 .put("songmid", JSONArray().put(detail.mid))
-                .put("filename", JSONArray().put("M500$media.mp3"))
+                .put("songtype", JSONArray().put(0))
+                .put("uin", uin)
+                .put("loginflag", 1)
+                .put("platform", "20")
             val request = JSONObject()
-                .put("module", "music.vkey.GetVkey")
-                .put("method", "UrlGetVkey")
+                .put("module", "vkey.GetVkeyServer")
+                .put("method", "CgiGetVkey")
                 .put("param", param)
             val body = JSONObject()
-                .put("comm", JSONObject().put("ct", "19").put("cv", "1882"))
-                .put("request", request)
-                .toString()
+                .put(
+                    "comm",
+                    JSONObject()
+                        .put("uin", uin)
+                        .put("format", "json")
+                        .put("ct", 24)
+                        .put("cv", 0)
+                        .put("authst", authst),
+                )
+                .put("req", request)
+            extractPurl(musicu(body), "midurlinfo")
+        }.onFailure { WeLogger.w(TAG, "cookie vkey request failed", it) }.getOrNull()
+    }
 
-            val raw = getString(MUSICU + URLEncoder.encode(body, "UTF-8"), jsonHeaders())
-                ?: return@runCatching null
-            val flow = JSONObject(raw).optJSONObject("request")
-                ?.optJSONObject("data")
-                ?.optJSONArray("midurlinfo")
-                ?.optJSONObject(0)
-                ?.optString("flowurl")
-                ?.takeIf { it.isNotBlank() }
-                ?: return@runCatching null
-            if (flow.startsWith("http")) flow else STREAM_PREFIX + flow
-        }.onFailure { WeLogger.e(TAG, "UrlGetVkey failed", it) }.getOrNull()
+    /**
+     * 解析用户填写的 QQ 音乐 Cookie（可选）。
+     *
+     * 支持整段 Cookie（登录 y.qq.com 后从开发者工具复制：`uin=123456; qm_keyst=xxx; ...`），
+     * 键顺序无关，`o123456` 这类带前缀的 uin 会自动去掉前缀。拿不到 uin 或密钥时返回 null
+     * —— 此时只发卡片，不再空跑后面的匿名取流（匿名对免费曲也拿不到链接）。
+     */
+    private fun cookieAuth(): Pair<String, String>? {
+        val raw = cookie()
+        if (raw.isEmpty() || !raw.contains('=')) return null
+
+        var uin = ""
+        var auth = ""
+        raw.split(';', '\n').forEach { part ->
+            val idx = part.indexOf('=')
+            if (idx <= 0) return@forEach
+            val key = part.substring(0, idx).trim().lowercase()
+            val value = part.substring(idx + 1).trim().trim('"')
+            if (value.isEmpty()) return@forEach
+            when (key) {
+                "uin", "wxuin", "p_uin", "o_uin", "musickey_uin" -> if (uin.isEmpty()) uin = value
+                "qm_keyst", "qqmusic_key", "qqmusic_key_new", "music_key", "skey" ->
+                    if (auth.isEmpty()) auth = value
+            }
+        }
+        if (uin.isEmpty() || auth.isEmpty()) {
+            WeLogger.w(TAG, "qq music cookie incomplete: uin=${uin.isNotEmpty()} key=${auth.isNotEmpty()}")
+            return null
+        }
+        val digits = uin.removePrefix("o")
+        if (digits.isEmpty() || !digits.all { it.isDigit() }) {
+            WeLogger.w(TAG, "qq music cookie uin malformed")
+            return null
+        }
+        return digits to auth
+    }
+
+    /** musicu 通用请求：统一拼接 URL、编码与异常兜底。 */
+    private fun musicu(body: JSONObject): JSONObject? = runCatching {
+        val raw = getString(MUSICU + URLEncoder.encode(body.toString(), "UTF-8"), jsonHeaders())
+            ?: return@runCatching null
+        JSONObject(raw)
+    }.onFailure { WeLogger.w(TAG, "musicu request failed", it) }.getOrNull()
+
+    /**
+     * 从 musicu 响应里取 `purl`（其次 `flowurl`）并拼上 `sip` 主机前缀。
+     *
+     * 响应外层键名跟随请求（`request` / `req` 两种都见过），所以两个都试。
+     */
+    private fun extractPurl(resp: JSONObject?, listKey: String): String? {
+        if (resp == null) return null
+        val data = (resp.optJSONObject("request") ?: resp.optJSONObject("req"))
+            ?.optJSONObject("data") ?: return null
+        val item = data.optJSONArray(listKey)?.optJSONObject(0) ?: return null
+        val raw = item.optString("purl").takeIf { it.isNotBlank() }
+            ?: item.optString("flowurl").takeIf { it.isNotBlank() }
+            ?: return null
+        if (raw.startsWith("http")) return raw
+        val host = data.optJSONArray("sip")?.optString(0).orEmpty().ifBlank { STREAM_PREFIX }
+        return if (host.endsWith("/")) host + raw else "$host/$raw"
     }
 
     /**
@@ -509,19 +727,20 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         return nick.ifBlank { fallback }
     }
 
-    private fun fetchCover(detail: SongDetail): ByteArray? {
-        val url = if (coverAsAvatar()) {
-            runCatching { WeDatabaseApi.getAvatarUrl(detail.mid) }
-                .getOrDefault("")
-                .takeIf { it.isNotBlank() }
-                ?: detail.albumPmid?.let { "$COVER_PREFIX$it.jpg" }
-        } else {
-            detail.albumPmid?.let { "$COVER_PREFIX$it.jpg" }
-        } ?: return null
-
-        return runCatching { downloadBytes(url, MAX_COVER_BYTES) }
-            .onFailure { WeLogger.e(TAG, "cover download failed", it) }
-            .getOrNull()
+    /**
+     * 卡片的缩略图地址。
+     *
+     * 之前这里下载封面字节再传给发送接口，但 `WeMessageApi.sendXmlAppMsg` 的 url/data 参数恒为
+     * null（封面由 XML 里的 `thumburl` 交给微信自己去下），所以那次下载完全是白跑的网络请求
+     * —— 去掉后卡片依旧正常，还少一次请求。`coverAsAvatar` 现在真正生效（用歌手头像做封面）。
+     */
+    private fun resolveCoverUrl(detail: SongDetail): String {
+        val album = detail.albumPmid?.let { "$COVER_PREFIX$it.jpg" }.orEmpty()
+        if (!coverAsAvatar()) return album
+        return runCatching { WeDatabaseApi.getAvatarUrl(detail.mid) }
+            .getOrDefault("")
+            .takeIf { it.isNotBlank() }
+            ?: album
     }
 
     // ------------------------------------------------------------------ send
@@ -531,30 +750,57 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
         detail: SongDetail,
         singer: String,
         lyric: String,
-        cover: ByteArray?,
+        audioUrl: String?,
+        thumbUrl: String,
     ): Boolean = runCatching {
-        WeMessageApi.sendXmlAppMsg(talker, buildSongXml(detail, singer, lyric))
+        val xml = buildSongXml(detail, singer, lyric, audioUrl, thumbUrl)
+        val ok = WeMessageApi.sendXmlAppMsg(talker, xml)
+        WeLogger.i(TAG, "send card result=$ok xmlLen=${xml.length}")
+        ok
     }.onFailure { WeLogger.e(TAG, "send card failed", it) }.getOrDefault(false)
 
     /**
      * Standard QQ Music appmsg card. `appid` must be a registered music appId so WeChat renders
      * the music card instead of a generic link.
+     *
+     * 必须是完整的 `<msg>…</msg>` 报文：宿主解析入口（WeAppMsgApi.methodParseXml 命中的那个方法）
+     * 是「解析一条完整消息 XML 里的 appmsg 段」，只给 `<appmsg>` 片段时它会直接返回 null 并打印
+     * "parse amessage xml failed" —— 这正是线上点歌卡片一直发不出去的根因（真机日志实测）。
+     * 参考可用的报文样例：MarkdownRendering.toNativeMarkdownAppMsg、ReadReceipts 的卡片 XML。
+     *
+     * [audioUrl] 是解析出来的可播放直链（可能为空）：非空时写进 dataurl/lowdataurl，
+     * 让微信卡片自带播放能力；为空时仍发卡片（标题/歌手/封面/歌词都可用），只按链接跳转。
      */
-    private fun buildSongXml(detail: SongDetail, singer: String, lyric: String): String {
+    private fun buildSongXml(
+        detail: SongDetail,
+        singer: String,
+        lyric: String,
+        audioUrl: String? = null,
+        thumbUrl: String = "",
+    ): String {
         val url = SONG_PAGE + detail.mid
-        val cover = detail.albumPmid?.let { "$COVER_PREFIX$it.jpg" }.orEmpty()
+        val cover = thumbUrl
+        val play = audioUrl.orEmpty()
         return buildString {
+            append("<msg>")
             append("<appmsg appid=\"").append(escape(appId())).append("\" sdkver=\"0\">")
             append("<title>").append(escape(detail.name)).append("</title>")
             append("<des>").append(escape(singer)).append("</des>")
+            append("<action>view</action>")
             append("<type>3</type>")
+            append("<showtype>0</showtype>")
+            append("<content></content>")
             append("<url>").append(escape(url)).append("</url>")
+            append("<lowurl>").append(escape(url)).append("</lowurl>")
+            append("<dataurl>").append(escape(play)).append("</dataurl>")
+            append("<lowdataurl>").append(escape(play)).append("</lowdataurl>")
             append("<thumburl>").append(escape(cover)).append("</thumburl>")
             append("<songalbumurl>").append(escape(cover)).append("</songalbumurl>")
             append("<songlyric>").append(escape(lyric)).append("</songlyric>")
             append("<appattach><totallen>0</totallen><attachid></attachid><fileext></fileext></appattach>")
             append("<frommsgid>0</frommsgid>")
             append("</appmsg>")
+            append("</msg>")
         }
     }
 
@@ -663,32 +909,6 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             }
         }
         return target.isFile && target.length() > 0L
-    }
-
-    private fun downloadBytes(url: String, limit: Int): ByteArray? {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "MicroMessenger Client")
-            .get()
-            .build()
-
-        dlClient.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            val body = resp.body ?: return null
-            body.byteStream().use { input ->
-                val out = ByteArrayOutputStream()
-                val buf = ByteArray(8192)
-                var total = 0
-                while (true) {
-                    val read = input.read(buf)
-                    if (read < 0) break
-                    total += read
-                    if (total > limit) return null
-                    out.write(buf, 0, read)
-                }
-                return out.toByteArray()
-            }
-        }
     }
 
     private fun escape(s: String): String = s

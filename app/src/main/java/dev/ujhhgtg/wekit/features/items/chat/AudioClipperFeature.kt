@@ -59,6 +59,7 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
     override val descriptionRes = R.string.feature_audio_clipper_description
 
     private const val MENU_ID = 777421
+    private const val TAG = "AudioClipper"
 
     override fun onEnable() = WeChatMessageContextMenuApi.addProvider(this)
 
@@ -72,17 +73,37 @@ object AudioClipperFeature : ClickableFeature(), WeChatMessageContextMenuApi.IMe
     override fun getMenuItems(): List<WeChatMessageContextMenuApi.MenuItem> = listOf(
         WeChatMessageContextMenuApi.MenuItem(
             id = MENU_ID,
-            text = "音频剪辑",
+            // 菜单框架自己会拼 " [K]"（WeChatMessageContextMenuApi: "${item.text} [K]"），
+            // 所以这里只写「剪辑」，最终显示为「剪辑 [K]」（按用户要求改名）。
+            text = "剪辑",
             drawable = MenuIcons.res(R.drawable.ic_menu_voice),
             imageVector = MaterialSymbols.Outlined.Content_cut,
             isSupported = { msgInfo -> msgInfo.typeCode == MessageType.VOICE.code },
             multiSelect = WeChatMessageContextMenuApi.MultiSelectSupport.Unsupported,
             onClick = { view, _, msgInfo ->
-                val encPath = msgInfo.imagePath
-                if (encPath.isNullOrBlank()) {
-                    showToast(view.context, view.context.getString(R.string.audio_clipper_source_missing))
-                } else {
-                    showAudioClipper(view, encPath)
+                // 真机反馈「点了没反应」——之前这条路径没有任何日志，异常也只进日志不留痕。
+                // 现在每一步都有记录，且任何异常都会变成用户可见的 toast，不再静默失败。
+                runCatching {
+                    val encPath = msgInfo.imagePath
+                    WeLogger.i(
+                        TAG,
+                        "menu click: type=${msgInfo.typeCode} path=${if (encPath.isNullOrBlank()) "blank" else "ok"}",
+                    )
+                    if (encPath.isNullOrBlank()) {
+                        showToast(
+                            view.context,
+                            view.context.getString(R.string.audio_clipper_source_missing),
+                        )
+                    } else {
+                        // 宿主菜单是 PopupWindow：等它彻底关闭再弹对话框，避免窗口事务互相打断
+                        // 导致"对话框没出现"（延迟很短，用户感知不到）。
+                        view.postDelayed({ showAudioClipper(view, encPath) }, 150L)
+                    }
+                }.onFailure {
+                    WeLogger.e(TAG, "menu click failed", it)
+                    runCatching {
+                        showToast(view.context, it.message ?: "音频剪辑打开失败")
+                    }
                 }
             },
         ),

@@ -4029,6 +4029,9 @@
     <string name="qq_music_order_both_failed">音乐卡片和歌曲语音发送失败</string>
     <string name="qq_music_order_card_failed">音乐卡片发送失败</string>
     <string name="qq_music_order_voice_failed">歌曲语音发送失败</string>
+    <string name="qq_music_order_voice_unavailable">没取到可播放直链（多为版权限制，或未填 QQ音乐 Cookie），已只发音乐卡片</string>
+    <string name="qq_music_order_cookie">QQ音乐 Cookie（可选）</string>
+    <string name="qq_music_order_cookie_hint">登录 y.qq.com 后在开发者工具里复制，例如 uin=123456; qm_keyst=xxx。只有需要发送「语音条」时才要填。</string>
     <string name="qq_music_order_settings_title">QQ音乐点歌</string>
     <string name="qq_music_order_triggers">触发词</string>
     <string name="qq_music_order_triggers_summary">多个触发词用逗号分隔，默认“点歌”</string>

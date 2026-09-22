@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -62,10 +63,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -126,6 +130,7 @@ import java.lang.reflect.Modifier as ReflectModifier
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import kotlin.io.path.div
 import kotlin.io.path.exists
 import kotlin.io.path.readText
@@ -271,6 +276,49 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         }
     }
 
+    /**
+     * 触摸期间阻止宿主的祖先容器（RecyclerView / ViewPager / 下拉面板容器）拦截事件。
+     *
+     * 为什么必须放在 Compose 内部：ComposeView 是 ViewGroup，事件分发先把 DOWN 交给子 View
+     * （AndroidComposeView），Compose 的 clickable 会在那里成为 touch target 并消费 DOWN；
+     * 一旦存在 touch target，ViewGroup 自身就再也不会走 `View.dispatchTouchEvent` 里的
+     * OnTouchListener 分支（OnTouchListener 只在 mFirstTouchTarget == null 时被回调）
+     * ——给 ComposeView 挂 OnTouchListener 是**无效**的（它永远收不到回调）。
+     *
+     * 所以这里用 pointerInput 在 [PointerEventPass.Initial] 阶段（早于所有子节点的手势识别器）
+     * 监听：按下瞬间对全部祖先调 [disallowParentIntercept]（true），抬手/取消恢复 false；
+     * 一旦判定为「明确的横向滑动」（分组横向切换手势）也立即恢复 false，把事件让回原有的
+     * 横向滑动接管逻辑，避免分组横滑失效。全程**不消费**任何事件，tab 点击、长按菜单、
+     * 长按排序拖拽都照常工作。
+     */
+    private fun Modifier.guardAgainstParentIntercept(view: View, slopPx: Float): Modifier =
+        pointerInput(view, slopPx) {
+            awaitPointerEventScope {
+                while (true) {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    disallowParentIntercept(view, true)
+
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        // 抬手 / 取消：本次手势结束，恢复拦截并回到外层等下一次按下。
+                        if (event.changes.all { !it.pressed }) break
+
+                        if (event.type == PointerEventType.Move) {
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                            if (change != null) {
+                                val dx = abs(change.position.x - down.position.x)
+                                val dy = abs(change.position.y - down.position.y)
+                                if (dx > dy && dx > slopPx) break
+                            }
+                        }
+                    }
+
+                    disallowParentIntercept(view, false)
+                }
+            }
+        }
+
     private fun applyTabsPin(recycler: View?) {
         val header = tabsHeaderView.get() ?: return
         if (!pinTabsState.value) {
@@ -410,38 +458,14 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 val lifecycleOwner = LifecycleOwnerProvider.lifecycleOwner
                 setLifecycleOwner(lifecycleOwner)
 
-                // 点击分组 tab 误触「下拉小程序面板」：宿主的下拉手势是父容器在 DOWN/MOVE 阶段
-                // 拦截实现的，而这一条 tab 行（列表的第 0 个 header）只依赖 combinedClickable，
-                // 触摸期不声明消费 → 父容器先一步把手势判成下拉。这里只在触摸期间声明"别拦截"，
-                // 不改 Compose 内部逻辑、也不消费事件（返回 false，tab 点击照常生效）。
-                var touchStartX = 0f
-                var touchStartY = 0f
-                var interceptRelaxed = false
-                setOnTouchListener { view, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            touchStartX = event.x
-                            touchStartY = event.y
-                            interceptRelaxed = false
-                            disallowParentIntercept(view, true)
-                        }
-                        MotionEvent.ACTION_MOVE -> {
-                            if (!interceptRelaxed) {
-                                val dx = kotlin.math.abs(event.x - touchStartX)
-                                val dy = kotlin.math.abs(event.y - touchStartY)
-                                // 明确的横向滑动属于「滑动切换分组」手势，必须让回去，
-                                // 否则会把原有的横向接管逻辑一起掐死。
-                                if (dx > dy && dx > 24f) {
-                                    interceptRelaxed = true
-                                    disallowParentIntercept(view, false)
-                                }
-                            }
-                        }
-                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                            disallowParentIntercept(view, false)
-                    }
-                    false
-                }
+                // 注意：**不要**在这里给 ComposeView 挂 View 层的 OnTouchListener。
+                // ComposeView 是 ViewGroup，事件分发会先把 DOWN 交给子 View（AndroidComposeView），
+                // Compose 的 clickable 在那里成为 touch target 并消费 DOWN；只要存在 touch target，
+                // ViewGroup 自身就再也不会走 View.dispatchTouchEvent 里的 OnTouchListener 分支
+                // （OnTouchListener 只在 mFirstTouchTarget == null 时被回调）——监听器永远不会触发，
+                // 父容器照常拦截 MOVE，下拉小程序面板照旧，等于没改。
+                // 正确做法：把防御放进 Compose 内部，见 ConversationTabs 根 Box 上的
+                // Modifier.guardAgainstParentIntercept（PointerEventPass.Initial 阶段）。
 
                 val context = conversationHostView.context
 
@@ -1280,10 +1304,14 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
             order.mapNotNull { byId[it] }
         }
 
+        val guardView = LocalView.current
+        val guardSlopPx = with(LocalDensity.current) { 24.dp.toPx() }
+
         Box(
             modifier = modifier
                 .fillMaxWidth()
                 .background(containerColor)
+                .guardAgainstParentIntercept(guardView, guardSlopPx)
         ) {
             if (sortMode) {
                 SortableTabsRow(
