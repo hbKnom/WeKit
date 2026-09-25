@@ -375,6 +375,8 @@ object QqMusicOrder : ClickableFeature(), WeDatabaseListenerApi.IInsertListener,
             guardLastHit.set(now)
 
             clearFooterText(footer)
+            // 这条指令是「我们自己取消的发送」：宿主若把乐观插入的行再撤掉，不该演删除碎裂特效
+            MessageDeletionAnimation.suppressDeletionAnimation()
             // 拦下之后我们自己出歌；宿主如果仍然把这条落库，onInsert 那边会看到同文案而跳过，
             // 避免同一句指令出两份卡片。
             guardSuppress[talker] = text.trim() to now

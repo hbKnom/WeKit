@@ -92,12 +92,6 @@ object ModulePrefs {
 
     const val MAX_CONTEXT_LIMIT = 20
 
-    fun setScope(all: Boolean, talkers: List<String>, names: List<String>) {
-        prefs.putBool(KEY_SCOPE_ALL, all)
-        prefs.putString(KEY_SCOPE_TALKERS, talkers.joinToString("\n"))
-        prefs.putString(KEY_SCOPE_TALKER_NAMES, names.joinToString("\n"))
-    }
-
     fun scopeSummary(): String {
         if (prefs.getBoolOrDef(KEY_SCOPE_ALL, true)) return "全部聊天"
         val names = prefs.getStringOrDef(KEY_SCOPE_TALKER_NAMES, "").split('\n').filter { it.isNotBlank() }

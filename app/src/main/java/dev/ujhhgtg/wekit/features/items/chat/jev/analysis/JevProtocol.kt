@@ -5,6 +5,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.AnalysisInput
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ContextMessage
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessagePolicy
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs

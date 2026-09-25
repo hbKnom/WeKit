@@ -122,6 +122,24 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
 
     private var stormLogAt = 0L
 
+    /**
+     * 「这段时间内别放删除动画」的最后截止时刻（uptimeMillis）。
+     *
+     * 场景：[QqMusicOrder] 把用户自己发的点歌指令拦在发送之前（清空输入框、由模块自己出卡片/语音）。
+     * 宿主可能先把这条乐观插入的消息行挂上、发现文本被清空后又把它撤掉 —— 那是**我们主动取消的发送**，
+     * 不是用户删除消息。不抑制的话，用户每发一次点歌指令就会看到一次删除碎裂特效（用户 2026-09-25 反馈
+     * 「语音指令消息不应该出现删除特效，直接拦截发送」）。
+     */
+    @Volatile
+    private var suppressedUntil = 0L
+
+    /** 让接下来 [windowMs] 毫秒内的行 detach 都不播放删除动画（可从任意线程调用）。 */
+    fun suppressDeletionAnimation(windowMs: Long = SUPPRESS_DEFAULT_MS) {
+        suppressedUntil = SystemClock.uptimeMillis() + windowMs
+    }
+
+    private const val SUPPRESS_DEFAULT_MS = 1_500L
+
     @Volatile
     private var installed = false
 
@@ -177,6 +195,9 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
         // 不再依赖「view.parent 是否还在」这类启发式 —— 用户实测「每发一条消息先演一次删除特效」
         // 就是这条路径被误判造成的。
         if (rebound) return
+
+        // 外部显式抑制：被发送拦截取消掉的点歌指令行不是「删除」，不播特效
+        if (SystemClock.uptimeMillis() < suppressedUntil) return
 
         val list = (view.parent as? ViewGroup)?.takeIf { isRecyclerViewLike(it) }
             ?: knownParent[view]?.get()?.takeIf { isRecyclerViewLike(it) }
