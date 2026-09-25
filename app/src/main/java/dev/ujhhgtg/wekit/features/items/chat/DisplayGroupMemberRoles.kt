@@ -41,7 +41,7 @@ import dev.ujhhgtg.wekit.features.api.core.WeConversationApi
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.preferences.WePrefs
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
@@ -87,19 +87,19 @@ object DisplayGroupMemberRoles : ClickableFeature(), IResolveDex,
     private const val DEFAULT_ADMIN_FG = "#FFFFFFFF"
     private const val DEFAULT_MEMBER_FG = "#FFFFFFFF"
 
-    private var ownerBg by WePrefs.prefOption("group_role_owner_bg", DEFAULT_OWNER_BG)
-    private var adminBg by WePrefs.prefOption("group_role_admin_bg", DEFAULT_ADMIN_BG)
-    private var memberBg by WePrefs.prefOption("group_role_member_bg", DEFAULT_MEMBER_BG)
-    private var ownerFg by WePrefs.prefOption("group_role_owner_fg", DEFAULT_OWNER_FG)
-    private var adminFg by WePrefs.prefOption("group_role_admin_fg", DEFAULT_ADMIN_FG)
-    private var memberFg by WePrefs.prefOption("group_role_member_fg", DEFAULT_MEMBER_FG)
-    private var ownerText by WePrefs.prefOption("group_role_owner_text", "")
-    private var adminText by WePrefs.prefOption("group_role_admin_text", "")
-    private var memberText by WePrefs.prefOption("group_role_member_text", "")
+    private var ownerBg by hotPrefOption("group_role_owner_bg", DEFAULT_OWNER_BG)
+    private var adminBg by hotPrefOption("group_role_admin_bg", DEFAULT_ADMIN_BG)
+    private var memberBg by hotPrefOption("group_role_member_bg", DEFAULT_MEMBER_BG)
+    private var ownerFg by hotPrefOption("group_role_owner_fg", DEFAULT_OWNER_FG)
+    private var adminFg by hotPrefOption("group_role_admin_fg", DEFAULT_ADMIN_FG)
+    private var memberFg by hotPrefOption("group_role_member_fg", DEFAULT_MEMBER_FG)
+    private var ownerText by hotPrefOption("group_role_owner_text", "")
+    private var adminText by hotPrefOption("group_role_admin_text", "")
+    private var memberText by hotPrefOption("group_role_member_text", "")
 
-    private var showOwner by WePrefs.prefOption("group_role_show_owner", true)
-    private var showAdmin by WePrefs.prefOption("group_role_show_admin", true)
-    private var showMember by WePrefs.prefOption("group_role_show_member", true)
+    private var showOwner by hotPrefOption("group_role_show_owner", true)
+    private var showAdmin by hotPrefOption("group_role_show_admin", true)
+    private var showMember by hotPrefOption("group_role_show_member", true)
 
     private fun parseColor(value: String, fallback: String): Int =
         runCatching { value.toColorInt() }.getOrElse { fallback.toColorInt() }

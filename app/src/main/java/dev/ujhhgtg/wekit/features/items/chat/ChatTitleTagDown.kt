@@ -23,7 +23,9 @@ import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.ui.utils.MenuIcons
 import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.android.isDarkMode
 import dev.ujhhgtg.wekit.utils.android.showToast
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import kotlin.math.roundToInt
 
 /**
@@ -106,12 +108,15 @@ object ChatTitleTagDown : SwitchFeature(),
         val room = msgInfo.talker
         val wxid = if (group) msgInfo.sender else msgInfo.talker
         val entry = runCatching { store.entryFor(group, room, wxid) }.getOrNull()
-        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）
-        runCatching {
-            WeLogger.d(
-                TAG,
-                "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
-            )
+        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）。
+        // 每条消息 bind 都会走到这里，挂在「详细日志」开关后面，避免滚动时每帧一次日志写入。
+        if (WeLogger.verboseEnabled) {
+            runCatching {
+                WeLogger.d(
+                    TAG,
+                    "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
+                )
+            }
         }
         if (wxid.isEmpty()) return
 
@@ -152,10 +157,14 @@ object ChatTitleTagDown : SwitchFeature(),
         clearInlineSpan(textView)
         val name = textView.text
         val style = TITLE_PRESETS[normalizeTitleStyle(entry.style)]
+        // 头衔标签是 WeKit 自己加在消息流里的装饰，莫奈引擎覆盖不到；这里在用户**没有**自定义
+        // 颜色时跟随引擎色板（渐变用 accent→accentDim，文字用 onPrimary）。用户自定义颜色优先，
+        // 莫奈未启用 / 未解析成功时保持原来的预设配色。
+        val monet = MonetColors.tokens(textView.context.isDarkMode)
         val badge = TitleBadgeSpan(
-            bgStart = entry.customBgStart ?: style.bgStart,
-            bgEnd = entry.customBgEnd ?: style.bgEnd,
-            textColor = entry.customFg ?: style.fg,
+            bgStart = entry.customBgStart ?: monet?.accent ?: style.bgStart,
+            bgEnd = entry.customBgEnd ?: monet?.accentDim ?: style.bgEnd,
+            textColor = entry.customFg ?: monet?.onPrimary ?: style.fg,
         )
 
         val sb = SpannableStringBuilder()

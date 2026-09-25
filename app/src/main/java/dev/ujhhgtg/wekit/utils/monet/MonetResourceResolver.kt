@@ -64,9 +64,11 @@ object MonetResourceResolver {
         dexProvider: MonetDexEvidenceProvider? = null,
         onProgress: (completed: Int?, total: Int?, detail: String) -> Unit = { _, _, _ -> },
     ): Resolution {
+        val matchStart = System.nanoTime()
         val resolved = MonetStructureMatcher.resolveAll(graph, dexProvider) { completed, total, detail ->
             onProgress(completed, total, detail)
         }
+        val matchMs = (System.nanoTime() - matchStart) / 1_000_000
         val palette = overlayPalette(resources, fallbackPalette)
         // 合成资源（自适应图标图层）要借宿主同类型里空的槽位，需要全量节点的类型统计。
         val slots = MonetHostTypeSlots.of(graph.allNodes())
@@ -108,7 +110,7 @@ object MonetResourceResolver {
         WeLogger.i(
             TAG,
             "resolved ${resolved.size} roles (${plan.drawables.size} drawables, ${colors.size} colors, " +
-                "${unresolved.size} unresolved)",
+                "${unresolved.size} unresolved)，匹配用时 $matchMs ms",
         )
         if (skippedIdentity.isNotEmpty()) {
             WeLogger.w(

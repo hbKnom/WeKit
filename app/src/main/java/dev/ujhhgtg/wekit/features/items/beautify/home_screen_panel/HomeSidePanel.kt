@@ -18,8 +18,12 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -49,6 +53,7 @@ import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.hookAfterDirectly
 import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.reflection.float
 import dev.ujhhgtg.wekit.utils.reflection.int
 import kotlinx.coroutines.CoroutineScope
@@ -97,6 +102,51 @@ private fun homeSidePanelShouldReparentExternalChrome(
         isCurrentHost &&
         !isInContentWrapper &&
         parentClassName != "androidx.appcompat.widget.ActionBarOverlayLayout"
+
+/**
+ * 侧滑面板 / 主页工具栏挂件的主题。
+ *
+ * 面板里的卡片、容器、文字全是 WeKit 自己用 Compose 画的，莫奈引擎改的是宿主微信的资源 id，
+ * 覆盖不到这些界面。[InjectedUiTheme] 虽然也会跟着引擎换色，但它是拿引擎 primary **当种子
+ * 重新派生**一套 M3 色板，surface / container 那几档"面"色与引擎实际替换给微信原生界面的值
+ * 仍有色差（实机反馈的「没美化到位」）。
+ *
+ * 所以这里在引擎生效时，用 [MonetColors] 的 token 直接覆盖 scheme 里承载"面"的角色，
+ * 让面板与原生完全同源；引擎未启用 / 未解析成功（[MonetColors.tokens] 返回 null）时一行不改，
+ * 完全沿用原来的 [InjectedUiTheme] 配色。
+ */
+@Composable
+private fun MonetPanelTheme(content: @Composable () -> Unit) {
+    InjectedUiTheme {
+        val night = isSystemInDarkTheme()
+        val tokens = MonetColors.applied.value?.let { MonetColors.tokens(night) }
+        if (tokens == null) {
+            content()
+        } else {
+            MaterialTheme(
+                colorScheme = MaterialTheme.colorScheme.copy(
+                    primary = Color(tokens.primary),
+                    onPrimary = Color(tokens.onPrimary),
+                    primaryContainer = Color(tokens.primaryContainer),
+                    onPrimaryContainer = Color(tokens.onPrimaryContainer),
+                    surface = Color(tokens.surface),
+                    // M3 的容器档位在 token 里只有 surface / surfaceContainer / surfaceContainerHigh
+                    // 三档，低档位按表面色向容器色插值，保持原来的层次感。
+                    surfaceContainerLow = Color(
+                        MonetColors.blend(tokens.surface, tokens.surfaceContainer, 0.5)
+                    ),
+                    surfaceContainer = Color(tokens.surfaceContainer),
+                    surfaceContainerHigh = Color(tokens.surfaceContainerHigh),
+                    surfaceContainerHighest = Color(tokens.surfaceContainerHigh),
+                    onSurface = Color(tokens.onSurface),
+                    onSurfaceVariant = Color(tokens.onSurfaceVariant),
+                    outline = Color(tokens.outline),
+                ),
+                content = content,
+            )
+        }
+    }
+}
 
 @Suppress("DEPRECATION")
 object HomeSidePanel : SwitchFeature(), IResolveDex {
@@ -478,7 +528,7 @@ object HomeSidePanel : SwitchFeature(), IResolveDex {
             panelView.isClickable = true
             panelView.setLifecycleOwner(LifecycleOwnerProvider.getOrCreate(activity))
             panelView.setContent {
-                InjectedUiTheme {
+                MonetPanelTheme {
                     LaunchedEffect(panelState) {
                         val messagesJob = launch(start = CoroutineStart.UNDISPATCHED) {
                             panelState.messages.collect { message ->
@@ -1219,7 +1269,7 @@ object HomeSidePanel : SwitchFeature(), IResolveDex {
                 setBackgroundColor(AndroidColor.TRANSPARENT)
                 setLifecycleOwner(LifecycleOwnerProvider.getOrCreate(activity))
                 setContent {
-                    InjectedUiTheme {
+                    MonetPanelTheme {
                         val state by panelState.uiState.collectAsStateWithLifecycle()
                         HomeSidePanelToolbarContent(
                             profile = state.profile,

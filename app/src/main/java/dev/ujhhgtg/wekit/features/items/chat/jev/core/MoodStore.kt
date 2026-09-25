@@ -9,6 +9,9 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 data class MoodBar(val name: String, val percent: Int, val highlight: Boolean = false)
 
+/** 一条备选解读（候选卡选项 → 概率），卡片用「标签 概率%」展示。 */
+data class MoodOption(val label: String, val percent: Int)
+
 /**
  * 分析结果。
  *
@@ -34,6 +37,26 @@ data class Mood(
      * 「这条话是什么情绪」用这个字段，取不到时退回 [label]。
      */
     val dominant: String? = null,
+    /**
+     * 情绪判定的置信度（0..1，模型自报；取不到时为 0）。卡片只在 > 0 时展示，
+     * 因为它不是校准过的准确率，只是「模型有多确定」的参考。
+     */
+    val confidence: Double = 0.0,
+    /** 场景名（如「邀约安排」），取不到为 null。卡片元信息行（场景 · 阶段）用。 */
+    val sceneLabel: String? = null,
+    /** 对话阶段（如「等具体事实或细节」），取不到为 null。 */
+    val progressLabel: String? = null,
+    /** 候选解读的短标题（如「这句可能在给见面留位置」）。 */
+    val readingTitle: String? = null,
+    /** 候选解读要回答的问题（如「对方是在试探一起活动的意愿吗？」）。 */
+    val readingQuestion: String? = null,
+    /** 候选解读的概率（已按概率降序取前几项）。 */
+    val readingOptions: List<MoodOption> = emptyList(),
+    /**
+     * 降级/补注：例如「第二轮未完成（429），只展示第一轮情绪概率」。
+     * 卡片会把它显式画出来 —— 用户能看到「为什么这条只有情绪」，而不是以为功能坏了。
+     */
+    val note: String? = null,
 )
 
 /**
@@ -157,6 +180,25 @@ object MoodStore {
             return values.last() - values.dropLast(1).average()
         }
     }
+
+    /** 同一会话最近几段的情绪强度（旧 → 新），卡片用它画一条走势线。 */
+    fun recentScores(talker: String, limit: Int = 12): List<Double> {
+        val deque = trends[talker] ?: return emptyList()
+        synchronized(deque) { return deque.toList().takeLast(limit) }
+    }
+
+    // ------------------------------------------------------------------ 回插去重键
+
+    /**
+     * 「回插会话」通道的去重键：**必须与上下文无关**。
+     *
+     * 以前它复用 [AnalysisInput.key] —— 那个键把上下文也算进哈希，于是同一条消息在
+     * 上下文变化（新消息到达、滚动重绑）后会得到一个新键，[markInserted] 形同虚设：
+     * 同一条消息被反复回插，用户看到的就是「一条接一条的【潜语 · 平静】」。
+     * 现在优先用「会话 + 本地消息 id」（同一台设备上稳定不变），拿不到 id 时退回文本哈希。
+     */
+    fun insertKeyOf(talker: String, messageId: Long, text: String): String =
+        if (messageId > 0L) "$talker#$messageId" else "$talker#t${text.hashCode()}"
 
     // ------------------------------------------------------------------ 回插去重
 

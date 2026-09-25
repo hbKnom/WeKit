@@ -75,6 +75,18 @@ class McpToolProvider(
     private val connectMutex = Mutex()
     private var client: Client? = null
 
+    /**
+     * 连续连接失败次数。
+     *
+     * 为什么需要它：MCP 服务器没起来时（手机上很常见 —— 这些端点跑在电脑/容器里），
+     * 后台重连循环会一直重试，而每次失败都打一条**完整异常栈**到日志文件。
+     * 实测一天里 MCP 相关的栈记录上千条，把日志文件刷满并造成无谓的磁盘 IO。
+     * 前 [TRACE_FAILURES] 次保留异常栈（足够定位），之后只留一行摘要。
+     */
+    private val connectFailures = java.util.concurrent.atomic.AtomicInteger()
+
+    private val traceFailures = 2
+
     /** Cached tools/list, refreshed on connect and on manual refresh. */
     override fun listTools(): List<ProviderTool> = _status.value.tools
 
@@ -103,6 +115,7 @@ class McpToolProvider(
             client = c
             val tools = fetchTools(c)
             _status.value = McpProviderStatus(McpConnectionState.CONNECTED, null, tools)
+            connectFailures.set(0)
             WeLogger.i(TAG, "connected to MCP server '$name' ($endpointUrl), ${tools.size} tools")
         }.onFailure { e ->
             _status.update {
@@ -111,7 +124,12 @@ class McpToolProvider(
                     lastError = e.message ?: e.javaClass.simpleName,
                 )
             }
-            WeLogger.e(TAG, "failed to connect MCP server '$name'", e)
+            val failures = connectFailures.incrementAndGet()
+            if (failures <= traceFailures) {
+                WeLogger.e(TAG, "failed to connect MCP server '$name'", e)
+            } else {
+                WeLogger.w(TAG, "failed to connect MCP server '$name' (第 $failures 次失败): ${e.message}")
+            }
             runCatching { client?.close() }
             client = null
         }

@@ -72,10 +72,32 @@ import dev.ujhhgtg.wekit.ui.utils.findViewsWhich
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.isDarkMode
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.reflection.int
 import java.lang.reflect.Field
 import java.util.WeakHashMap
 import kotlin.math.roundToInt
+
+/**
+ * 引擎色板的轻量缓存。
+ *
+ * 悬浮标题栏的装饰层在 pre-draw / 布局回调里被高频刷新，每帧直接调 [MonetColors.tokens]
+ * 会反复分配 Tokens 对象；这里按「色板实例 + 明暗配置」缓存，只在引擎重新发布色板时重算。
+ * 莫奈未启用 / 未解析成功时返回 null，调用方必须保留原来的配色。
+ */
+private var cachedMonetTokenSource: Any? = null
+private var cachedMonetTokenNight = false
+private var cachedMonetTokenValue: MonetColors.Tokens? = null
+
+private fun monetTokens(night: Boolean): MonetColors.Tokens? {
+    val source = MonetColors.applied.value
+    if (source !== cachedMonetTokenSource || night != cachedMonetTokenNight) {
+        cachedMonetTokenSource = source
+        cachedMonetTokenNight = night
+        cachedMonetTokenValue = MonetColors.tokens(night)
+    }
+    return cachedMonetTokenValue
+}
 
 @Suppress("DEPRECATION")
 object FloatingChatHeader : ClickableFeature(), IResolveDex {
@@ -525,6 +547,9 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             val nextShadowOffsetY = elevationPx * 0.5f
             val nextShadowColor = if (darkMode) 0x99000000.toInt() else 0x52000000
             val nextStrokeWidth = if (darkMode) density.coerceAtLeast(1f) else 0f
+            // 描边跟随莫奈色板(用正文色压低 alpha), 未生效时保持原来的半透明白。
+            val nextStrokeColor = monetTokens(darkMode)
+                ?.let { MonetColors.withAlpha(it.onSurface, 0x24) } ?: 0x24FFFFFF
             if (leftRect.left == leftLeft && leftRect.top == leftTop &&
                 leftRect.right == leftRight && leftRect.bottom == leftBottom &&
                 titleRect.left == titleLeft && titleRect.top == titleTop &&
@@ -533,7 +558,8 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
                 rightRect.right == rightRight && rightRect.bottom == rightBottom &&
                 this.titleRadius == titleRadius && this.surfaceColor == surfaceColor &&
                 shadowRadius == nextShadowRadius && shadowOffsetY == nextShadowOffsetY &&
-                shadowColor == nextShadowColor && strokeWidth == nextStrokeWidth
+                shadowColor == nextShadowColor && strokeWidth == nextStrokeWidth &&
+                strokeColor == nextStrokeColor
             ) {
                 return
             }
@@ -550,7 +576,7 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
             shadowOffsetY = nextShadowOffsetY
             shadowColor = nextShadowColor
             strokeWidth = nextStrokeWidth
-            strokeColor = 0x24FFFFFF
+            strokeColor = nextStrokeColor
             invalidate()
         }
 
@@ -1440,7 +1466,11 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
     }
 
     private fun sampleHeaderSurfaceColor(header: View): Int {
-        val fallback = if (header.context.isDarkMode) 0xFF242424.toInt() else 0xFFF7F7F7.toInt()
+        val dark = header.context.isDarkMode
+        // 分体式标题栏的卡片底色由 WeKit 自己绘制。莫奈生效时直接用引擎色板：1px 采样常常落在
+        // 标题文字 / 图标上导致底色不准（实机反馈的"没美化到位"），引擎色板与微信原生同源更稳。
+        monetTokens(dark)?.let { return it.surface }
+        val fallback = if (dark) 0xFF242424.toInt() else 0xFFF7F7F7.toInt()
         if (header.width <= 0 || header.height <= 0) return fallback
         val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)

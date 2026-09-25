@@ -6,6 +6,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.ContextMessage
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessagePolicy
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodOption
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -34,7 +35,9 @@ object JevProtocol {
             .apply { ChatFacts.questions.forEach { (key, q) -> put(key, choice(q.instructions, q.options)) } })
 
     private fun state(text: String, context: List<ContextMessage>, speaker: String): JSONObject = JSONObject()
-        .put("message", requireNotNull(MessagePolicy.textOrNull(text)) { "消息为空或超过 1000 字符" })
+        .put("message", requireNotNull(MessagePolicy.textOrNull(text)) {
+            "消息为空或超过 ${MessagePolicy.MAX_CHARACTERS} 字符"
+        })
         .put("speaker", speaker)
         .put("context", JSONArray(context.takeLast(MessagePolicy.MAX_CONTEXT_MESSAGES).mapNotNull {
             val value = MessagePolicy.textOrNull(it.text) ?: return@mapNotNull null
@@ -98,16 +101,17 @@ object JevProtocol {
         val card = candidates.firstOrNull { it.id == focus?.takeIf { result -> result.clear }?.choice }
         val reading = card?.let { readings.getValue(it.id) }?.takeIf { it.clear && it.choice != "unclear" }
         val selectedAction = actions.firstOrNull { it.id == action?.takeIf { result -> result.clear }?.choice }
+        val sceneLabel = card?.let { sceneLabelOf(it.scene) }
         val lines = mutableListOf(header, emotionProbabilities(profile))
         if (card != null && reading != null) {
-            lines += "事件：${ChatTemplates.scenes.getValue(card.scene).substringBefore('：')}"
+            lines += "事件：${sceneLabel ?: ChatTemplates.scenes.getValue(card.scene).substringBefore('：')}"
             lines += card.question
             lines += reading.probabilities.entries.sortedByDescending { it.value }.take(2)
                 .map { "· ${card.options.getValue(it.key)}：${(it.value * 100).roundToInt()}%" }
         }
         if (selectedAction != null) lines += "建议：${selectedAction.text}"
         val label = when {
-            card != null && reading != null -> ChatTemplates.scenes.getValue(card.scene).substringBefore('：')
+            card != null && reading != null -> sceneLabel ?: ChatTemplates.scenes.getValue(card.scene).substringBefore('：')
             selectedAction != null -> "下一步动作"
             else -> "情绪概率"
         }
@@ -122,6 +126,14 @@ object JevProtocol {
             advice = selectedAction?.text,
             // 主情绪与「结论段位」分开：标题要显示的是情绪，不是 section 名
             dominant = dominantEmotion(profile),
+            // 下面这些是给卡片做信息层级用的结构化字段（场景 / 阶段 / 候选解读 / 置信度），
+            // 全都从已经解析好的 profile 与候选卡里取，不额外请求模型、不做二次解析。
+            confidence = profile.emotion.confidence,
+            sceneLabel = sceneLabel,
+            progressLabel = progressLabelOf(profile),
+            readingTitle = card?.title,
+            readingQuestion = card?.question,
+            readingOptions = readingOptionsOf(card, reading),
         )
     }
 
@@ -137,7 +149,31 @@ object JevProtocol {
             if (!note.isNullOrBlank()) append('\n').append("（").append(note).append("）")
         }
         return Mood("情绪概率", emotionScore(profile), 0, "", text, bars = emotionBars(profile),
-            dominant = dominantEmotion(profile))
+            dominant = dominantEmotion(profile),
+            confidence = profile.emotion.confidence,
+            sceneLabel = profile.scene.takeIf { it.clear }?.let { sceneLabelOf(it.choice) },
+            progressLabel = progressLabelOf(profile),
+            note = note)
+    }
+
+    /** 场景名（「邀约安排：…」→「邀约安排」）；未知场景返回 null，不抛。 */
+    private fun sceneLabelOf(scene: String): String? =
+        ChatTemplates.scenes[scene]?.substringBefore('：')?.takeIf { it.isNotBlank() }
+
+    /** 对话阶段名（「等具体事实或细节」）；模型没答出有效阶段或无法确定时返回 null。 */
+    private fun progressLabelOf(profile: ChatProfile): String? {
+        if (!profile.progress.clear) return null
+        val label = progress[profile.progress.choice] ?: return null
+        return label.takeIf { profile.progress.choice != "unknown" }
+    }
+
+    /** 候选解读的概率（降序取前 3），卡片用来展示「还有别的可能」。 */
+    private fun readingOptionsOf(card: ChatTemplate?, reading: ChatDecision?): List<MoodOption> {
+        if (card == null || reading == null) return emptyList()
+        return reading.probabilities.entries.sortedByDescending { it.value }.take(3)
+            .mapNotNull { (key, value) ->
+                card.options[key]?.let { MoodOption(it, (value * 100).roundToInt()) }
+            }
     }
 
     /**

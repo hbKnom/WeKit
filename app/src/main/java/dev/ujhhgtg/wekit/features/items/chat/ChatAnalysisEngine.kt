@@ -64,6 +64,49 @@ object ChatAnalysisEngine {
     private const val CLICHE_BODY_MAX = 300
 
     /**
+     * 第 15 轮：秒回阈值（10 秒）。
+     *
+     * 回复延迟分布的第一档，也是「秒回率」的分子，并用来归因「谁最爱秒回」。
+     * 只有整数比较，零分配。
+     */
+    private const val FAST_REPLY_MS = 10_000L
+
+    /**
+     * 第 15 轮：连击被判为「被打断」的最小长度。
+     *
+     * 2 条以内的换人属于正常你来我往；只有同一个人的连击 ≥3 条时被别人接上，
+     * 才算真正的「打断」。不卡这个下限的话「打断次数」就等于「发言轮次」，指标没有信息量。
+     */
+    private const val INTERRUPT_MIN_STREAK = 3
+
+    /**
+     * 第 15 轮：话题词只扫这个长度以内的正文。
+     *
+     * 与口头禅同一口径：话题词表是固定词表逐词 `contains`，长文（转发长帖）会让单条消息的
+     * 扫描代价随正文长度线性上涨，而长文里的话题词分布也不代表聊天习惯。
+     */
+    private const val TOPIC_BODY_MAX = 300
+
+    /**
+     * 第 15 轮：话题词表（固定 28 个，**不随消息内容增长**）。
+     *
+     * 为什么不再跑一遍分词：分词结果会随语料无限膨胀（大群几十万条能产出十几万 token），
+     * 而这里要的是「这份聊天在聊什么」的粗粒度雷达 —— 固定词表的统计口径稳定、跨会话可比、
+     * 内存恒定。命中判定与【口头禅】一致，是**消息级**（一条消息对同一个词只记一次）。
+     */
+    private val TOPIC_WORDS = listOf(
+        "工作", "加班", "会议", "项目", "代码", "需求", "学习", "考试", "游戏", "吃饭",
+        "外卖", "奶茶", "咖啡", "减肥", "运动", "电影", "音乐", "旅行", "天气", "睡觉",
+        "熬夜", "摸鱼", "工资", "股票", "房子", "宠物", "生日", "红包",
+    )
+
+    /** 星期名（ISO：周一=0 … 周日=6）：热力图左侧标签与峰值时段文案共用同一份 */
+    private val DAY_NAMES = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+    /** 活跃热力的格数：7 天 × 24 小时（定长，与消息条数无关） */
+    private const val HEAT_CELLS = 7 * 24
+
+    /**
      * 口头禅词表（**消息级**判定：一条消息命中一次，和【高频词】的 n-gram 词频是两套口径）。
      *
      * 为什么用固定词表而不是再跑一遍分词：单字语气词（嗯/啊/哦）根本进不了 n-gram
@@ -173,6 +216,8 @@ object ChatAnalysisEngine {
         // 第 14 轮扩展的六个维度：全部在下面那次分页扫描里就地累计（不再回扫、不再多查一次库）
         val ex = ExtraStats()
         var waitingInitiator = false
+        // 第 15 轮：本条消息与上一条的间隔（0 = 首条 或 超过 30 分钟），用于「谁最爱秒回」归因
+        var lastReplyGap = 0L
 
         val textSenders = mutableListOf<String>()
         val textBodies = mutableListOf<String>()
@@ -199,11 +244,25 @@ object ChatAnalysisEngine {
                     ?: 0
                 val tn = typeName(type)
                 typeCount[tn] = (typeCount[tn] ?: 0) + 1
+                // ---- 第 15 轮：引用回复（type 49 且带 <refermsg> 节点）----
+                // 只对卡片类消息做一次 contains：不解析 XML、不为它多查一次库、也不留中间结果。
+                if (type == 49 && content.contains("<refermsg>")) ex.quoteMsgs++
 
                 hc.timeInMillis = ct
-                hourDist[hc.get(Calendar.HOUR_OF_DAY)]++
+                val hour = hc.get(Calendar.HOUR_OF_DAY)
+                hourDist[hour]++
                 // Calendar.DAY_OF_WEEK 周日=1，这里折成 ISO 的「周一=0 … 周日=6」
-                weekday[(hc.get(Calendar.DAY_OF_WEEK) + 5) % 7]++
+                val dow = (hc.get(Calendar.DAY_OF_WEEK) + 5) % 7
+                weekday[dow]++
+                // ---- 第 15 轮：活跃热力（周几 × 小时）在同一次扫描里就地累计，零分配 ----
+                val heatIdx = dow * 24 + hour
+                val heatV = ex.heat[heatIdx] + 1
+                ex.heat[heatIdx] = heatV
+                if (heatV > ex.heatPeak) {
+                    ex.heatPeak = heatV
+                    ex.heatPeakIdx = heatIdx
+                }
+                lastReplyGap = 0L
                 if (prevCt > 0L) {
                     val gap = ct - prevCt
                     if (gap > 0L) {
@@ -215,6 +274,15 @@ object ChatAnalysisEngine {
                             // 真正意义上的「回复」：30 分钟内的你来我往
                             ex.replyGapSum += gap
                             ex.replyGapCount++
+                            // ---- 第 15 轮：回复延迟分档 + 最快回复（同一处累计，不多遍历一次）----
+                            lastReplyGap = gap
+                            when {
+                                gap <= FAST_REPLY_MS -> ex.latency[0]++
+                                gap <= 60_000L -> ex.latency[1]++
+                                gap <= 300_000L -> ex.latency[2]++
+                                else -> ex.latency[3]++
+                            }
+                            if (ex.fastestGapMs == 0L || gap < ex.fastestGapMs) ex.fastestGapMs = gap
                         } else {
                             // 沉默 ≥30 分钟：记一次沉默、切开一个话题段，并把下一条消息的作者
                             // 记为这一段的「发起人」（pending 标记在下面 rank 统计处消费）
@@ -248,6 +316,10 @@ object ChatAnalysisEngine {
                         else -> "对方"
                     }
                     rank[rankKey] = (rank[rankKey] ?: 0) + 1
+                    // ---- 第 15 轮：秒回归因（≤10 秒就接上话的那个人是谁）----
+                    if (lastReplyGap in 1..FAST_REPLY_MS) {
+                        ex.fastReply[rankKey] = (ex.fastReply[rankKey] ?: 0) + 1
+                    }
                     // 沉默 ≥30 分钟后的第一条 = 这一段话题的「发起人」（系统消息不参与）
                     if (waitingInitiator) {
                         ex.initiator[rankKey] = (ex.initiator[rankKey] ?: 0) + 1
@@ -285,22 +357,32 @@ object ChatAnalysisEngine {
                     } else {
                         senderKey = "对方"
                     }
-                    if (body.startsWith("@") &&
-                        (
-                            (myWxid.isNotEmpty() && body.contains(myWxid)) ||
-                                (myNick.isNotEmpty() && body.contains(myNick)) ||
-                                body.contains("所有人")
-                        )
-                    ) {
-                        atMe++
+                    if (body.startsWith("@")) {
+                        // ---- 第 15 轮：@ 拆成两种口径（@ 了谁 / 其中 @ 的是不是我）----
+                        // 判定条件与原来逐字等价，只是把「有没有 @」这一层单独记下来。
+                        ex.atAny++
+                        if ((myWxid.isNotEmpty() && body.contains(myWxid)) ||
+                            (myNick.isNotEmpty() && body.contains(myNick)) ||
+                            body.contains("所有人")
+                        ) {
+                            atMe++
+                            ex.atMeEx++
+                        }
                     }
                     if (senderKey == streakKey) {
                         streak++
                     } else {
+                        // ---- 第 15 轮：换人 = 一个「回合」结束；长连击被换人才算「打断」----
+                        if (streak >= INTERRUPT_MIN_STREAK) ex.interrupts++
+                        ex.turns++
                         streakKey = senderKey
                         streak = 1
                     }
-                    if (streak > maxStreak) maxStreak = streak
+                    if (streak > maxStreak) {
+                        maxStreak = streak
+                        ex.streakMax = streak
+                        ex.streakMaxKey = senderKey
+                    }
                     if (body.length > longestLen) {
                         longestLen = body.length
                         longestFromKey = senderKey
@@ -310,6 +392,7 @@ object ChatAnalysisEngine {
                     ex.rankChars[senderKey] = (ex.rankChars[senderKey] ?: 0) + body.length
                     scanPunctuation(body, ex)
                     if (body.length <= CLICHE_BODY_MAX) scanCliches(body, ex)
+                    if (body.length <= TOPIC_BODY_MAX) scanTopics(body, ex)
                     rememberExcerpt(ex, senderKey, body)
                     textSenders.add(senderKey)
                     textBodies.add(body)
@@ -500,6 +583,43 @@ object ChatAnalysisEngine {
 
         /** 最长 [EXCERPT_N] 条摘录（senderKey to body），定长插入 */
         val topBodies = mutableListOf<Pair<String, String>>()
+
+        // ---- 第 15 轮：六个新维度的累计量（同样是定长容器 / 人数规模的小 map）----
+
+        /** 7(ISO 周几) × 24(小时) 的活跃热力矩阵：定长 [HEAT_CELLS] 个 int，不随消息数增长 */
+        val heat = IntArray(HEAT_CELLS)
+
+        /** 热力峰值格的计数与下标（下标 = 周几 × 24 + 小时） */
+        var heatPeak = 0
+        var heatPeakIdx = -1
+
+        /** 回复延迟分档（≤10 秒 / ≤60 秒 / ≤5 分 / ≤30 分），定长 4 档 */
+        val latency = IntArray(4)
+
+        /** 最快一次回复的间隔（毫秒），0 = 还没有可用样本 */
+        var fastestGapMs = 0L
+
+        /** 秒回（≤10 秒接上话）按发送者的归因计数 */
+        val fastReply = mutableMapOf<String, Int>()
+
+        /** 最长连击的条数与归属人 */
+        var streakMax = 0
+        var streakMaxKey = ""
+
+        /** 「回合」数（换人发言的次数）与「打断」次数（长连击被别人接上） */
+        var turns = 0
+        var interrupts = 0
+
+        /** @ 的全部次数 / 其中 @ 到我 的次数 */
+        var atAny = 0
+        var atMeEx = 0
+
+        /** 引用回复（type 49 且含 refermsg 节点）条数 */
+        var quoteMsgs = 0
+
+        /** 话题词命中（消息级）与命中任意话题词的消息条数 */
+        val topic = mutableMapOf<String, Int>()
+        var topicMsgs = 0
     }
 
     // ---------------- 本地统计报告（口径与脚本一致） ----------------
@@ -681,6 +801,7 @@ object ChatAnalysisEngine {
             lenLong = lenLong,
             lenHuge = lenHuge,
             nickCache = nickCache,
+            typeCount = typeCount,
         )
 
         return r.toString()
@@ -710,6 +831,7 @@ object ChatAnalysisEngine {
         lenLong: Int,
         lenHuge: Int,
         nickCache: MutableMap<String, String>,
+        typeCount: Map<String, Int>,
     ) {
         // ── 1) 消息长度画像 ──────────────────────────────────────────
         r.append("\n【消息长度画像】\n")
@@ -844,6 +966,189 @@ object ChatAnalysisEngine {
         } else {
             r.append("切换节奏：全程连贯，没有跨越 30 分钟的中断\n")
         }
+
+        // ── 第 15 轮：六个新维度（同样追加在老段之后，老报告的每一行文本都没动）──
+        appendRound15Sections(
+            r = r,
+            ex = ex,
+            talker = talker,
+            isGroup = isGroup,
+            textN = textN,
+            totalAll = totalAll,
+            typeCount = typeCount,
+            nickCache = nickCache,
+        )
+    }
+
+
+    // ---------------- 第 15 轮新增：六个扩展维度的报告段 ----------------
+
+    /**
+     * 追加第 15 轮的六个维度：活跃热力 / 回复延迟分布 / 媒体与表情构成 / 连击与打断 /
+     * 话题关键词 / @与互动消息。
+     *
+     * 排版规则与第 14 轮**完全同一套**（两侧的通用解析器不认识新语法，所以这里不发明新写法，
+     * 只把已经在内存里的数字排成它认得的形状）：
+     *  - `键：值` 一行一个指标，键 ≤ 20 字、值 ≤ 18 字 → 进 KPI 网格（连续 ≥2 行才会并成网格）；
+     *  - `标签 数值 ████` → 分布图（标签里含数字 → 柱状图；全正且无数字 → 环形图）；
+     *  - 整行只由 `词×次数` 组成 → 标签云；
+     *  - 活跃热力固定 7 行 `周X → 24 个数字`（弹窗与 PNG 各有一段专用解析，判据见两侧的 HeatLine）；
+     *  - 结论句一律不带全角冒号，免得被误判成指标行。
+     *
+     * 所有数据都来自 [ExtraStats] 在同一次扫描里累出来的定长容器（热力 7×24 int、延迟 4 档 int、
+     * 话题固定 28 词），这里只做字符串拼接：**不查库、不遍历消息、不物化全量**。
+     */
+    private fun appendRound15Sections(
+        r: StringBuilder,
+        ex: ExtraStats,
+        talker: String,
+        isGroup: Boolean,
+        textN: Int,
+        totalAll: Int,
+        typeCount: Map<String, Int>,
+        nickCache: MutableMap<String, String>,
+    ) {
+        // ── 7) 活跃热力（周几 × 小时）────────────────────────────────
+        r.append("\n【活跃热力】\n")
+        // KPI 的值必须"以数字开头"：排版器会把值拆成「数字 + 单位」两段来画（
+        // splitValueUnit），值以中文开头时数字会被截出来、前缀会被丢掉，所以星期名一律写在
+        // 结尾的读法行里，指标格里只放纯数值。
+        if (ex.heatPeakIdx >= 0) {
+            r.append("峰值条数：").append(ex.heatPeak).append(" 条\n")
+            r.append("峰值小时：").append(ex.heatPeakIdx % 24).append(" 点\n")
+        }
+        var heatCells = 0
+        for (v in ex.heat) if (v > 0) heatCells++
+        r.append("活跃时段数：").append(heatCells).append(" 个\n")
+        // 必须连续 7 行、每行 24 个数字：少一行就不成块，会被两侧解析器退回普通正文行（宁缺勿错）
+        for (d in 0 until 7) {
+            r.append(DAY_NAMES[d]).append(" →")
+            for (h in 0 until 24) r.append(' ').append(ex.heat[d * 24 + h])
+            r.append("\n")
+        }
+        r.append("热力读法 每行一天、每列一小时，颜色越深越活跃")
+        if (ex.heatPeakIdx >= 0) r.append("，峰值落在").append(heatLabel(ex.heatPeakIdx))
+        r.append("\n")
+
+        // ── 8) 回复延迟分布（同一批 30 分钟内的间隔分四档）────────────
+        r.append("\n【回复延迟分布】\n")
+        if (ex.replyGapCount > 0) {
+            r.append("平均回复速度：").append(humanDuration(ex.replyGapSum / ex.replyGapCount)).append("\n")
+            r.append("秒回率：").append(pct(ex.latency[0], ex.replyGapCount)).append("%\n")
+            r.append("最快回复：").append(humanDuration(ex.fastestGapMs)).append("\n")
+            val lMax = maxOf(ex.latency[0], ex.latency[1], ex.latency[2], ex.latency[3])
+            // 标签不带空格：0 条的那一档整行没有 █，解析器会退回 PLAIN_COUNT_LINE
+            // （^(\\S+)\\s+(\\d+)$），标签里只要有空格就认不出来 —— 会变成一行原始正文。
+            val names = listOf("≤10秒", "10~60秒", "1~5分", "5~30分")
+            for (i in 0 until 4) {
+                r.append(names[i]).append(" ").append(ex.latency[i]).append(" ")
+                    .append(bar(ex.latency[i], lMax, 16)).append("\n")
+            }
+            val fast = topKeys(ex.fastReply, 1)
+            if (fast.isNotEmpty()) {
+                r.append("谁最爱秒回：")
+                    .append(textSafe(speakerDisplayName(fast[0], talker, isGroup, nickCache)))
+                    .append("（").append(ex.fastReply[fast[0]] ?: 0).append(" 次）\n")
+            }
+        } else {
+            // 不带全角冒号：带冒号又是短行的话会被解析器读成一条指标，这里要的是一句人话
+            r.append("样本不足 该时段没有 30 分钟以内的连续对话\n")
+        }
+
+        // ── 9) 媒体与表情构成（纯复用既有 typeCount，扫描期零成本）──
+        r.append("\n【媒体与表情构成】\n")
+        if (totalAll > 0) {
+            val textCount = typeCount["文字"] ?: 0
+            val emojiCount = typeCount["表情"] ?: 0
+            val picCount = typeCount["图片"] ?: 0
+            val mediaCount = picCount + (typeCount["语音"] ?: 0) + (typeCount["视频"] ?: 0) + emojiCount
+            r.append("文字消息占比：").append(pct(textCount, totalAll)).append("%\n")
+            r.append("媒体消息占比：").append(pct(mediaCount, totalAll)).append("%\n")
+            r.append("表情占比：").append(pct(emojiCount, totalAll)).append("%\n")
+            r.append("图片占比：").append(pct(picCount, totalAll)).append("%\n")
+            r.append("媒体与文字比 ").append(ratioText(mediaCount, textCount)).append("\n")
+            r.append("鉴定：").append(
+                when {
+                    pct(emojiCount, totalAll) >= 20 -> "表情包是第二语言"
+                    pct(mediaCount, totalAll) >= 50 -> "能发图绝不打字"
+                    pct(textCount, totalAll) >= 80 -> "纯文字选手"
+                    else -> "文字为主，媒体点缀"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可统计的消息\n")
+        }
+
+        // ── 10) 连击与打断（"回合" = 换人发言；长连击被换人才算打断）──
+        r.append("\n【连击与打断】\n")
+        if (textN > 0) {
+            val turns = if (ex.turns > 0) ex.turns else 1
+            r.append("最长连击：").append(ex.streakMax).append(" 条\n")
+            r.append("平均连击：").append(oneDecimal(textN.toDouble() / turns.toDouble())).append(" 条\n")
+            r.append("打断次数：").append(ex.interrupts).append(" 次\n")
+            if (ex.streakMaxKey.isNotEmpty()) {
+                r.append("连击王：")
+                    .append(textSafe(speakerDisplayName(ex.streakMaxKey, talker, isGroup, nickCache)))
+                    .append("\n")
+            }
+            r.append("连击点评 ").append(
+                when {
+                    ex.streakMax >= 10 -> "有人能连发十条不喘气"
+                    ex.turns * 2 >= textN -> "轮流发言，几乎没有连发"
+                    ex.interrupts * 4 >= turns -> "话题老被打断，跳得很快"
+                    else -> "有来有回，节奏正常"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 11) 话题关键词（固定 28 词表，消息级口径，等价于一张小雷达）──
+        r.append("\n【话题关键词】\n")
+        if (textN > 0) {
+            r.append("话题浓度：").append(pct(ex.topicMsgs, textN)).append("%\n")
+            val top = topKeys(ex.topic, 12)
+            if (top.isNotEmpty()) {
+                // 话题词写进「键」、次数写进「值」：值以数字开头，指标格才能把数字画成大号
+                r.append("最热话题 ").append(top[0]).append("：")
+                    .append(ex.topic[top[0]] ?: 0).append(" 次\n")
+                val chips = StringBuilder()
+                for ((i, w) in top.withIndex()) {
+                    if (i > 0) chips.append("  ")
+                    chips.append(w).append("×").append(ex.topic[w] ?: 0)
+                }
+                r.append(chips).append("\n")
+            } else {
+                // 一个话题词都没命中时也保持"值以数字开头"，指标格的行数才不会突然变少
+                r.append("话题命中：0 个\n")
+            }
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 12) @ 与互动消息 ────────────────────────────────────────
+        r.append("\n【@与互动消息】\n")
+        if (textN > 0) {
+            r.append("@提及次数：").append(ex.atAny).append(" 次\n")
+            r.append("其中@我：").append(ex.atMeEx).append(" 次\n")
+            r.append("引用回复：").append(ex.quoteMsgs).append(" 条\n")
+            r.append("互动消息占比：").append(pct(ex.atAny + ex.quoteMsgs, textN)).append("%\n")
+            r.append("互动点评 ").append(
+                when {
+                    ex.atAny + ex.quoteMsgs == 0 -> "既不 @ 人也不引用，全靠正文接话"
+                    pct(ex.atAny + ex.quoteMsgs, textN) >= 10 -> "@ 与引用用得很勤，点名型选手"
+                    else -> "@ 与引用不多，自然接话型"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+    }
+
+    /** 热力格下标（周几 × 24 + 小时）→ 「周三 21 点」 */
+    private fun heatLabel(idx: Int): String {
+        if (idx < 0 || idx >= HEAT_CELLS) return ""
+        return DAY_NAMES[idx / 24] + " " + (idx % 24) + " 点"
     }
 
     // ---------------- 第 14 轮新增：扫描期的增量统计 ----------------
@@ -906,6 +1211,18 @@ object ChatAnalysisEngine {
             }
         }
         if (hit) ex.clicheMsgs++
+    }
+
+    /** 话题词：固定词表逐个 `contains`（消息级口径，与【口头禅】同一套判定） */
+    private fun scanTopics(body: String, ex: ExtraStats) {
+        var hit = false
+        for (w in TOPIC_WORDS) {
+            if (body.contains(w)) {
+                ex.topic[w] = (ex.topic[w] ?: 0) + 1
+                hit = true
+            }
+        }
+        if (hit) ex.topicMsgs++
     }
 
     /**

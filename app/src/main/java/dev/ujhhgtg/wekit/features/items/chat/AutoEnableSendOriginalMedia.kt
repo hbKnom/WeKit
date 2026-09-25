@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.CompoundButton
 import android.widget.TextView
+import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.toClassOrNull
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
@@ -62,6 +63,17 @@ object AutoEnableSendOriginalMedia : SwitchFeature() {
     private const val ALBUM_PREVIEW_UI = "com.tencent.mm.plugin.gallery.ui.AlbumPreviewUI"
     private const val TAG = "AutoSendOriginal"
 
+    /**
+     * 灰测的原生「半屏相册」（`clicfg_local_media_picker_chatting_opt`）走的是另一套 picker：
+     * 勾选状态由 `ChattingLocalMediaPickerFeatureArguments#getInitialSendOriginal()` 决定，
+     * 相册页也从 `MediaTabAlbumUI` 进入。旧的 `AlbumPreviewUI` / `ImagePreviewUI` 钩子覆盖不到它，
+     * 所以那两个功能在这套 picker 上会「失效」。
+     */
+    private const val PICKER_ARGUMENTS =
+        "com.tencent.mm.plugin.picker.scene.chatting.ChattingLocalMediaPickerFeatureArguments"
+    private const val MEDIA_TAB_ALBUM_UI = "com.tencent.mm.plugin.gallery.ui.MediaTabAlbumUI"
+    private const val GET_INITIAL_SEND_ORIGINAL = "getInitialSendOriginal"
+
     /** 「原图」开关在三语文案里的写法（宿主随系统语言切换）。 */
     private val ORIGINAL_LABELS = listOf("原图", "原圖", "Original")
 
@@ -83,6 +95,38 @@ object AutoEnableSendOriginalMedia : SwitchFeature() {
                 diagnose(activity)
             }
         }
+
+        installHalfScreenPickerHooks()
+    }
+
+    /**
+     * 灰测半屏相册（`clicfg_local_media_picker_chatting_opt`）适配。
+     *
+     * 分两处，都是「尽力而为」——宿主没开这个灰测、或版本里没有这些类时静默跳过：
+     *  1. `ChattingLocalMediaPickerFeatureArguments#getInitialSendOriginal()`：宿主用它决定
+     *     相册页初始是否勾上「原图」。直接让它在 before 阶段返回 true。
+     *  2. `MediaTabAlbumUI#initView()`：半屏相册的入口页，同样在 onCreate 之前把两个 extra
+     *     写进 intent，兼容宿主从 intent 读取的实现。
+     */
+    private fun installHalfScreenPickerHooks() {
+        runCatching {
+            PICKER_ARGUMENTS.toClassOrNull()
+                ?.reflekt()
+                ?.firstMethodOrNull {
+                    name = GET_INITIAL_SEND_ORIGINAL
+                    parameters()
+                }
+                ?.hookBefore { result = true }
+        }.onFailure { WeLogger.w(TAG, "half-screen picker arguments hook failed", it) }
+
+        runCatching {
+            MEDIA_TAB_ALBUM_UI.toClassOrNull()?.hookBeforeOnCreate {
+                val activity = thisObject as? Activity ?: return@hookBeforeOnCreate
+                activity.intent.putExtra("send_raw_img", true)
+                activity.intent.putExtra("key_send_raw_image", true)
+                WeLogger.i(TAG, "MediaTabAlbumUI raw flags set")
+            }
+        }.onFailure { WeLogger.w(TAG, "MediaTabAlbumUI hook failed", it) }
     }
 
     private fun diagnose(activity: Activity) {

@@ -1,6 +1,9 @@
 package dev.ujhhgtg.wekit.utils.monet
 
 import com.reandroid.apk.ApkModule
+import com.reandroid.apk.ResFile
+import com.reandroid.arsc.chunk.PackageBlock
+import com.reandroid.arsc.chunk.xml.ResXmlDocument
 import com.reandroid.arsc.model.ResourceEntry
 import com.reandroid.arsc.value.ValueItem
 import com.reandroid.arsc.value.ValueType
@@ -9,6 +12,8 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import java.util.zip.InflaterInputStream
 
 object MonetApkResourceGraphLoader {
@@ -55,28 +60,25 @@ object MonetApkResourceGraphLoader {
                 val xmlStart = System.nanoTime()
                 val binaryXmlCount = resFiles.count { it.isBinaryXml }
                 onProgress("解析 ${apk.name} 的 $binaryXmlCount 个二进制 XML", index, apkPaths.size)
-                resFiles.asSequence()
-                    .forEach { resFile ->
-                        val owners = resFile.asSequence()
-                            .filter {
-                                it.packageBlock.name == targetPackage &&
-                                    it.typeName in MONET_XML_RESOURCE_TYPES
-                            }
-                            .map { entry ->
-                                XmlIdentity(entry.resourceId, entry.resConfig.qualifiers, resFile.filePath)
-                            }
-                            .toList()
-                        if (owners.isNotEmpty() && resFile.isBinaryXml) {
-                            val xml = MonetBinaryXmlReader.read(
-                                module.loadResXmlDocument(resFile.inputSource),
-                            )
-                            owners.forEach { identity -> xmlDocuments += OwnedXml(identity, xml) }
+                val candidates = resFiles.mapNotNull { resFile ->
+                    val owners = resFile.asSequence()
+                        .filter {
+                            it.packageBlock.name == targetPackage &&
+                                it.typeName in MONET_XML_RESOURCE_TYPES
                         }
-                    }
+                        .map { entry ->
+                            XmlIdentity(entry.resourceId, entry.resConfig.qualifiers, resFile.filePath)
+                        }
+                        .toList()
+                    if (owners.isEmpty() || !resFile.isBinaryXml) null else resFile to owners
+                }
+                val xmlFailures = parseXmlInto(candidates, packageBlock, xmlDocuments)
                 WeLogger.i(
                     TAG,
-                    "${apk.name}: $binaryXmlCount 个二进制 XML，读取 ${(System.nanoTime() - xmlStart) / 1_000_000} ms" +
-                        "，文件结构按需读了 ${structures.readCount} 个",
+                    "${apk.name}: $binaryXmlCount 个二进制 XML（候选 ${candidates.size}），读取 " +
+                        "${(System.nanoTime() - xmlStart) / 1_000_000} ms" +
+                        "，文件结构按需读了 ${structures.readCount} 个" +
+                        if (xmlFailures > 0) "，XML 解析失败 $xmlFailures 个" else "",
                 )
             }
             onProgress("完成 ${apk.name}", index + 1, apkPaths.size)
@@ -102,6 +104,62 @@ object MonetApkResourceGraphLoader {
         )
         return MonetResourceGraph(resources.values.map(MutableResource::toNode), xmlByOwner)
     }
+
+    /**
+     * 解析二进制 XML：实机冷启动这一步 75 s、热态 11 s（11000+ 个文件），是整条解析链最贵的一步。
+     *
+     * 按批并行：一批内先顺序读出字节（zip 解压本身便宜），再在固定大小线程池里解析成本地模型。
+     * 线程数固定（≤4）、线程为守护线程，配合调用方的后台线程优先级，避免和微信主线程抢 CPU；
+     * 峰值内存受批大小约束。单个文件解析失败只丢它自己（返回失败计数），
+     * 不再让整个「莫奈解析」因为一个坏 XML 而失败。
+     */
+    private fun parseXmlInto(
+        candidates: List<Pair<ResFile, List<XmlIdentity>>>,
+        packageBlock: PackageBlock,
+        out: MutableList<OwnedXml>,
+    ): Int {
+        if (candidates.isEmpty()) return 0
+        var failures = 0
+        val workers = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+        val pool = Executors.newFixedThreadPool(workers) { runnable ->
+            Thread(runnable, "wekit-monet-xml").apply { isDaemon = true }
+        }
+        try {
+            candidates.chunked(XML_BATCH_SIZE).forEach { batch ->
+                val payloads = batch.map { (file, _) ->
+                    runCatching { file.inputSource.openStream().use { it.readBytes() } }.getOrNull()
+                }
+                val tasks = batch.indices.map { i ->
+                    val bytes = payloads[i]
+                    pool.submit(
+                        Callable {
+                            if (bytes == null) return@Callable null
+                            runCatching {
+                                val document = ResXmlDocument().apply { packageBlock = packageBlock }
+                                document.readBytes(ByteArrayInputStream(bytes))
+                                MonetBinaryXmlReader.read(document)
+                            }.getOrElse { t ->
+                                failures++
+                                if (failures <= 5) {
+                                    WeLogger.w(TAG, "二进制 XML 解析失败，已跳过：${t.message}")
+                                }
+                                null
+                            }
+                        },
+                    )
+                }
+                tasks.forEachIndexed { i, task ->
+                    val xml = runCatching { task.get() }.getOrNull() ?: return@forEachIndexed
+                    batch[i].second.forEach { identity -> out += OwnedXml(identity, xml) }
+                }
+            }
+        } finally {
+            pool.shutdown()
+        }
+        return failures
+    }
+
+    private const val XML_BATCH_SIZE = 192
 
     private fun MutableMap<Int, MutableResource>.merge(
         resource: ResourceEntry,

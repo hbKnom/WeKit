@@ -16,7 +16,7 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
@@ -31,8 +31,8 @@ object HideMessagesAvatars : ClickableFeature(), WeChatMessageViewApi.ICreateVie
     override val categoryIds = listOf(FeatureCategoryIds.CHAT)
     override val descriptionRes = R.string.feature_hide_messages_avatars_description
 
-    var hideIncoming by prefOption("chat_hide_avatar_incoming", true)
-    private var hideOutgoing by prefOption("chat_hide_avatar_outgoing", false)
+    var hideIncoming by hotPrefOption("chat_hide_avatar_incoming", true)
+    private var hideOutgoing by hotPrefOption("chat_hide_avatar_outgoing", false)
 
     private const val MASK_LAYOUT_CLASS = "com.tencent.mm.ui.base.MaskLayout"
 

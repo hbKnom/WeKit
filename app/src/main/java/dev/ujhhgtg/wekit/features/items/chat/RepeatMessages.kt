@@ -25,7 +25,8 @@ object RepeatMessages : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsP
     override val categoryIds = listOf(FeatureCategoryIds.CHAT)
     override val descriptionRes = R.string.feature_repeat_messages_description
 
-    private val TAG = RepeatMessages::class.java.simpleName
+    // R8 会把 `simpleName` 换成混淆后的名字，日志就不可读了；这里固定成字面量。
+    private const val TAG = "RepeatMessages"
 
     override fun onEnable() {
         WeChatMessageContextMenuApi.addProvider(this)
@@ -42,6 +43,9 @@ object RepeatMessages : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsP
         MessageType.APP,
         MessageType.IMAGE,
         MessageType.VOICE,
+        // 09-25：复读支持视频。`repeatMessage` 早就能转发视频，但这里漏了 VIDEO，
+        // 于是菜单项对视频消息根本不出现。
+        MessageType.VIDEO,
         MessageType.MICRO_VIDEO,
         MessageType.STICKER,
         MessageType.SO_GOU_EMOJI

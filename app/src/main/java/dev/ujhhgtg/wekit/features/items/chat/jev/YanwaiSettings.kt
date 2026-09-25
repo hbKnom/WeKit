@@ -26,8 +26,10 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.JevProvider
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
+import dev.ujhhgtg.wekit.features.items.chat.jev.hook.MoodMessageChannel
 import dev.ujhhgtg.wekit.features.items.chat.jev.hook.YanwaiScanner
 import dev.ujhhgtg.wekit.preferences.WePrefs
+import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
@@ -68,6 +70,11 @@ object YanwaiSettings {
             var showBadge by remember { mutableStateOf(ModulePrefs.showBadge) }
             var displayMessage by remember { mutableStateOf(ModulePrefs.displayMessage) }
             var analyzeSelf by remember { mutableStateOf(ModulePrefs.analyzeSelf) }
+            var cardExpanded by remember { mutableStateOf(ModulePrefs.cardExpanded) }
+            var showTrend by remember { mutableStateOf(ModulePrefs.showTrend) }
+            var insertFreshText by remember {
+                mutableStateOf(ModulePrefs.insertFreshSeconds.toString())
+            }
             var explore by remember { mutableStateOf(ModulePrefs.exploreMode) }
             var scopeAll by remember { mutableStateOf(ModulePrefs.scopeAll) }
             var contextLimitText by remember { mutableStateOf(ModulePrefs.contextLimit.toString()) }
@@ -121,6 +128,13 @@ object YanwaiSettings {
                     notice = "上下文条数请填 0–${ModulePrefs.MAX_CONTEXT_LIMIT} 之间的数字"
                     return false
                 }
+                val fresh = insertFreshText.trim().toIntOrNull()
+                    ?.coerceIn(ModulePrefs.MIN_INSERT_FRESH_SECONDS, ModulePrefs.MAX_INSERT_FRESH_SECONDS)
+                if (fresh == null) {
+                    notice = "回插新鲜度请填 ${ModulePrefs.MIN_INSERT_FRESH_SECONDS}–" +
+                        "${ModulePrefs.MAX_INSERT_FRESH_SECONDS} 之间的秒数"
+                    return false
+                }
                 val settings = ApiSettings.fromInput(
                     endpoint = endpoint,
                     apiKey = apiKey,
@@ -135,6 +149,9 @@ object YanwaiSettings {
                 ModulePrefs.setSwitch(ModulePrefs.KEY_SHOW_BADGE, showBadge)
                 ModulePrefs.setDisplayMessage(displayMessage)
                 ModulePrefs.setAnalyzeSelf(analyzeSelf)
+                ModulePrefs.setCardExpanded(cardExpanded)
+                ModulePrefs.setShowTrend(showTrend)
+                ModulePrefs.setInsertFreshSeconds(fresh)
                 ModulePrefs.setContextLimit(limit)
                 ModulePrefs.setScope(
                     all = scopeAll,
@@ -219,6 +236,27 @@ object YanwaiSettings {
                                 trailingDivider = true,
                             )
                         }
+                        // 卡片外观：默认展开完整解读 + 显示与前几句对比
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Bolt,
+                                title = stringResource(R.string.yanwai_card_expanded),
+                                description = stringResource(R.string.yanwai_card_expanded_desc),
+                                checked = cardExpanded,
+                                onCheckedChange = { cardExpanded = it },
+                                trailingDivider = true,
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Bolt,
+                                title = stringResource(R.string.yanwai_show_trend),
+                                description = stringResource(R.string.yanwai_show_trend_desc),
+                                checked = showTrend,
+                                onCheckedChange = { showTrend = it },
+                                trailingDivider = true,
+                            )
+                        }
                         item {
                             SwitchWidget(
                                 icon = MaterialSymbols.Outlined.Tune,
@@ -280,6 +318,19 @@ object YanwaiSettings {
                         }
 
                         // ---------------------------------------------------------- 上下文
+                        if (displayMessage) {
+                            // 只在真的开着「回插会话」时才需要它：窗口越小越安静
+                            item {
+                                OutlinedTextField(
+                                    value = insertFreshText,
+                                    onValueChange = { insertFreshText = it.filter(Char::isDigit).take(4) },
+                                    label = { Text(stringResource(R.string.yanwai_insert_fresh)) },
+                                    supportingText = { Text(stringResource(R.string.yanwai_insert_fresh_desc)) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
                         item {
                             OutlinedTextField(
                                 value = contextLimitText,
@@ -425,6 +476,22 @@ object YanwaiSettings {
 
                         // ---------------------------------------------------------- 最近解读
                         item {
+                            Button(
+                                onClick = {
+                                    val entries = MoodStore.recent()
+                                    if (entries.isEmpty()) {
+                                        notice = context.getString(R.string.yanwai_export_empty)
+                                    } else {
+                                        copyToClipboard(context, "潜语解读", exportText(entries))
+                                        notice = context.getString(R.string.yanwai_export_done, entries.size)
+                                    }
+                                },
+                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                            ) {
+                                Text(stringResource(R.string.yanwai_export))
+                            }
+                        }
+                        item {
                             Text(
                                 text = stringResource(R.string.yanwai_recent),
                                 modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
@@ -462,7 +529,30 @@ object YanwaiSettings {
 
     private fun runtimeLine(): String {
         val (ok, bad) = MoodStore.stats()
-        return "本次运行：已发出请求 ${SignalAnalyzer.requestCount} 次 · 成功 $ok · 失败 $bad · 缓存 ${MoodStore.size()} 条"
+        return "本次运行：已发出请求 ${SignalAnalyzer.requestCount} 次 · 成功 $ok · 失败 $bad · " +
+            "缓存 ${MoodStore.size()} 条 · 等待中 ${SignalAnalyzer.queuedDepth + MoodStore.pendingCount()} 条"
+    }
+
+    /**
+     * 导出文本：优先导出**完整解读**（与气泡卡/回插通道同一份结构化结论），
+     * 结果缓存已被清掉的历史流水退回它记下的那一行结论/失败原因。
+     */
+    private fun exportText(entries: List<MoodStore.Entry>): String = buildString {
+        append("潜语 · 最近解读（${entries.size} 条）")
+        entries.forEach { entry ->
+            append('\n')
+            append('\n')
+            append(stamp(entry.at)).append(" · ").append(entry.talker.takeLast(10))
+            append('\n')
+            val mood = MoodStore.get(entry.key)
+            append(
+                when {
+                    mood != null -> MoodMessageChannel.format(mood)
+                    entry.ok -> entry.label
+                    else -> "分析失败：${entry.note}"
+                },
+            )
+        }
     }
 
     private fun stamp(at: Long): String =

@@ -583,24 +583,17 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                         val showFinderDot by showFinderDotState
                         val contactUnreadCount by contactUnreadCountState
 
-                        // 底栏是 WeKit 自己接管的 UI：莫奈生效时跟随注入主题（与微信原生同源），
-                        // 未生效时保持原来的固定灰/黑，避免改变既有外观。
-                        val monetActive = MonetColors.isActive
-                        val backgroundColor = if (monetActive) {
-                            MaterialTheme.colorScheme.surfaceContainer
-                        } else if (isSystemInDarkTheme()) {
-                            Color(0xFF191919)
-                        } else {
-                            Color(0xFFF7F7F7)
-                        }
-                        val activeColor = MaterialTheme.colorScheme.primary
-                        val inactiveColor = if (monetActive) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else if (isSystemInDarkTheme()) {
-                            Color(0xFF999999)
-                        } else {
-                            Color(0xFF181818)
-                        }
+                        // 底栏是 WeKit 自己接管的 UI：莫奈生效时直接吃引擎色板（与微信原生同源，
+                        // 比从 primary 种子重新派生的主题色更贴合），未生效时保持原来的固定灰/黑，
+                        // 避免改变既有外观。
+                        val night = isSystemInDarkTheme()
+                        val tokens = MonetColors.applied.value?.let { MonetColors.tokens(night) }
+                        val backgroundColor = tokens?.surfaceContainer?.let { Color(it) }
+                            ?: if (night) Color(0xFF191919) else Color(0xFFF7F7F7)
+                        val activeColor = tokens?.primary?.let { Color(it) }
+                            ?: MaterialTheme.colorScheme.primary
+                        val inactiveColor = tokens?.onSurfaceVariant?.let { Color(it) }
+                            ?: if (night) Color(0xFF999999) else Color(0xFF181818)
 
                         // Scale the bar by overriding the density rather than wrapping it in a
                         // graphicsLayer: every dp/sp inside (height, icons, pill, blur radius,

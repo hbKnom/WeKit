@@ -355,7 +355,19 @@ object MonetEngine : ClickableFeature() {
                             "（可在设置里重新解析）",
                     )
                 }
-                if (!MonetRuntimePackageWriter.write(packageFile, info.packageName, resolution.plan)) {
+                // 写包时 XML 里的 `@type/name` 需要真实 id：先在本次计划里找（合成资源），
+                // 再回到宿主资源图里找，最后才跳过该属性。绝不再用 requireNotNull —— 一个
+                // 引用查不到就整包失败，等于莫奈完全失效。
+                val hostReference: (String, String) -> Int? = { type, name ->
+                    graph.node(MonetResourceKey(type, name))?.id
+                }
+                if (!MonetRuntimePackageWriter.write(
+                        packageFile,
+                        info.packageName,
+                        resolution.plan,
+                        hostReference,
+                    )
+                ) {
                     // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
                     error(
                         "运行时资源包构建失败（资源 id 校验未通过），已中止本次注入以免影响微信运行" +

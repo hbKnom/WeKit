@@ -119,8 +119,16 @@ object McpClientManager {
                 } else {
                     attempt++
                     val backoff = minOf(BASE_BACKOFF_MS * (1L shl (attempt - 1).coerceIn(0, 6)), MAX_BACKOFF_MS)
-                    WeLogger.w(TAG, "reconnect '${provider.name}' in ${backoff}ms (attempt $attempt)")
-                    delay(backoff.milliseconds)
+                    // 长期连不上的服务器（端点在电脑/容器里，手机上根本连不到）不该按 1 分钟节奏
+                    // 永远重试：每次失败都会真的建一次 socket、并在 provider 侧留下记录，实测有用户
+                    // 的日志里出现 attempt 78。超过 [QUIET_ATTEMPTS] 次后退到 [IDLE_BACKOFF_MS]，
+                    // 服务器恢复后仍会自动接上（用户点「刷新工具」也会立刻重试）。
+                    val idle = attempt > QUIET_ATTEMPTS
+                    val effective = if (idle) maxOf(backoff, IDLE_BACKOFF_MS) else backoff
+                    if (!idle || attempt % 20 == 0) {
+                        WeLogger.w(TAG, "reconnect '${provider.name}' in ${effective}ms (attempt $attempt)")
+                    }
+                    delay(effective.milliseconds)
                 }
             }
         }
@@ -167,4 +175,10 @@ object McpClientManager {
     private const val HEALTHCHECK_INTERVAL_MS = 30_000L
     private const val BASE_BACKOFF_MS = 2_000L
     private const val MAX_BACKOFF_MS = 60_000L
+
+    /** 连续失败超过这个次数后，重连节奏降到 [IDLE_BACKOFF_MS]。 */
+    private const val QUIET_ATTEMPTS = 8
+
+    /** 长期不可达的服务器用的退避上限（5 分钟）。 */
+    private const val IDLE_BACKOFF_MS = 300_000L
 }

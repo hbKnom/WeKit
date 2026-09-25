@@ -20,6 +20,9 @@ object SignalAnalyzer {
     private val failures = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val failureMessages = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** 完成计数：只用来给日志限流（前 3 条 + 每 25 条记一次）。 */
+    private val completed = java.util.concurrent.atomic.AtomicInteger()
+
     /**
      * 待分析队列：**最新的一句话先分析**。
      *
@@ -36,24 +39,56 @@ object SignalAnalyzer {
     private val workersStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 单条消息的硬超时（兜底）。真正保证"不会一直转圈"的是扫描器一侧的看门狗。 */
-    private const val TIMEOUT_MS = 45_000L
+    private const val TIMEOUT_MS = 70_000L
+
+    /** 起跑时刻（elapsedRealtime）：看门狗据此区分「排在队里」和「已经在跑」。 */
+    private val startTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 在跑/在排队的输入：看门狗结清时要拿它回调展示层，否则只能结清一个没有身份的状态。 */
+    private val pendingInputs = java.util.concurrent.ConcurrentHashMap<String, AnalysisInput>()
 
     /** 失败后的冷却：这段时间内同一条消息不重复打模型，但失败原因必须一直可见（可手动重试）。 */
     private const val RETRY_COOLDOWN_MS = 30_000L
 
     /**
-     * 分析成功回调 —— 「会话消息」展示通道用。
+     * 结论落地（成功 **或** 失败）的回调接口。
      *
-     * 同一份分析结果既画气泡卡、也（可选）插一条系统消息，**不会再打第二次模型**：
-     * 合并前「言外潜台词」与「Jev 聊天决策」各有一套请求链路，同一句话被分析两遍。
+     * 展示层（气泡卡、回插通道）靠它**即时回填**：以前只有「分析成功」一个回调，
+     * 气泡只能靠 600ms 轮询去猜结果到没到 —— 一屏十几行每秒重新渲染一遍，
+     * 既卡又慢半拍。现在成功/失败都推给订阅者，节拍退化成兜底。
      */
-    @Volatile
-    var onAnalyzed: ((AnalysisInput, Mood) -> Unit)? = null
+    interface SettleListener {
+        /** [mood] 为 null 表示这次没有结论（[reason] 是可见的失败原因）。 */
+        fun onSettled(input: AnalysisInput, mood: Mood?, reason: String?)
+    }
+
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<SettleListener>()
+
+    fun addListener(listener: SettleListener) {
+        if (!listeners.contains(listener)) listeners.add(listener)
+    }
+
+    fun removeListener(listener: SettleListener) {
+        listeners.remove(listener)
+    }
+
+    private fun notifySettled(input: AnalysisInput, mood: Mood?, reason: String?) {
+        listeners.forEach { listener ->
+            runCatching { listener.onSettled(input, mood, reason) }
+                .onFailure { MoodLog.e("结论回调失败：${it.javaClass.simpleName} ${it.message}") }
+        }
+    }
 
     fun failure(key: String): String? = failureMessages[key]
 
     /** 已发出的请求数（含重试），设置页显示运行状态用。 */
     val requestCount: Int get() = client.requestCount
+
+    /** 队列积压（还没开跑的分析条数），设置页与卡片的排队提示用。 */
+    val queuedDepth: Int get() = queue.size
+
+    /** 是否已经在跑（不是「排在队里」）。看门狗据此选用宽松/严格的等待上限。 */
+    fun startedAt(key: String): Long? = startTimes[key]
 
     /**
      * 看门狗结清：某条消息既没结果也没失败、却已经超出等待上限时调用。
@@ -65,10 +100,13 @@ object SignalAnalyzer {
         val wasPending = MoodStore.isPending(key)
         MoodStore.release(key)
         failures.remove(key)
+        startTimes.remove(key)
+        val input = pendingInputs.remove(key)
         val reason = if (wasPending) "分析超时（模型无响应），点击此卡重试" else "分析已中断，点击此卡重试"
         failureMessages[key] = reason
         MoodStore.markFailed()
         ModulePrefs.report("看门狗结清：${key.take(8)} pending=$wasPending")
+        if (input != null) notifySettled(input, null, reason)
     }
 
     fun retryFailure(key: String) {
@@ -88,17 +126,31 @@ object SignalAnalyzer {
         queue.clear()
         failures.clear()
         failureMessages.clear()
+        pendingInputs.clear()
+        startTimes.clear()
         MoodStore.clearResults()
     }
 
+    /**
+     * 提交一条分析。
+     *
+     * 返回值语义（调用方据此决定要不要挂「正在分析」状态）：
+     * - 非 null：这条消息**正在被分析**（本次新入队，或已经在队列/在跑）；
+     * - null：这条**不会**产生新结论 —— 未配置 / 不在范围 / 内容超限 / 仍在失败冷却期。
+     *
+     * 冷却期以前返回的是 key，调用方会挂上「正在分析」并等 60s 看门狗来结清，
+     * 结果用户看到的是「明明刚失败过，怎么又转了一圈说超时」。现在直接返回 null，
+     * 卡片立刻显示上次的失败原因与重试入口。
+     */
     fun submit(input: AnalysisInput, stillVisible: () -> Boolean = { true }): String? {
         if (!ModulePrefs.canAnalyze) return null
         if (!ModulePrefs.inScope(input.talker)) return null
         if (MessagePolicy.textOrNull(input.text) == null) return null
         val key = input.key
-        if (System.currentTimeMillis() - (failures[key] ?: 0L) < RETRY_COOLDOWN_MS) return key
+        if (System.currentTimeMillis() - (failures[key] ?: 0L) < RETRY_COOLDOWN_MS) return null
         if (!MoodStore.claim(key)) return key
         failureMessages.remove(key)
+        pendingInputs[key] = input
         ensureWorkers()
         queue.offer(input)
         return key
@@ -112,8 +164,17 @@ object SignalAnalyzer {
                 while (true) {
                     // 阻塞取队列（worker 线程就是 Dispatchers.IO 的线程，阻塞在这里不占主线程）。
                     val input = queue.take()
-                    runCatching { perform(input) }
-                        .onFailure { MoodLog.e("分析任务异常：${it.message}") }
+                    startTimes[input.key] = android.os.SystemClock.elapsedRealtime()
+                    try {
+                        perform(input)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        MoodLog.e("分析任务异常：${e.message}")
+                    } finally {
+                        // 跑完/异常都要把起跑标记摘掉，否则看门狗会一直以为它还在跑
+                        startTimes.remove(input.key)
+                    }
                 }
             }
         }
@@ -126,6 +187,7 @@ object SignalAnalyzer {
             ModulePrefs.reload()
             if (!ModulePrefs.canAnalyze) {
                 MoodStore.release(key)
+                pendingInputs.remove(key)
                 return
             }
             // 刻意不再用「这一行还在不在屏幕上」当作继续条件：
@@ -149,6 +211,8 @@ object SignalAnalyzer {
         MoodStore.complete(key, mood)
         failures.remove(key)
         failureMessages.remove(key)
+        startTimes.remove(key)
+        pendingInputs.remove(key)
         MoodStore.markCompleted()
         MoodStore.recordScore(input.talker, mood.score)
         MoodStore.record(
@@ -166,10 +230,14 @@ object SignalAnalyzer {
                 },
             ),
         )
-        MoodLog.i("潜语解读完成：${mood.label}")
-        ModulePrefs.report("潜语分析完成，已缓存 ${MoodStore.size()} 条")
-        runCatching { onAnalyzed?.invoke(input, mood) }
-            .onFailure { MoodLog.e("结论回插会话失败：${it.message}") }
+        // 日志/回传都限流：一屏消息分析完就是十几行同形状的「潜语分析完成，已缓存 N 条」，
+        // 这是用户点名的日志刷屏源之一。前 3 条照记（方便排查启动状态），之后每 25 条记一次。
+        val done = completed.incrementAndGet()
+        if (done <= 3 || done % 25 == 0) {
+            MoodLog.i("潜语解读完成：${mood.dominant ?: mood.label}（累计 $done 条，缓存 ${MoodStore.size()} 条）")
+            ModulePrefs.report("潜语分析完成，已缓存 ${MoodStore.size()} 条")
+        }
+        notifySettled(input, mood, null)
     }
 
     private fun fail(key: String, input: AnalysisInput, reason: String, report: String) {
@@ -177,6 +245,8 @@ object SignalAnalyzer {
         failureMessages[key] = reason
         MoodStore.release(key)
         MoodStore.markFailed()
+        startTimes.remove(key)
+        pendingInputs.remove(key)
         MoodStore.record(
             MoodStore.Entry(
                 key = key,
@@ -189,6 +259,7 @@ object SignalAnalyzer {
         )
         MoodLog.e("分析失败：$reason")
         ModulePrefs.report(report)
+        notifySettled(input, null, reason)
     }
 
     suspend fun requestMood(text: String, context: List<ContextMessage> = emptyList(),

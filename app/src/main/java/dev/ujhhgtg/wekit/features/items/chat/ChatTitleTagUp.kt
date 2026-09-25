@@ -95,12 +95,15 @@ object ChatTitleTagUp : SwitchFeature(),
         val room = msgInfo.talker
         val wxid = if (group) msgInfo.sender else msgInfo.talker
         val entry = runCatching { store.entryFor(group, room, wxid) }.getOrNull()
-        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）
-        runCatching {
-            WeLogger.d(
-                TAG,
-                "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
-            )
+        // 诊断日志：头衔串排查用（对照实际消息确认 wxid 是否正确）。
+        // 每条消息 bind 都会走到这里，挂在「详细日志」开关后面，避免滚动时每帧一次日志写入。
+        if (WeLogger.verboseEnabled) {
+            runCatching {
+                WeLogger.d(
+                    TAG,
+                    "render group=$group room=$room sender=${msgInfo.sender} talker=${msgInfo.talker} wxid=$wxid hit=${entry != null}"
+                )
+            }
         }
         if (wxid.isEmpty() || wxid == WeApi.selfWxId) {
             hideOverlay(view)

@@ -58,7 +58,7 @@ import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.items.beautify.CustomMessageBubbles.ICON_TINT_TAG
 import dev.ujhhgtg.wekit.features.items.beautify.CustomMessageBubbles.bubbleCache
-import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.DefaultColumn
@@ -151,15 +151,15 @@ object CustomMessageBubbles : ClickableFeature(), WeChatMessageViewApi.ICreateVi
 //            }
 //    }
 
-    private var thatLight by prefOption("custom_bubbles_color_that_light", "black")
-    private var thatDark by prefOption("custom_bubbles_color_that_dark", "white")
-    private var thisLight by prefOption("custom_bubbles_color_this_light", "black")
-    private var thisDark by prefOption("custom_bubbles_color_this_dark", "black")
+    private var thatLight by hotPrefOption("custom_bubbles_color_that_light", "black")
+    private var thatDark by hotPrefOption("custom_bubbles_color_that_dark", "white")
+    private var thisLight by hotPrefOption("custom_bubbles_color_this_light", "black")
+    private var thisDark by hotPrefOption("custom_bubbles_color_this_dark", "black")
 
-    private var bgThatLight by prefOption("custom_bubbles_bg_that_light", "#00000000")
-    private var bgThatDark by prefOption("custom_bubbles_bg_that_dark", "#00000000")
-    private var bgThisLight by prefOption("custom_bubbles_bg_this_light", "#00000000")
-    private var bgThisDark by prefOption("custom_bubbles_bg_this_dark", "#00000000")
+    private var bgThatLight by hotPrefOption("custom_bubbles_bg_that_light", "#00000000")
+    private var bgThatDark by hotPrefOption("custom_bubbles_bg_that_dark", "#00000000")
+    private var bgThisLight by hotPrefOption("custom_bubbles_bg_this_light", "#00000000")
+    private var bgThisDark by hotPrefOption("custom_bubbles_bg_this_dark", "#00000000")
 
     // A nine-patch source must keep at least one interior pixel once the marker border is stripped.
     private const val MIN_BUBBLE_SIZE_PX = 3

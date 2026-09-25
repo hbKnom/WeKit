@@ -2,6 +2,8 @@ package dev.ujhhgtg.wekit.utils
 
 import android.util.Log
 import dev.ujhhgtg.wekit.BuildConfig
+import dev.ujhhgtg.wekit.constants.Preferences
+import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
 import dev.ujhhgtg.wekit.utils.fs.createDirsSafe
 import java.io.File
@@ -37,6 +39,16 @@ object WeLogger {
     private const val MAX_FILE_BYTES = 4L * 1024 * 1024   // 4 MiB per file
     private const val MAX_ROTATED_FILES = 6               // keep the newest 6 files per day
 
+    /**
+     * `File.length()` 是一次 stat 系统调用；宿主日志被重定向时每秒可能产生几百条记录，
+     * 每条都查一次文件大小纯属浪费。这里按条数抽样检查：上限最多被超出
+     * [SIZE_CHECK_INTERVAL] 条记录的量级（几十 KB），对存储与日志查看器没有影响。
+     */
+    private const val SIZE_CHECK_INTERVAL = 64
+
+    /** 「详细日志」开关的缓存有效期，见 [verboseEnabled]。 */
+    private const val VERBOSE_TTL_MILLIS = 1000L
+
     private val timestampFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
     private val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
@@ -70,11 +82,43 @@ object WeLogger {
 
     // ========== File Logging Internals ==========
 
+    /** 距上次真正 stat 文件大小已写入的记录数，见 [SIZE_CHECK_INTERVAL]。 */
+    private var recordsSinceSizeCheck = 0
+
+    /** 「详细日志」开关的缓存值/时间戳，见 [verboseEnabled]。 */
+    private var verboseCachedAt = 0L
+    private var verboseCached = false
+
+    /**
+     * 「详细日志」开关（设置里的 `verbose_log`）的缓存读。
+     *
+     * 为什么需要缓存：它在**每一条消息 bind、每一次渲染**里被判断（高频率日志的门闩），
+     * 而 `WePrefs` 的读是一次真正的 SQLite 查询 —— 拿它做热路径门闩，门闩本身就成了瓶颈。
+     * 这里按 [VERBOSE_TTL_MILLIS] 缓存，开关变更最多晚一秒生效，对诊断无影响。
+     */
+    val verboseEnabled: Boolean
+        get() {
+            val now = System.currentTimeMillis()
+            if (now - verboseCachedAt < VERBOSE_TTL_MILLIS) return verboseCached
+            verboseCached = try {
+                WePrefs.getBoolOrDef(Preferences.VERBOSE_LOG, false)
+            } catch (_: Throwable) {
+                false
+            }
+            verboseCachedAt = now
+            return verboseCached
+        }
+
     private fun getOrRotateWriter(logDate: LocalDate): FileWriter? {
-        if (writer != null && currentLogDate == logDate && currentLogFile != null &&
-            currentLogFile!!.length() < MAX_FILE_BYTES
-        ) {
-            return writer
+        if (writer != null && currentLogDate == logDate && currentLogFile != null) {
+            if (recordsSinceSizeCheck < SIZE_CHECK_INTERVAL) {
+                recordsSinceSizeCheck++
+                return writer
+            }
+            recordsSinceSizeCheck = 0
+            if (currentLogFile!!.length() < MAX_FILE_BYTES) {
+                return writer
+            }
         }
 
         // A writer for the same date exists but the current file exceeded the cap:

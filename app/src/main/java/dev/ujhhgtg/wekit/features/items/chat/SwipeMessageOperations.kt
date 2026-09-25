@@ -36,7 +36,7 @@ import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
@@ -87,11 +87,11 @@ object SwipeMessageOperations : ClickableFeature(), IResolveDex,
 
     private val springInterpolator = OvershootInterpolator(1.3f)
 
-    private var enableSecondary by prefOption("swipe_to_quote_or_repeat_right_repeat", false)
-    private var swapDirections by prefOption("swipe_to_quote_or_repeat_swap_dir", false)
+    private var enableSecondary by hotPrefOption("swipe_to_quote_or_repeat_right_repeat", false)
+    private var swapDirections by hotPrefOption("swipe_to_quote_or_repeat_swap_dir", false)
 
     // When true, the secondary (non-quote) swipe action is "edit" instead of "repeat".
-    private var useEditInsteadOfRepeat by prefOption("swipe_secondary_action_edit", false)
+    private var useEditInsteadOfRepeat by hotPrefOption("swipe_secondary_action_edit", false)
 
     // com.tencent.mm.ui.chatting.viewitems.ChattingItemContainer (obfuscated: xg / li). This
     // RelativeLayout is the SHARED root of every message item type (each ChattingItem.F() wraps its

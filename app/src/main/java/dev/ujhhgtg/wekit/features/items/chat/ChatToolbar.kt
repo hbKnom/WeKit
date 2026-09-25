@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -48,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.stringResource
@@ -109,6 +111,7 @@ import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.ui.utils.theme.InjectedUiTheme
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.constructor
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.now
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.builtins.ListSerializer
@@ -525,7 +528,7 @@ object ChatToolbar : ClickableFeature(), IResolveDex {
                 setLifecycleOwner(lifecycleOwner)
 
                 setContent {
-                    InjectedUiTheme {
+                    MonetInjectedTheme {
                         val tools by toolsFlow.collectAsStateWithLifecycle()
                         val itemsOrder = remember { itemsOrder }
                         val enabledItems = remember { enabledItems }
@@ -945,6 +948,46 @@ object ChatToolbar : ClickableFeature(), IResolveDex {
                         Text(stringResource(R.string.dialog_cancel))
                     }
                 }
+            )
+        }
+    }
+}
+
+/**
+ * 「WeKit 注入微信界面」的 Compose 主题。
+ *
+ * [InjectedUiTheme] 在莫奈生效时虽然也会换色，但它是拿引擎 primary **当种子重新派生**一套 M3
+ * 色板，surface / container 那几档"面"色与引擎实际替换给微信原生界面的值有色差（实机反馈的
+ * 「没美化到位」）。这里在引擎生效时用 [MonetColors] 的 token 直接覆盖 scheme 里承载"面"与主色的
+ * 角色，让注入的组件与原生完全同源；引擎未启用 / 未解析成功时一行不改（仍走原来的
+ * [InjectedUiTheme] 配色，不会退化成随机色）。
+ */
+@Composable
+internal fun MonetInjectedTheme(content: @Composable () -> Unit) {
+    InjectedUiTheme {
+        val night = isSystemInDarkTheme()
+        val tokens = MonetColors.applied.value?.let { MonetColors.tokens(night) }
+        if (tokens == null) {
+            content()
+        } else {
+            MaterialTheme(
+                colorScheme = MaterialTheme.colorScheme.copy(
+                    primary = Color(tokens.primary),
+                    onPrimary = Color(tokens.onPrimary),
+                    primaryContainer = Color(tokens.primaryContainer),
+                    onPrimaryContainer = Color(tokens.onPrimaryContainer),
+                    surface = Color(tokens.surface),
+                    surfaceContainerLow = Color(
+                        MonetColors.blend(tokens.surface, tokens.surfaceContainer, 0.5)
+                    ),
+                    surfaceContainer = Color(tokens.surfaceContainer),
+                    surfaceContainerHigh = Color(tokens.surfaceContainerHigh),
+                    surfaceContainerHighest = Color(tokens.surfaceContainerHigh),
+                    onSurface = Color(tokens.onSurface),
+                    onSurfaceVariant = Color(tokens.onSurfaceVariant),
+                    outline = Color(tokens.outline),
+                ),
+                content = content,
             )
         }
     }

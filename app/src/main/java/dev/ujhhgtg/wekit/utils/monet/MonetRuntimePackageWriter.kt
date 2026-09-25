@@ -61,6 +61,7 @@ object MonetRuntimePackageWriter {
         output: File,
         packageName: String,
         plan: MonetOverlayPlan,
+        hostReference: ((type: String, name: String) -> Int?)? = null,
     ): Boolean {
         if (plan.isEmpty) {
             // 一个角色都没解析出来时不该抛异常打断整条流程：调用方会把它当成
@@ -73,7 +74,7 @@ object MonetRuntimePackageWriter {
             ".${output.name}.tmp-${Thread.currentThread().id}-${System.nanoTime()}",
         )
         try {
-            if (!writeTo(tmp, packageName, plan)) {
+            if (!writeTo(tmp, packageName, plan, hostReference)) {
                 tmp.delete()
                 return false
             }
@@ -105,16 +106,45 @@ object MonetRuntimePackageWriter {
         output: File,
         packageName: String,
         plan: MonetOverlayPlan,
+        hostReference: ((type: String, name: String) -> Int?)?,
     ): Boolean {
         val apk = ApkModule()
         val table = TableBlock()
         apk.setTableBlock(table)
         val pkg = table.newPackage(0x7f, packageName)
 
-        val specFlags = mutableMapOf<Pair<String, String>, Int>()
-        fun record(type: String, name: String, qualifiers: String) {
-            val key = type to name
-            specFlags[key] = specFlags.getOrDefault(key, 0) or qualifierFlags(qualifiers)
+        // spec flag 以前按 (type, name) 记录、写包前再按名字回查条目。名字回查在
+        // 「新建包里 typeId→类型名 的映射被 refreshFull() 重建」时会返回 null，
+        // 于是 requireNotNull 把整包 build 掉 —— 用户看到的就是
+        // 「building resource package 阶段分析失败：Required value was null.」。
+        // 改成直接记条目自己的 resourceId：不可能回查为空，且与宿主「按 id 覆盖」的方式一致。
+        val specFlags = HashMap<Int, Int>()
+        fun record(entry: Entry, qualifiers: String) {
+            specFlags[entry.resourceId] =
+                specFlags.getOrDefault(entry.resourceId, 0) or qualifierFlags(qualifiers)
+        }
+
+        // 同一次计划里自己写的资源（自适应图标图层等）在写 XML 时可能还没建条目，
+        // 先把「会写进去的 (type,name) → id」建表，保证 XML 里的具名引用不会解析成空。
+        val plannedIds = HashMap<Pair<String, String>, Int>()
+        fun plan(binding: MonetBinding) {
+            if (binding.id != 0) {
+                plannedIds[referenceKey(binding.type, binding.name)] = binding.id
+            }
+        }
+        plan.colors.forEach { plan(it.binding) }
+        plan.literalColors.forEach { plan(it.binding) }
+        plan.strings.forEach { plan(it.binding) }
+        plan.drawables.forEach { plan(it.binding) }
+
+        // 单个条目/单个引用出错不允许毁掉整包：少替换一个资源只是观感问题，
+        // 而「整包 build 失败」会让用户完全拿不到取色。
+        var failures = 0
+        fun onFailure(label: String, t: Throwable) {
+            failures++
+            if (failures <= 5) {
+                WeLogger.w(TAG, "overlay $label failed, skipped: ${t.message}")
+            }
         }
 
         val aligned = AlignedEntryWriter(pkg)
@@ -124,13 +154,13 @@ object MonetRuntimePackageWriter {
             color.light?.let { value ->
                 aligned.entry(binding, "")?.let { entry ->
                     entry.setColorValue(value)
-                    record(binding.type, binding.name, "")
+                    record(entry, "")
                 }
             }
             color.night?.let { value ->
                 aligned.entry(binding, NIGHT_QUALIFIERS)?.let { entry ->
                     entry.setColorValue(value)
-                    record(binding.type, binding.name, NIGHT_QUALIFIERS)
+                    record(entry, NIGHT_QUALIFIERS)
                 }
             }
         }
@@ -143,7 +173,7 @@ object MonetRuntimePackageWriter {
             color.nightArgb?.let { argb ->
                 aligned.entry(binding, NIGHT_QUALIFIERS)?.let { entry ->
                     entry.setValueAsRaw(ValueType.COLOR_ARGB8, argb)
-                    record(binding.type, binding.name, NIGHT_QUALIFIERS)
+                    record(entry, NIGHT_QUALIFIERS)
                 }
             }
         }
@@ -151,7 +181,7 @@ object MonetRuntimePackageWriter {
             val binding = string.binding
             aligned.entry(binding, string.qualifiers)?.let { entry ->
                 entry.setValueAsString(string.value)
-                record(binding.type, binding.name, string.qualifiers)
+                record(entry, string.qualifiers)
             }
         }
         // drawable 条目的值必须是「我们刚写进去的那个 XML 的路径」：宿主按 id 取 drawable 时
@@ -160,22 +190,38 @@ object MonetRuntimePackageWriter {
             val binding = drawable.binding
             aligned.entry(binding, drawable.lightQualifiers)?.let { entry ->
                 val path = xmlPath(binding.type, drawable.lightQualifiers, binding.name)
-                entry.setValueAsString(path)
-                addXmlResource(apk, pkg, path, drawable.light)
-                record(binding.type, binding.name, drawable.lightQualifiers)
+                val document = try {
+                    buildXmlResource(pkg, drawable.light, hostReference, plannedIds)
+                } catch (t: Throwable) {
+                    onFailure("${binding.type}/${binding.name} xml", t)
+                    null
+                }
+                if (document != null) {
+                    entry.setValueAsString(path)
+                    apk.add(BlockInputSource(path, document))
+                    record(entry, drawable.lightQualifiers)
+                }
             }
             drawable.night?.let { node ->
                 aligned.entry(binding, drawable.nightQualifiers)?.let { entry ->
                     val path = xmlPath(binding.type, drawable.nightQualifiers, binding.name)
-                    entry.setValueAsString(path)
-                    addXmlResource(apk, pkg, path, node)
-                    record(binding.type, binding.name, drawable.nightQualifiers)
+                    val document = try {
+                        buildXmlResource(pkg, node, hostReference, plannedIds)
+                    } catch (t: Throwable) {
+                        onFailure("${binding.type}/${binding.name} xml(night)", t)
+                        null
+                    }
+                    if (document != null) {
+                        entry.setValueAsString(path)
+                        apk.add(BlockInputSource(path, document))
+                        record(entry, drawable.nightQualifiers)
+                    }
                 }
             }
         }
 
         table.refreshFull()
-        specFlags.forEach { (key, flags) -> markSpecFlags(pkg, key.first, key.second, flags) }
+        specFlags.forEach { (resourceId, flags) -> markSpecFlags(pkg, resourceId, flags) }
         apk.refreshTable()
         val mismatch = aligned.verify()
         if (mismatch != null) {
@@ -187,7 +233,8 @@ object MonetRuntimePackageWriter {
         output.parentFile?.mkdirs()
         apk.writeApk(output)
         apk.close()
-        WeLogger.i(TAG, "runtime package written: ${aligned.summary()}")
+        val failedNote = if (failures > 0) ", entry failures $failures" else ""
+        WeLogger.i(TAG, "runtime package written: ${aligned.summary()}$failedNote")
         return true
     }
 
@@ -198,10 +245,31 @@ object MonetRuntimePackageWriter {
         }
     }
 
-    private fun markSpecFlags(pkg: PackageBlock, type: String, name: String, flags: Int) {
-        val entryId = requireNotNull(pkg.getResource(type, name)).resourceId and 0xffff
-        requireNotNull(pkg.getSpecTypePair(type)).specBlock.getSpecFlag(entryId)
-            .setInteger(flags)
+    private fun markSpecFlags(pkg: PackageBlock, resourceId: Int, flags: Int) {
+        val typeId = (resourceId ushr 16) and 0xff
+        val entryId = resourceId and 0xffff
+        // 按 typeId 直查，不做「按名字回查条目」：新建包里名字映射不可靠，
+        // 而 flag 只是给运行时读取器看的辅助信息，缺失就只跳过它，绝不打断整包写出。
+        val specBlock = pkg.getSpecTypePair(typeId)?.specBlock
+        if (specBlock == null) {
+            WeLogger.w(TAG, "spec block missing for typeId $typeId, spec flags skipped")
+            return
+        }
+        specBlock.getSpecFlag(entryId)?.setInteger(flags)
+    }
+
+    private fun referenceKey(type: String, name: String) = type.lowercase() to name.lowercase()
+
+    /** 把 XML 里的 `@type/name` 解析成真实资源 id；解析不出来返回 null（调用方跳过该属性）。 */
+    private fun resolveReferenceId(
+        pkg: PackageBlock,
+        reference: XmlValue.NamedReference,
+        hostReference: ((type: String, name: String) -> Int?)?,
+        plannedIds: Map<Pair<String, String>, Int>,
+    ): Int? {
+        pkg.getResource(reference.type, reference.name)?.let { return it.resourceId }
+        plannedIds[referenceKey(reference.type, reference.name)]?.let { return it }
+        return hostReference?.invoke(reference.type, reference.name)?.takeIf { it != 0 }
     }
 
     private fun qualifierFlags(qualifiers: String): Int {
@@ -260,16 +328,16 @@ object MonetRuntimePackageWriter {
         putU16(bytes, offset + 2, value ushr 16)
     }
 
-    private fun addXmlResource(
-        apk: ApkModule,
+    private fun buildXmlResource(
         pkg: PackageBlock,
-        path: String,
         node: XmlNode,
-    ) {
+        hostReference: ((type: String, name: String) -> Int?)?,
+        plannedIds: Map<Pair<String, String>, Int>,
+    ): ResXmlDocument {
         val document = ResXmlDocument().apply { packageBlock = pkg }
-        document.newElement(node.name).write(node, pkg)
+        document.newElement(node.name).write(node, pkg, hostReference, plannedIds)
         document.refreshFull()
-        apk.add(BlockInputSource(path, document))
+        return document
     }
 
     private fun xmlPath(type: String, qualifiers: String, name: String) = "res/$type$qualifiers/$name.xml"
@@ -344,10 +412,11 @@ object MonetRuntimePackageWriter {
                 val entryTypeId = (id ushr 16) and 0xff
                 val expectedType = typeNames[entryTypeId]
                 if (expectedType != null && !entry.name.isNullOrBlank()) {
-                    // 名字与 id 都不许被改写：宿主按 id 取值、按名做 overlay 校验，两者都要对齐。
-                    val nameEntry = pkg.getResource(expectedType, entry.name)
-                    if (nameEntry == null) {
-                        return "entry ${entry.name} is not reachable by name in type $expectedType"
+                    // 名字只是 overlay 校验用的辅助信息：查不到名字不能当作「包写错了」而整包放弃
+                    //（新建包里 typeId→类型名 的映射在 refreshFull() 后不保证可查），
+                    // 真正必须严格的是下面这条 —— id 不能被挪位。
+                    if (pkg.getResource(expectedType, entry.name) == null) {
+                        WeLogger.w(TAG, "entry ${entry.name} not reachable by name in $expectedType")
                     }
                 }
             }
@@ -368,17 +437,34 @@ object MonetRuntimePackageWriter {
     private const val HOST_PACKAGE_ID = 0x7f
     private const val NIGHT_QUALIFIERS = "-night"
 
-    private fun ResXmlElement.write(node: XmlNode, pkg: PackageBlock) {
+    private fun ResXmlElement.write(
+        node: XmlNode,
+        pkg: PackageBlock,
+        hostReference: ((type: String, name: String) -> Int?)?,
+        plannedIds: Map<Pair<String, String>, Int>,
+    ) {
         node.attributes.forEach { attribute ->
+            val value = attribute.value
+            if (value is XmlValue.NamedReference) {
+                // 具名引用解析不出来时**只跳过这个属性**：旧实现用 requireNotNull，
+                // 一个引用查不到就把整包 build 掉（「building resource package 阶段分析失败：
+                // Required value was null.」），表现为「解析成功但莫奈完全不生效」。
+                val id = resolveReferenceId(pkg, value, hostReference, plannedIds)
+                if (id == null) {
+                    WeLogger.w(TAG, "unresolved @${value.type}/${value.name}, attribute skipped")
+                    return@forEach
+                }
+                createAndroidAttribute(attribute.name, attribute.id).apply {
+                    valueType = ValueType.REFERENCE
+                    data = id
+                }
+                return@forEach
+            }
             createAndroidAttribute(attribute.name, attribute.id).apply {
-                when (val value = attribute.value) {
+                when (value) {
                     is XmlValue.Reference -> {
                         valueType = ValueType.REFERENCE
                         data = value.id
-                    }
-                    is XmlValue.NamedReference -> {
-                        valueType = ValueType.REFERENCE
-                        data = requireNotNull(pkg.getResource(value.type, value.name)).resourceId
                     }
                     is XmlValue.Color -> {
                         valueType = ValueType.COLOR_ARGB8
@@ -398,10 +484,13 @@ object MonetRuntimePackageWriter {
                         data = java.lang.Float.floatToIntBits(value.value)
                     }
                     is XmlValue.String -> setValueAsString(value.value)
+                    is XmlValue.NamedReference -> Unit
                 }
             }
         }
-        node.children.forEach { child -> newElement(child.name).write(child, pkg) }
+        node.children.forEach { child ->
+            newElement(child.name).write(child, pkg, hostReference, plannedIds)
+        }
     }
 
     private const val NATIVE_CONFIG_LOCALE = 0x00000004

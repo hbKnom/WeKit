@@ -36,7 +36,7 @@ import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
@@ -76,13 +76,13 @@ object MessageTimeEnhancements : ClickableFeature(),
         WeChatMessageViewApi.removeListener(this)
     }
 
-    private var timeFormat by prefOption("msg_time_pattern", "yyyy/MM/dd HH:mm:ss")
-    private var textSize by prefOption("msg_time_text_size", 11)
-    private var displayFormat by prefOption("msg_time_display_format", $$"$time | $type")
-    private var isAlwaysCentered by prefOption("msg_time_always_centered", false)
-    private var isAlwaysVisible by prefOption("msg_time_always_visible", false)
-    private var textColorLight by prefOption("msg_time_color_light", "gray")
-    private var textColorDark by prefOption("msg_time_color_dark", "gray")
+    private var timeFormat by hotPrefOption("msg_time_pattern", "yyyy/MM/dd HH:mm:ss")
+    private var textSize by hotPrefOption("msg_time_text_size", 11)
+    private var displayFormat by hotPrefOption("msg_time_display_format", $$"$time | $type")
+    private var isAlwaysCentered by hotPrefOption("msg_time_always_centered", false)
+    private var isAlwaysVisible by hotPrefOption("msg_time_always_visible", false)
+    private var textColorLight by hotPrefOption("msg_time_color_light", "gray")
+    private var textColorDark by hotPrefOption("msg_time_color_dark", "gray")
 
     private fun getFormattedText(msgInfo: MessageInfo): String {
         var result = displayFormat

@@ -38,16 +38,26 @@ import kotlin.math.roundToInt
  * 因此这里一路只找「行内部那个纵向 LinearLayout / 行根 RelativeLayout」作为落点，
  * 并且只做**追加**（不改变宿主原有子 View 的下标）。
  *
- * 卡片形态（合并后重做，取代原来那块纯文字 TextView）：
+ * 卡片形态（第 15 轮重排信息层级 + 可展开）：
  * ```
- * ┃ 潜语 · 事件解读            较前几句 ↑12
- * ┃ 开心 ▓▓▓▓▓▓░░░░ 58%     ← 纯 onDraw 的概率条，无子 View
- * ┃ 平静 ▓▓▓░░░░░░░ 27%
- * ┃ 生气 ▓░░░░░░░░░ 15%
- * ┃ 【解读】这句在等一个具体答复……
- * ┃ 建议：先回一句具体的安排，别只说"再说"
+ * ┃ 潜语 · 平静   · 较前几句 ↑12          ← 主情绪 + 与前几句对比
+ * ┃ 平静 ▓▓▓▓▓▓░░░░ 59%                  ← 主情绪一条（展开时给全概率）
+ * ┃ 邀约安排 · 等具体安排 · 置信度 62%      ← 场景 / 阶段 / 置信度
+ * ┃ 这句可能在给见面留位置                  ← 候选解读标题
+ * ┃ 对方在试探能否一起去？                  ← 展开后：解读要回答的问题
+ * ┃ 信号 45% · 普通 30%                    ← 展开后：备选解读概率
+ * ┃ 建议：顺着刚提到的事，问一个还没说的细节  ← 下一步动作
+ * ┃ 点击展开 · 长按复制                     ← 交互提示 / 降级说明
  * ```
+ * 默认收起（一行主情绪 + 一条建议），点一下展开全部细节，长按复制成文本 ——
+ * 聊天里最重要的信息一眼可见，其余按需展开，不占屏、不刷屏。
+ *
  * 左侧竖条颜色 = 情绪倾向（正向绿 / 中性橙 / 负向红），失败态换成告警色。
+ *
+ * 性能（用户实测「卡片一多就卡」的几处）：
+ *  - 渲染指纹改成**结构化比较**（不再拼字符串），调色板与文本拼接只在真的变化时才算；
+ *  - 调色板（含莫奈取色）按「夜间模式 + 引擎色板实例」缓存，不再每次 show 都重建；
+ *  - 卡片落点反射结果按 holder 类缓存，不再每次绑定时重扫方法表。
  */
 object YanwaiBubble {
     private data class Card(
@@ -60,14 +70,50 @@ object YanwaiBubble {
         val stripe: View,
         val header: TextView,
         val bars: BarsView,
-        val body: TextView,
+        val meta: TextView,
+        val reading: TextView,
         val advice: TextView,
-        var fingerprint: String = "",
+        val footer: TextView,
+        /** 是否展开了完整解读（默认取设置里的「卡片默认展开详情」）。 */
+        var expanded: Boolean = ModulePrefs.cardExpanded,
+        /** 上一次渲染的指纹；相等就整个跳过布局与文本重算。 */
+        var fingerprint: Fingerprint? = null,
+        /** 最近一次渲染用的输入与跳过原因：展开/收起时要按它原样重绘（不再走一遍扫描器）。 */
+        var input: AnalysisInput? = null,
+        var note: String? = null,
+    )
+
+    /**
+     * 渲染指纹：只包含**会改变画面**的东西，用字段比较代替字符串拼接
+     * （拼接本身在每拍每行都会产生临时对象，是之前热路径上没必要的一笔开销）。
+     */
+    private data class Fingerprint(
+        val key: String,
+        val state: Char,
+        val moodId: Int,
+        val failure: String?,
+        val note: String?,
+        val pending: Int,
+        val expanded: Boolean,
+        val night: Boolean,
+        val trendVersion: Int,
     )
 
     private val cards = IdentityHashMap<View, Card>()
     private val unsupported = mutableSetOf<String>()
 
+    /** holder 类 → 找主容器的方法（反射结果缓存，避免每次绑定重扫方法表）。 */
+    private val mainContainerLookup = HashMap<Class<*>, java.lang.reflect.Method?>()
+
+    /** 调色板缓存：夜间模式 + 莫奈引擎色板实例都没变时就复用同一份。 */
+    private val paletteLock = Any()
+    private var paletteNight = false
+    private var paletteEngine: Any? = null
+    private var paletteCache: Palette? = null
+
+    /**
+     * 画/刷新一张卡片。返回 true 表示这张卡已经就绪（含「本来就不该有卡」的情况）。
+     */
     fun show(row: View, message: AnalysisInput?, note: String? = null): Boolean {
         if (message == null || !ModulePrefs.enabled || !ModulePrefs.displayBubble ||
             !ModulePrefs.inScope(message.talker)
@@ -85,6 +131,8 @@ object YanwaiBubble {
             state = attach(row, key) ?: return false
             cards[row] = state
         }
+        state.input = message
+        state.note = note
         render(row, state, message, note)
         return true
     }
@@ -95,20 +143,30 @@ object YanwaiBubble {
         val key = input.key
         val mood = MoodStore.get(key)
         val failure = SignalAnalyzer.failure(key)
-        val pal = palette(row)
-
-        val phrase = when {
-            failure != null -> "failure:$failure"
-            mood != null -> "ok:${mood.label}:${(mood.score * 100).roundToInt()}:" +
-                mood.bars.joinToString(",") { "${it.name}${it.percent}${if (it.highlight) "*" else ""}" } +
-                ":" + mood.advice.orEmpty() + ":" + mood.detail
-            !ModulePrefs.canAnalyze -> "unconfigured"
-            note != null -> "skip:$note"
-            else -> "pending:${MoodStore.pendingCount()}"
+        val night = isNight(row)
+        val state = when {
+            failure != null -> 'f'
+            mood != null -> 'm'
+            !ModulePrefs.canAnalyze -> 'u'
+            note != null -> 's'
+            else -> 'p'
         }
-        if (phrase == card.fingerprint) return
-        card.fingerprint = phrase
+        val fingerprint = Fingerprint(
+            key = key,
+            state = state,
+            moodId = if (mood != null) System.identityHashCode(mood) else 0,
+            failure = failure,
+            note = note,
+            pending = if (state == 'p') MoodStore.pendingCount() else 0,
+            expanded = card.expanded,
+            night = night,
+            trendVersion = MoodStore.trendVersion,
+        )
+        if (fingerprint == card.fingerprint) return
+        card.fingerprint = fingerprint
 
+        // 指纹比对通过之后才取调色板（莫奈取色有成本，没变化就不该付）
+        val pal = palette(row, night)
         val accent = when {
             failure != null -> pal.warning
             mood == null -> pal.muted
@@ -124,37 +182,25 @@ object YanwaiBubble {
                 card.header.text = "潜语 · 分析失败"
                 card.header.setTextColor(pal.warning)
                 card.bars.visibility = View.GONE
-                card.body.text = "$failure\n（点击这张卡重新分析）"
+                card.meta.visibility = View.GONE
+                card.reading.text = "$failure\n（点击这张卡重新分析）"
+                card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
+                card.footer.text = "重试会重新请求一次模型"
+                card.footer.visibility = View.VISIBLE
             }
 
-            mood != null -> {
-                val trend = MoodStore.trendOf(input.talker)
-                val arrow = trend?.let {
-                    val points = (abs(it) * 100).roundToInt()
-                    when {
-                        points < 5 -> "· 与前几句持平"
-                        it > 0 -> "· 较前几句 ↑$points"
-                        else -> "· 较前几句 ↓$points"
-                    }
-                }.orEmpty()
-                card.header.text = listOf("潜语 · ${mood.dominantName()}", arrow)
-                    .filter { it.isNotEmpty() }.joinToString("  ")
-                card.header.setTextColor(accent)
-                card.bars.setBars(mood.bars, accent, pal)
-                card.bars.visibility = if (mood.bars.isEmpty()) View.GONE else View.VISIBLE
-                card.body.text = bodyText(mood)
-                card.body.visibility = if (card.body.text.isNullOrBlank()) View.GONE else View.VISIBLE
-                card.advice.text = mood.advice?.let { "建议：$it" }.orEmpty()
-                card.advice.visibility = if (mood.advice.isNullOrBlank()) View.GONE else View.VISIBLE
-            }
+            mood != null -> renderMood(card, input, mood, pal, accent)
 
             !ModulePrefs.canAnalyze -> {
                 card.header.text = "潜语 · 未配置"
                 card.header.setTextColor(pal.muted)
                 card.bars.visibility = View.GONE
-                card.body.text = "还没填写模型渠道与 API Key，填写后本卡会自动开始分析。"
+                card.meta.visibility = View.GONE
+                card.reading.text = "还没填写模型渠道与 API Key，填写后本卡会自动开始分析。"
+                card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
+                card.footer.visibility = View.GONE
             }
 
             else -> {
@@ -162,18 +208,101 @@ object YanwaiBubble {
                 card.header.text = if (note != null) "潜语 · 已跳过" else "潜语 · 正在分析"
                 card.header.setTextColor(pal.muted)
                 card.bars.visibility = View.GONE
-                card.body.text = note ?: if (queued > 1) {
+                card.meta.visibility = View.GONE
+                card.reading.text = note ?: if (queued > 1) {
                     // 一屏多条同时提交时给个排队交代：卡片看起来「卡住了」多数只是还没轮到
                     "已提交给模型，正在排队分析（本屏共 $queued 条）。结论会回填到这张卡上。"
                 } else {
                     "已提交给模型，正在分析。结论会回填到这张卡上。"
                 }
+                card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
+                card.footer.visibility = View.GONE
             }
         }
     }
 
-    /** 正文 = 去掉 Jev 头、「情绪：」行与「建议：」行后的其余解读内容。 */
+    private fun renderMood(
+        card: Card,
+        input: AnalysisInput,
+        mood: Mood,
+        pal: Palette,
+        accent: Int,
+    ) {
+        // 标题：主情绪 + （可选）与前几句的对比
+        val arrow = if (ModulePrefs.showTrend) {
+            MoodStore.trendOf(input.talker)?.let {
+                val points = (abs(it) * 100).roundToInt()
+                when {
+                    points < 5 -> "· 与前几句持平"
+                    it > 0 -> "· 较前几句 ↑$points"
+                    else -> "· 较前几句 ↓$points"
+                }
+            }
+        } else {
+            null
+        }
+        card.header.text = listOf("潜语 · ${mood.dominantName()}", arrow.orEmpty())
+            .filter { it.isNotEmpty() }.joinToString("  ")
+        card.header.setTextColor(accent)
+
+        // 情绪概率：收起时只给主情绪一条，展开时给全部
+        val visibleBars = if (card.expanded) {
+            mood.bars
+        } else {
+            mood.bars.filter { it.highlight }.ifEmpty { mood.bars.take(1) }
+        }
+        card.bars.setBars(visibleBars, accent, pal)
+        card.bars.visibility = if (visibleBars.isEmpty()) View.GONE else View.VISIBLE
+
+        // 元信息：场景 · 阶段 · 置信度
+        val metaParts = mutableListOf<String>()
+        mood.sceneLabel?.let { metaParts += it }
+        mood.progressLabel?.let { metaParts += it }
+        if (mood.confidence > 0.0) metaParts += "置信度 ${(mood.confidence * 100).roundToInt()}%"
+        card.meta.text = metaParts.joinToString(" · ")
+        card.meta.visibility = if (card.meta.text.isNullOrBlank()) View.GONE else View.VISIBLE
+
+        // 解读：标题一行（收起）/ 标题 + 问题 + 备选概率（展开）
+        val reading = buildString {
+            val title = mood.readingTitle
+            if (title != null) {
+                append(title)
+                if (card.expanded) {
+                    mood.readingQuestion?.let { append('\n').append(it) }
+                    if (mood.readingOptions.isNotEmpty()) {
+                        append('\n').append(mood.readingOptions.joinToString(" · ") { "${it.label} ${it.percent}%" })
+                    }
+                }
+            } else {
+                // 降级结果（只有第一轮）没有结构化解读：退回原来的正文裁剪
+                append(bodyText(mood))
+            }
+        }.trim()
+        card.reading.text = reading
+        card.reading.visibility = if (reading.isBlank()) View.GONE else View.VISIBLE
+
+        // 建议：最该看的一行，永远显示
+        card.advice.text = mood.advice?.let { "建议：$it" }.orEmpty()
+        card.advice.visibility = if (mood.advice.isNullOrBlank()) View.GONE else View.VISIBLE
+
+        // 页脚：降级说明优先，其次交互提示
+        val expandable = canExpand(mood)
+        val hint = when {
+            mood.note != null -> "提示：${mood.note}"
+            expandable && card.expanded -> "点击收起 · 长按复制解读"
+            expandable -> "点击展开完整解读 · 长按复制"
+            else -> "长按复制解读"
+        }
+        card.footer.text = hint
+        card.footer.visibility = View.VISIBLE
+    }
+
+    /** 还有没有「收起来时看不到」的内容可展开。 */
+    private fun canExpand(mood: Mood): Boolean =
+        mood.bars.size > 1 || mood.readingQuestion != null || mood.readingOptions.isNotEmpty()
+
+    /** 正文 = 去掉 Jev 头、「情绪：」行与「建议：」行后的其余解读内容（降级结果用）。 */
     private fun bodyText(mood: Mood): String = mood.detail.lines()
         .filterNot {
             it.startsWith(JevProtocol.header) || it.startsWith("情绪：") || it.startsWith("建议：")
@@ -189,7 +318,15 @@ object YanwaiBubble {
         val rowPos = IntArray(2).also { root.getLocationOnScreen(it) }
         val anchorPos = IntArray(2).also { anchor.getLocationOnScreen(it) }
         val left = (anchorPos[0] - rowPos[0]).coerceAtLeast(0)
-        val width = minOf(dp(row, 300), root.width - left - dp(row, 16))
+        // 行还没测量时 root.width == 0，以前这里会直接放弃（卡片就此不再出现，
+        // 直到下一次 show —— 表现为「有些行一直没有卡」）。现在退化用屏幕宽度兜底，
+        // 卡片先按固定宽度挂上去，宿主测量完会正常布局。
+        val availableWidth = if (root.width > 0) {
+            root.width
+        } else {
+            row.resources.displayMetrics.widthPixels
+        }
+        val width = minOf(dp(row, 300), availableWidth - left - dp(row, 16))
         if (width < dp(row, 100)) return null
 
         val views = createViews(row)
@@ -243,6 +380,7 @@ object YanwaiBubble {
         }
 
         views.container.setOnClickListener { onClick(row, key) }
+        views.container.setOnLongClickListener { onLongClick(row, key) }
         val detach = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {}
             override fun onViewDetachedFromWindow(v: View) { clear(v) }
@@ -258,29 +396,45 @@ object YanwaiBubble {
             stripe = views.stripe,
             header = views.header,
             bars = views.bars,
-            body = views.body,
+            meta = views.meta,
+            reading = views.reading,
             advice = views.advice,
+            footer = views.footer,
         )
     }
 
-    /** 点击：失败态重试，成功态复制解读到剪贴板。 */
+    /**
+     * 点击：失败态重试；有结论时展开/收起完整解读。
+     *
+     * 「展开」比「复制」更适合作为单击默认行为 —— 复制改成**长按**，
+     * 卡片上常驻一行提示说明这两件事。
+     */
     private fun onClick(row: View, key: String) {
-        val mood = MoodStore.get(key)
-        val failure = SignalAnalyzer.failure(key)
+        val card = cards[row] ?: return
         when {
-            failure != null -> YanwaiScanner.retryRow(row)
-            mood != null -> {
-                val text = MoodMessageChannel.format(mood)
-                val copied = runCatching {
-                    val cm = row.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("潜语解读", text))
-                    true
-                }.getOrDefault(false)
-                runCatching {
-                    Toast.makeText(row.context, if (copied) "已复制解读" else "复制失败", Toast.LENGTH_SHORT).show()
-                }
+            SignalAnalyzer.failure(key) != null -> YanwaiScanner.retryRow(row)
+            MoodStore.get(key) != null -> {
+                val input = card.input ?: return
+                card.expanded = !card.expanded
+                // 指纹里的 expanded 变了，render 会自然重画；这里不用手动清缓存
+                render(row, card, input, card.note)
             }
         }
+    }
+
+    /** 长按：把整份解读（含情绪概率与建议）复制成纯文本。 */
+    private fun onLongClick(row: View, key: String): Boolean {
+        val mood = MoodStore.get(key) ?: return false
+        val text = MoodMessageChannel.format(mood)
+        val copied = runCatching {
+            val cm = row.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("潜语解读", text))
+            true
+        }.getOrDefault(false)
+        runCatching {
+            Toast.makeText(row.context, if (copied) "已复制解读" else "复制失败", Toast.LENGTH_SHORT).show()
+        }
+        return true
     }
 
     // ------------------------------------------------------------------ 视图
@@ -290,17 +444,19 @@ object YanwaiBubble {
         val stripe: View,
         val header: TextView,
         val bars: BarsView,
-        val body: TextView,
+        val meta: TextView,
+        val reading: TextView,
         val advice: TextView,
+        val footer: TextView,
     )
 
     private fun createViews(row: View): Views {
-        val pal = palette(row)
+        val pal = palette(row, isNight(row))
         val stripe = View(row.context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(row, 3), ViewGroup.LayoutParams.MATCH_PARENT)
         }
         val header = TextView(row.context).apply {
-            textSize = 11f
+            textSize = 11.5f
             setTextColor(pal.title)
             gravity = Gravity.START
             includeFontPadding = false
@@ -308,16 +464,24 @@ object YanwaiBubble {
         val bars = BarsView(row.context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(row, 5) }
+        }
+        val meta = TextView(row.context).apply {
+            textSize = 10f
+            setTextColor(pal.muted)
+            includeFontPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(row, 4) }
         }
-        val body = TextView(row.context).apply {
+        val reading = TextView(row.context).apply {
             textSize = 12f
             setTextColor(pal.body)
             includeFontPadding = false
             setLineSpacing(dp(row, 2).toFloat(), 1f)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 2) }
+            ).apply { topMargin = dp(row, 5) }
         }
         val advice = TextView(row.context).apply {
             textSize = 12f
@@ -326,15 +490,25 @@ object YanwaiBubble {
             setLineSpacing(dp(row, 2).toFloat(), 1f)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 4) }
+            ).apply { topMargin = dp(row, 5) }
+        }
+        val footer = TextView(row.context).apply {
+            textSize = 9.5f
+            setTextColor(pal.muted)
+            includeFontPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(row, 5) }
         }
         val column = LinearLayout(row.context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(row, 9), dp(row, 7), dp(row, 9), dp(row, 7))
+            setPadding(dp(row, 10), dp(row, 8), dp(row, 10), dp(row, 8))
             addView(header)
             addView(bars)
-            addView(body)
+            addView(meta)
+            addView(reading)
             addView(advice)
+            addView(footer)
         }
         val container = LinearLayout(row.context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -344,7 +518,7 @@ object YanwaiBubble {
             // 宽度由调用方在布局参数里钉死（=气泡宽度）；这里让内容列占满剩余宽度
             addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        return Views(container, stripe, header, bars, body, advice)
+        return Views(container, stripe, header, bars, meta, reading, advice, footer)
     }
 
     /**
@@ -367,7 +541,7 @@ object YanwaiBubble {
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         fun setBars(value: List<MoodBar>, accentColor: Int, pal: Palette) {
-            if (bars == value && accent == accentColor) return
+            if (bars == value && accent == accentColor && labelColor == pal.body) return
             bars = value
             accent = accentColor
             labelColor = pal.body
@@ -433,9 +607,31 @@ object YanwaiBubble {
         val warning: Int,
     )
 
-    private fun palette(row: View): Palette {
-        val dark = row.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
-            Configuration.UI_MODE_NIGHT_YES
+    private fun isNight(row: View): Boolean = row.resources.configuration.uiMode and
+        Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
+    /**
+     * 取色板（带缓存）。
+     *
+     * 莫奈取色 + Palette 构造在每次 show 里都做一遍是没有必要的：只有夜间模式切换或
+     * 引擎色板换了一版才需要重算。缓存键就是这两样。
+     */
+    private fun palette(row: View, night: Boolean): Palette {
+        // 注意缓存键用的是**引擎色板实例**（applied.value），不是 tokens(night) 的返回值 ——
+        // 后者每次都新建一个 Tokens，拿它当键等于永远不命中。
+        val engine = MonetColors.applied.value
+        synchronized(paletteLock) {
+            val cached = paletteCache
+            if (cached != null && paletteNight == night && paletteEngine === engine) return cached
+            val fresh = buildPalette(night)
+            paletteNight = night
+            paletteEngine = engine
+            paletteCache = fresh
+            return fresh
+        }
+    }
+
+    private fun buildPalette(dark: Boolean): Palette {
         val base = if (dark) {
             Palette(0xFF23262B.toInt(), 0xFF343A42.toInt(), 0xFFD6DAE1.toInt(), 0xFFC3C8D0.toInt(),
                 0xFF33373D.toInt(), 0xFF8B9099.toInt(), 0xFF5CC08A.toInt(), 0xFFE0A45A.toInt(),
@@ -481,9 +677,18 @@ object YanwaiBubble {
     private fun findBubble(root: ViewGroup): View? {
         val holder = root.tag
         if (holder != null) {
-            val method = generateSequence(holder.javaClass as Class<*>) { it.superclass }
-                .flatMap { it.declaredMethods.asSequence() }
-                .firstOrNull { it.name == "getMainContainerView" && it.parameterCount == 0 }
+            val cls = holder.javaClass
+            val method = synchronized(mainContainerLookup) {
+                if (mainContainerLookup.containsKey(cls)) {
+                    mainContainerLookup[cls]
+                } else {
+                    val found = generateSequence(holder.javaClass as Class<*>) { it.superclass }
+                        .flatMap { it.declaredMethods.asSequence() }
+                        .firstOrNull { it.name == "getMainContainerView" && it.parameterCount == 0 }
+                    mainContainerLookup[cls] = found
+                    found
+                }
+            }
             val main = runCatching { method?.isAccessible = true; method?.invoke(holder) as? View }.getOrNull()
             if (main != null && main !== root && main.isShown && isInside(main, root)) return main
         }

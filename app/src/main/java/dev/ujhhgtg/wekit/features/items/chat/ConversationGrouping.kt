@@ -113,11 +113,11 @@ import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.LifecycleOwnerProvider
 import dev.ujhhgtg.wekit.ui.utils.setLifecycleOwner
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
-import dev.ujhhgtg.wekit.ui.utils.theme.InjectedUiTheme
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.fs.KnownPaths
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -519,7 +519,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 this@ConversationGrouping.selectedGroupIdState = selectedGroupIdState
                 this@ConversationGrouping.groupsState = groupsState
                 setContent {
-                    InjectedUiTheme {
+                    MonetInjectedTheme {
                         val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
                         var selectedGroupId by selectedGroupIdState
                         var groups by groupsState
@@ -1340,6 +1340,22 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
     // Tab bar UI
     // ----------------------------------------------------------------------------------------------
 
+    /**
+     * 分组顶栏底色。
+     *
+     * 顶栏是 WeKit 自己塞进会话列表的组件，莫奈引擎只替换宿主微信的资源 id，改不到这里，
+     * 所以直接读引擎色板与原生保持一致；莫奈未启用 / 未解析成功时（[MonetColors.tokens]
+     * 返回 null）完全保持原来的固定灰，不会退化成随机色。
+     */
+    @Composable
+    private fun monetTabBarContainerColor(): Color {
+        val night = isSystemInDarkTheme()
+        return MonetColors.applied.value
+            ?.let { MonetColors.tokens(night) }
+            ?.let { Color(it.surfaceContainerHigh) }
+            ?: if (night) Color(0xFF111111) else Color(0xFFEDEDED)
+    }
+
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun ConversationTabs(
@@ -1351,7 +1367,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         onDeleteGroup: (ChatGroup) -> Unit,
         onReorder: (List<String>) -> Unit,
         modifier: Modifier = Modifier,
-        containerColor: Color = if (isSystemInDarkTheme()) Color(0xFF111111) else Color(0xFFEDEDED),
+        containerColor: Color = monetTabBarContainerColor(),
     ) {
         val localizedContext by rememberUpdatedState(LocalWeKitLocalizedContext.current)
         // Per-group unread badges: refreshed whenever the tab set / selection / toggle changes.

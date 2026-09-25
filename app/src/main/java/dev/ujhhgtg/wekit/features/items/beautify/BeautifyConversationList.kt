@@ -289,7 +289,11 @@ object BeautifyConversationList : ClickableFeature() {
                     else -> tokens?.surfaceContainerHigh ?: preset.lightBackgroundColor
                 },
             )
-            setStroke(1.dpToPx(context).coerceAtLeast(1), if (isDark) 0x22FFFFFF else 0x16161D1C)
+            setStroke(
+                1.dpToPx(context).coerceAtLeast(1),
+                tokens?.let { MonetColors.withAlpha(it.outline, if (isDark) 0x22 else 0x16) }
+                    ?: if (isDark) 0x22FFFFFF else 0x16161D1C
+            )
         }
         val horizontalInset = preset.horizontalInsetDp.dpToPx(context)
         val verticalInset = preset.verticalInsetDp.dpToPx(context)
@@ -310,7 +314,8 @@ object BeautifyConversationList : ClickableFeature() {
             verticalInset
         }
         val inset = InsetDrawable(card, horizontalInset, topInset, horizontalInset, bottomInset)
-        val rippleColor = if (isDark) 0x2AFFFFFF else 0x18006A62
+        val rippleColor = tokens?.let { MonetColors.withAlpha(it.primary, if (isDark) 0x2A else 0x18) }
+            ?: if (isDark) 0x2AFFFFFF else 0x18006A62
         return RippleDrawable(ColorStateList.valueOf(rippleColor), inset, null)
     }
 

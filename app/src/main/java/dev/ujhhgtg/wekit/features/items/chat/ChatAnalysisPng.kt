@@ -357,6 +357,47 @@ object ChatAnalysisPng {
     /** KPI 单元宽度（一行两格，两格 + 列间距恰好占满内容区） */
     private const val KPI_CELL_W = (CONTENT_W - KPI_COL_GAP) / 2               // 580
 
+    // ---- 第 15 轮：活跃热力（7 × 24 格阵 + 小时刻度 + 图例）----
+    /** 行 = 周一…周日，列 = 0…23 点 */
+    private const val HEAT_ROWS = 7
+    private const val HEAT_COLS = 24
+
+    /** 左侧星期标签列宽 + 与格区的间距 */
+    private const val HEAT_LABEL_W = 100
+    private const val HEAT_LABEL_GAP = 16
+
+    /** 格子的边长 / 格间距 / 圆角：边长由内容区倒推，保证 24 列在画布上永远排得下 */
+    private const val HEAT_CELL_GAP = 4
+    private const val HEAT_CELL_W =
+        (CONTENT_W - HEAT_LABEL_W - HEAT_LABEL_GAP - (HEAT_COLS - 1) * HEAT_CELL_GAP) / HEAT_COLS
+    private const val HEAT_CELL_H = 40
+    private const val HEAT_CELL_RADIUS = 10f
+    private const val HEAT_PEAK_STROKE = 3f
+
+    /** 底部小时刻度行 / 图例行的留白与行高 */
+    private const val HEAT_AXIS_GAP = 10
+    private const val HEAT_AXIS_H = 40
+    private const val HEAT_LEGEND_GAP = 12
+    private const val HEAT_LEGEND_H = 46
+    private const val HEAT_LEGEND_SWATCH = 30
+    private const val HEAT_LEGEND_SWATCH_GAP = 8
+    private const val HEAT_LEGEND_SWATCH_RADIUS = 8f
+    private const val HEAT_LEGEND_TEXT_GAP = 12
+    private const val HEAT_LEGEND_LESS = "少"
+    private const val HEAT_LEGEND_MORE = "多"
+    private const val HEAT_LEGEND_STEPS = 5
+
+    /** 热力配色：卡片主色 + 固定透明度阶梯（先混白再画，与背景无关） */
+    private const val HEAT_MIN_ALPHA = 0x2E
+    private const val HEAT_MAX_ALPHA = 0xE6
+
+    /** 整块热力图的高度（布局与绘制共用同一个定义，绝不允许两处各算一遍） */
+    private const val HEATMAP_H = HEAT_ROWS * HEAT_CELL_H + (HEAT_ROWS - 1) * HEAT_CELL_GAP +
+        HEAT_AXIS_GAP + HEAT_AXIS_H + HEAT_LEGEND_GAP + HEAT_LEGEND_H
+
+    /** 小时刻度（0/6/12/18/23）：与格阵同一套列坐标 */
+    private val HEAT_AXIS_HOURS = intArrayOf(0, 6, 12, 18, 23)
+
     // ---- 字号（px）：标题 74 / 章节 54 / 正文 40 / 行 38 / 刻度 30 ----
     private const val FS_BRAND = 38f
     private const val FS_TITLE = 74f
@@ -498,6 +539,22 @@ object ChatAnalysisPng {
         // ---- 标签云：单个标签的左右内边距不能超过内容区一半 ----
         require(CHIP_PAD_H * 2 < CONTENT_W / 2) { "PNG 标签云内边距过大" }
 
+        // ---- 活跃热力：标签列 + 24 格必须装进内容区，高度定义必须与布局/绘制一致 ----
+        require(HEAT_LABEL_W + HEAT_LABEL_GAP + HEAT_COLS * (HEAT_CELL_W + HEAT_CELL_GAP) <= CONTENT_W) {
+            "PNG 活跃热力格阵超出内容区"
+        }
+        require(HEAT_CELL_W >= 24 && HEAT_CELL_H >= 24) { "PNG 活跃热力格子过小" }
+        require(HEAT_MIN_ALPHA in 1..HEAT_MAX_ALPHA && HEAT_MAX_ALPHA <= 255) {
+            "PNG 活跃热力透明度阶梯非法"
+        }
+        require(HEAT_LEGEND_STEPS >= 2 && HEAT_LEGEND_SWATCH + HEAT_LEGEND_TEXT_GAP * 2 < CONTENT_W / 2) {
+            "PNG 活跃热力图例过宽"
+        }
+        require(
+            HEATMAP_H == HEAT_ROWS * HEAT_CELL_H + (HEAT_ROWS - 1) * HEAT_CELL_GAP +
+                HEAT_AXIS_GAP + HEAT_AXIS_H + HEAT_LEGEND_GAP + HEAT_LEGEND_H,
+        ) { "PNG 活跃热力高度定义不一致" }
+
         // ---- 页脚：上留白 + 元信息行 + 间距 + 文字行 + 间距 + 品牌条 必须装得进页脚高度 ----
         require((FOOTER_TOP_GAP + FOOTER_META_H + FOOTER_META_GAP + FOOTER_TEXT_H + FOOTER_STRIP_GAP).toFloat() +
             FOOTER_STRIP_H <= FOOTER_H.toFloat()) { "PNG 页脚内部排版超出页脚高度" }
@@ -530,6 +587,17 @@ object ChatAnalysisPng {
 
         /** 词频类章节：自适应换行的标签云（原来是一整段挤在一起的文字） */
         data class ChipCloud(val items: List<String>) : Block()
+
+        /** 活跃热力矩阵的一行：星期标签 + 各小时格的消息数 */
+        data class HeatRow(val label: String, val values: List<Int>)
+
+        /**
+         * 活跃热力（第 15 轮新增的形状）：行 = 星期、列 = 小时、值 = 该格消息数。
+         *
+         * 为什么单独画一种图：7×24 = 168 个格子用条形行或柱状图都表达不了
+         * （168 根柱子在画布上既排不开也读不出），热力图才是这个维度的标准读法。
+         */
+        data class Heatmap(val rows: List<HeatRow>) : Block()
 
         object Gap : Block()
     }
@@ -643,6 +711,13 @@ object ChatAnalysisPng {
     /** 空白切分（词频行用两个空格分段） */
     private val WHITESPACE = Regex("\\s+")
 
+    /**
+     * 热力数据行：`周一 → 0 0 1 2 …`（星期名 + 箭头 + 正好 24 个整数）。
+     *
+     * 判据刻意收得很紧：判不出来就退回普通正文行，绝不会把别的数字行误当成矩阵 —— 宁可不画，不画错。
+     */
+    private val HEAT_LINE = Regex("^(周[一二三四五六日])\\s+→\\s+((?:\\d{1,9}\\s+){23}\\d{1,9})$")
+
     /** CJK 统一表意文字区间（识别中文标签用） */
     private const val CJK_FIRST = 0x4E00
     private const val CJK_LAST = 0x9FFF
@@ -676,6 +751,64 @@ object ChatAnalysisPng {
                     if (plain != null) out.add(plain) else out.addAll(parseTextOrKeyValue(t))
                 }
             }
+        }
+        return collapseHeat(out)
+    }
+
+    /** 解析一行热力数据：格式不对、或数字个数不是 [HEAT_COLS] 个，一律返回 null */
+    private fun parseHeatRow(line: String): Block.HeatRow? {
+        val m = HEAT_LINE.find(line.trim()) ?: return null
+        val nums = ArrayList<Int>(HEAT_COLS)
+        for (tok in m.groupValues[2].trim().split(" ")) {
+            nums.add(tok.toIntOrNull() ?: return null)
+        }
+        if (nums.size != HEAT_COLS) return null
+        return Block.HeatRow(m.groupValues[1], nums)
+    }
+
+    /**
+     * 把连续的 [HEAT_ROWS] 行热力数据折叠成一个 [Block.Heatmap]。
+     *
+     * 为什么不塞进逐行循环：循环是「一行一个判定」的无状态结构，而热力块是跨行才成立的条件
+     * （必须凑满 7 行）。收尾统一折叠的做法一行都不用改既有的解析分支，老行的判定结果逐字不变；
+     * 凑不满 7 行就整段退回普通正文行（沿用既有降级路径，不需要新的空态）。
+     *
+     * 另外还做了一次廉价的短路：报告里没有热力行时（第 15 轮之前的所有报告）直接原样返回，
+     * 不做第二次遍历，也不产生任何新对象。
+     */
+    private fun collapseHeat(blocks: List<Block>): List<Block> {
+        var found = false
+        for (b in blocks) {
+            if (b is Block.TextLine && HEAT_LINE.find(b.text.trim()) != null) {
+                found = true
+                break
+            }
+        }
+        if (!found) return blocks
+        val out = ArrayList<Block>(blocks.size)
+        var i = 0
+        while (i < blocks.size) {
+            val b = blocks[i]
+            if (b is Block.TextLine) {
+                val first = parseHeatRow(b.text)
+                if (first != null) {
+                    val rows = ArrayList<Block.HeatRow>(HEAT_ROWS)
+                    rows.add(first)
+                    var j = i + 1
+                    while (j < blocks.size && rows.size < HEAT_ROWS) {
+                        val next = blocks[j] as? Block.TextLine ?: break
+                        rows.add(parseHeatRow(next.text) ?: break)
+                        j++
+                    }
+                    if (rows.size == HEAT_ROWS) {
+                        out.add(Block.Heatmap(rows))
+                        i = j
+                        continue
+                    }
+                }
+            }
+            out.add(b)
+            i++
         }
         return out
     }
@@ -982,6 +1115,11 @@ object ChatAnalysisPng {
                     val h = chipCloudHeight(chipRows.size)
                     rows.add(Row(u, y, h, emptyList(), chipRows))
                     y += h
+                }
+                is Block.Heatmap -> {
+                    // 热力图的高度是定值（7×24 格 + 刻度行 + 图例行），不随内容变化
+                    rows.add(Row(u, y, HEATMAP_H))
+                    y += HEATMAP_H
                 }
                 is Block.TextLine -> {
                     val lines = wrapLines(u.text, CONTENT_W.toFloat(), bodyP)
@@ -1554,6 +1692,7 @@ object ChatAnalysisPng {
                 is Block.Donut -> drawDonut(cv, u, rowTop, innerBottom)
                 is Block.ColumnChart -> drawColumnChart(cv, u, rowTop, card.accent, innerBottom)
                 is Block.ChipCloud -> drawChipCloud(cv, row.chipLines, rowTop, card.accent, innerBottom)
+                is Block.Heatmap -> drawHeatmap(cv, u, rowTop, card.accent, innerBottom)
                 is Block.TextLine -> drawTextLines(
                     cv, row.lines, CONTENT_LEFT.toFloat(), rowTop,
                     TEXT_LINE_H, bodyP, CONTENT_RIGHT.toFloat(), innerBottom,
@@ -2145,6 +2284,120 @@ object ChatAnalysisPng {
         }
 
         cv.restore()
+    }
+
+    /**
+     * 活跃热力：7 行（周一…周日）× 24 列（0…23 点）的圆角格阵。
+     *
+     * 为什么单独画一种图：168 个格子用条形行或柱状图都表达不了（168 根柱子在画布上既排不开也读不出），
+     * 热力图才是这个维度的标准读法 —— 行=星期、列=小时、颜色越深消息越多，一眼看出活跃时段。
+     *
+     * 视觉规范（沿用画布其它图元的同一套语言）：
+     *  - 颜色只用「卡片主色 + 固定透明度阶梯」，并且先 [blendOnWhite] 混白再画 ——
+     *    半透明色叠在页面渐变背景上会随位置变色，混白后与背景无关（本文件的既有约定）；
+     *  - 0 值画轨道色而不是白色：空时段也看得见格子，不会被误读成"漏画"；
+     *  - 峰值格只描一圈主色细边，不引入第二种颜色；
+     *  - 底部一行 0/6/12/18/23 的小时刻度 + 右侧「少→多」图例，把读法交代清楚。
+     *
+     * 所有绘制都硬裁剪在卡片正文区内（与其它绘制函数一致），任何测量偏差都不可能画到卡片外。
+     */
+    private fun drawHeatmap(cv: Canvas, h: Block.Heatmap, rowTop: Float, accent: Int, limitBottom: Float) {
+        if (h.rows.isEmpty()) return
+        val maxV = h.rows.maxOf { r -> r.values.maxOrNull() ?: 0 }.coerceAtLeast(1)
+        val labelP = paint(FS_TICK, COLOR_META)
+        val axisP = paint(FS_TICK, COLOR_META)
+        val legendP = paint(FS_SMALL, COLOR_META)
+        val trackP = shapePaint(COLOR_TRACK)
+        val cellP = Paint(Paint.ANTI_ALIAS_FLAG)
+        val peakP = shapePaint(accent, stroke = true, strokeWidth = HEAT_PEAK_STROKE)
+        val gridLeft = (CONTENT_LEFT + HEAT_LABEL_W + HEAT_LABEL_GAP).toFloat()
+
+        // 峰值格（第一个达到最大值的非 0 格）：只描边、不换色
+        var peakRow = -1
+        var peakCol = -1
+        for ((ri, r) in h.rows.withIndex()) {
+            val ci = r.values.indexOfFirst { it == maxV && it > 0 }
+            if (ci >= 0) {
+                peakRow = ri
+                peakCol = ci
+                break
+            }
+        }
+
+        val rowH = HEAT_CELL_H.toFloat()
+        var y = rowTop
+        for (ri in h.rows.indices) {
+            val r = h.rows[ri]
+            drawClipped(
+                cv, r.label, (CONTENT_LEFT + CELL_INSET).toFloat(),
+                fitBaseline(y, rowH, labelP, minOf(y + rowH, limitBottom)),
+                RectF(CONTENT_LEFT.toFloat(), y, (CONTENT_LEFT + HEAT_LABEL_W).toFloat(), y + rowH),
+                labelP,
+            )
+            for (ci in 0 until HEAT_COLS) {
+                val v = r.values.getOrElse(ci) { 0 }
+                val left = gridLeft + ci * (HEAT_CELL_W + HEAT_CELL_GAP)
+                val rect = RectF(left, y, left + HEAT_CELL_W, y + rowH)
+                if (v <= 0) {
+                    cv.drawRoundRect(rect, HEAT_CELL_RADIUS, HEAT_CELL_RADIUS, trackP)
+                } else {
+                    val f = (v.toFloat() / maxV.toFloat()).coerceIn(0f, 1f)
+                    cellP.color = blendOnWhite(
+                        accent,
+                        HEAT_MIN_ALPHA + ((HEAT_MAX_ALPHA - HEAT_MIN_ALPHA) * f).toInt(),
+                    )
+                    cv.drawRoundRect(rect, HEAT_CELL_RADIUS, HEAT_CELL_RADIUS, cellP)
+                }
+                if (ri == peakRow && ci == peakCol) {
+                    cv.drawRoundRect(rect, HEAT_CELL_RADIUS, HEAT_CELL_RADIUS, peakP)
+                }
+            }
+            if (ri < h.rows.size - 1) y += rowH + HEAT_CELL_GAP
+        }
+        y += rowH
+
+        // ---- 小时刻度：与格阵同一套列坐标（末位贴右，不会被裁掉）----
+        val axisTop = y + HEAT_AXIS_GAP
+        val axisRect = RectF(CONTENT_LEFT.toFloat(), axisTop, CONTENT_RIGHT.toFloat(), axisTop + HEAT_AXIS_H)
+        for (hour in HEAT_AXIS_HOURS) {
+            val text = hour.toString()
+            val w = axisP.measureText(text)
+            val cx = gridLeft + hour * (HEAT_CELL_W + HEAT_CELL_GAP) + HEAT_CELL_W / 2f
+            val x = (cx - w / 2f).coerceIn(axisRect.left, axisRect.right - w)
+            drawClipped(
+                cv, text, x,
+                fitBaseline(axisTop, HEAT_AXIS_H.toFloat(), axisP, minOf(axisTop + HEAT_AXIS_H, limitBottom)),
+                axisRect, axisP,
+            )
+        }
+
+        // ---- 图例：右对齐的「少 ▢▢▢▢▢ 多」（五级透明度与格阵同一算法）----
+        val legendTop = axisTop + HEAT_AXIS_H + HEAT_LEGEND_GAP
+        val swTop = legendTop + (HEAT_LEGEND_H - HEAT_LEGEND_SWATCH) / 2f
+        val legendRect =
+            RectF(CONTENT_LEFT.toFloat(), legendTop, CONTENT_RIGHT.toFloat(), legendTop + HEAT_LEGEND_H)
+        val legendBase =
+            fitBaseline(legendTop, HEAT_LEGEND_H.toFloat(), legendP, minOf(legendRect.bottom, limitBottom))
+        var lx = CONTENT_RIGHT.toFloat() - legendP.measureText(HEAT_LEGEND_MORE)
+        drawClipped(cv, HEAT_LEGEND_MORE, lx, legendBase, legendRect, legendP)
+        lx -= HEAT_LEGEND_TEXT_GAP
+        for (step in HEAT_LEGEND_STEPS - 1 downTo 0) {
+            lx -= HEAT_LEGEND_SWATCH
+            cellP.color = blendOnWhite(
+                accent,
+                HEAT_MIN_ALPHA + ((HEAT_MAX_ALPHA - HEAT_MIN_ALPHA) * step) / (HEAT_LEGEND_STEPS - 1),
+            )
+            cv.drawRoundRect(
+                RectF(lx, swTop, lx + HEAT_LEGEND_SWATCH, swTop + HEAT_LEGEND_SWATCH),
+                HEAT_LEGEND_SWATCH_RADIUS, HEAT_LEGEND_SWATCH_RADIUS, cellP,
+            )
+            lx -= HEAT_LEGEND_SWATCH_GAP
+        }
+        val lessW = legendP.measureText(HEAT_LEGEND_LESS)
+        drawClipped(
+            cv, HEAT_LEGEND_LESS, (lx - lessW).coerceAtLeast(legendRect.left),
+            legendBase, legendRect, legendP,
+        )
     }
 
     /** 标签云：把词频行排成一排排圆角小标签（换行结果由布局阶段算好，这里只负责画） */

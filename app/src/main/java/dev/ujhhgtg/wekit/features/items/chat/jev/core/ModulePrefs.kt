@@ -32,6 +32,21 @@ object ModulePrefs {
     const val KEY_CONTEXT_LIMIT = "yanwai_context_limit"
     /** 是否连自己发的消息一起分析（默认只分析对方）。 */
     const val KEY_ANALYZE_SELF = "yanwai_analyze_self"
+    /** 分析卡是否默认展开完整解读（默认收起，只留主情绪 + 一条建议）。 */
+    const val KEY_CARD_EXPANDED = "yanwai_card_expanded"
+    /** 分析卡是否显示「与前几句对比」。 */
+    const val KEY_SHOW_TREND = "yanwai_show_trend"
+    /**
+     * 「回插会话」的新鲜度窗口（秒）。只回插最近这么久之内发生的消息 ——
+     * 打开历史会话时本屏十几条老消息会被一起分析，窗口太大就会瞬间插出十几条系统消息。
+     */
+    const val KEY_INSERT_FRESH_SECONDS = "yanwai_insert_fresh_seconds"
+    /** 一次性迁移标记：把第 14 轮之前默认可能开着的「回插会话」强制关一次。 */
+    const val KEY_INSERT_OFF_MIGRATED = "yanwai_insert_off_migrated"
+
+    const val DEFAULT_INSERT_FRESH_SECONDS = 60
+    const val MIN_INSERT_FRESH_SECONDS = 10
+    const val MAX_INSERT_FRESH_SECONDS = 1800
 
     /**
      * 展示通道 1：在消息下方挂分析卡。
@@ -41,7 +56,13 @@ object ModulePrefs {
      */
     val displayBubble get() = prefs.getBoolOrDef(KEY_SHOW_BADGE, true)
 
-    /** 展示通道 2：把结论作为系统消息插回会话（默认关；复用同一份分析结果，不额外请求模型）。 */
+    /**
+     * 展示通道 2：把结论作为系统消息插回会话。
+     *
+     * **默认关**。这道通道在本轮被用户点名（截图里一屏几十条居中的【潜语 · 平静】）：
+     * 即使开着，[dev.ujhhgtg.wekit.features.items.chat.jev.hook.MoodMessageChannel] 也还有
+     * 新鲜度窗口、逐会话最小间隔与突发上限三道闸门。
+     */
     val displayMessage get() = prefs.getBoolOrFalse(KEY_DISPLAY_MESSAGE)
 
     /** 是否对所有会话生效（默认 true）。 */
@@ -90,6 +111,38 @@ object ModulePrefs {
 
     fun setAnalyzeSelf(value: Boolean) = prefs.putBool(KEY_ANALYZE_SELF, value)
 
+    /** 分析卡默认展开完整解读（默认收起：一行主情绪 + 一条建议，安静且省高度）。 */
+    val cardExpanded get() = prefs.getBoolOrFalse(KEY_CARD_EXPANDED)
+
+    fun setCardExpanded(value: Boolean) = prefs.putBool(KEY_CARD_EXPANDED, value)
+
+    /** 分析卡是否显示「与前几句对比」（默认开）。 */
+    val showTrend get() = prefs.getBoolOrDef(KEY_SHOW_TREND, true)
+
+    fun setShowTrend(value: Boolean) = prefs.putBool(KEY_SHOW_TREND, value)
+
+    /** 回插会话的新鲜度窗口（秒），夹在 10..1800。 */
+    val insertFreshSeconds get() = prefs.getIntOrDef(KEY_INSERT_FRESH_SECONDS, DEFAULT_INSERT_FRESH_SECONDS)
+        .coerceIn(MIN_INSERT_FRESH_SECONDS, MAX_INSERT_FRESH_SECONDS)
+
+    fun setInsertFreshSeconds(value: Int) = prefs.putInt(
+        KEY_INSERT_FRESH_SECONDS,
+        value.coerceIn(MIN_INSERT_FRESH_SECONDS, MAX_INSERT_FRESH_SECONDS),
+    )
+
+    /**
+     * 一次性把「回插会话」关掉。
+     *
+     * 上游老实现（合并前的「Jev 聊天决策」）默认就会往会话里插系统消息，用户已经明确要求
+     * 「去除这个提醒」。这里只在第一次运行新版时强制关一次，之后就完全由用户自己决定 ——
+     * 开关本身保留，想用的人在设置页打开即可。幂等。
+     */
+    fun migrateInsertOffOnce() {
+        if (prefs.getBoolOrFalse(KEY_INSERT_OFF_MIGRATED)) return
+        prefs.putBool(KEY_DISPLAY_MESSAGE, false)
+        prefs.putBool(KEY_INSERT_OFF_MIGRATED, true)
+    }
+
     const val MAX_CONTEXT_LIMIT = 20
 
     fun scopeSummary(): String {
@@ -132,6 +185,27 @@ object ModulePrefs {
 
     /** 上游把运行状态回传给独立 App 的设置页；这里只落模块日志。 */
     fun report(status: String) {
-        WeLogger.i(TAG, MoodLog.sanitize(status).take(200))
+        val line = MoodLog.sanitize(status).take(200)
+        val now = System.currentTimeMillis()
+        synchronized(REPORT_LOCK) {
+            // 去重/限流：原来「潜语分析完成，已缓存 N 条」「已回插解读」这类状态在每次分析后
+            // 都写一行，一屏十几条就是十几行；重复内容只记一次，并折叠计数。
+            if (line == lastReport && now - lastReportAt < REPORT_DEDUPE_MS) {
+                suppressedReports++
+                lastReportAt = now
+                return
+            }
+            val folded = suppressedReports
+            suppressedReports = 0
+            lastReport = line
+            lastReportAt = now
+            WeLogger.i(TAG, if (folded > 0) "$line（同样内容已折叠 $folded 条）" else line)
+        }
     }
+
+    private val REPORT_LOCK = Any()
+    private var lastReport: String? = null
+    private var lastReportAt = 0L
+    private var suppressedReports = 0
+    private const val REPORT_DEDUPE_MS = 10_000L
 }

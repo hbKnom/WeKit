@@ -20,7 +20,7 @@ import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
+import dev.ujhhgtg.wekit.preferences.hotPrefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.DefaultColumn
@@ -36,7 +36,7 @@ object LimitGroupMemberNicknameLength : ClickableFeature(), WeChatMessageViewApi
     override val categoryIds = listOf(FeatureCategoryIds.CHAT)
     override val descriptionRes = R.string.feature_limit_group_member_nickname_length_description
 
-    private var maxNicknameLength by prefOption("max_nickname_length", 10)
+    private var maxNicknameLength by hotPrefOption("max_nickname_length", 10)
 
     override fun onEnable() {
         WeChatMessageViewApi.addListener(this)

@@ -225,14 +225,18 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
             .firstMethod { name = "getItem" }
             .invoke(msgId)!!
         val msgInfo = MessageInfo(raw)
-        // 诊断日志：确认 onBindView 参数与 getItem 取到的消息是否一致（头衔串排查用）
-        runCatching {
-            WeLogger.d(
-                TAG,
-                "bind args=${param.args.size} a0=${param.args[0]?.javaClass?.simpleName} " +
-                    "a1=${param.args[1]?.javaClass?.simpleName} a2=${param.args[2]} " +
-                    "getItem talker=${msgInfo.talker} sender=${msgInfo.sender} type=${msgInfo.typeCode}"
-            )
+        // 诊断日志：确认 onBindView 参数与 getItem 取到的消息是否一致（头衔串排查用）。
+        // 这里每条消息 bind 都会被调用（实测 1000+ 条/分钟），必须挂在「详细日志」开关后面：
+        // 无条件打日志 = 滚动时每帧多一次字符串拼接 + 一次日志文件写入，是可见的掉帧来源。
+        if (WeLogger.verboseEnabled) {
+            runCatching {
+                WeLogger.d(
+                    TAG,
+                    "bind args=${param.args.size} a0=${param.args[0]?.javaClass?.simpleName} " +
+                        "a1=${param.args[1]?.javaClass?.simpleName} a2=${param.args[2]} " +
+                        "getItem talker=${msgInfo.talker} sender=${msgInfo.sender} type=${msgInfo.typeCode}"
+                )
+            }
         }
         return msgInfo
     }

@@ -228,6 +228,22 @@ internal object ChatAnalysisUi {
     private val DonutSide = 92.dp
     private val DonutStroke = 14.dp
 
+    /** 第 15 轮：活跃热力（7×24）的几何。格子必须按字体缩放，否则大字号下星期标签会挤出格区 */
+    private val HeatCellH = 13.dp
+    private val HeatRowGap = 3.dp
+    private val HeatCellGap = 2.dp
+    private val HeatLabelW = 30.dp
+    private val HeatAxisGap = 4.dp
+    private val HeatLegendBox = 10.dp
+    private val HeatLegendCorner = 3.dp
+    private val HeatPeakStroke = 1.5f
+    private const val HeatLegendSteps = 5
+    /** 热力格的透明度阶梯：0 值用轨道色，非 0 值在 [HeatMinAlpha]~[HeatMaxAlpha] 之间按量级插值 */
+    private const val HeatMinAlpha = 0.14f
+    private const val HeatMaxAlpha = 0.92f
+    /** 底部小时刻度（0/6/12/18/23）：与格区同权重划分，末位贴右边界 */
+    private val HeatAxisTicks = listOf("0", "6", "12", "18", "23")
+
     /** 环形图扇区之间的缝隙（度）。放在这里而不是写死在画布里：扇形数量的变化只影响这里 */
     private const val DonutGapDeg = 2f
 
@@ -1580,8 +1596,34 @@ internal object ChatAnalysisUi {
         data class KeyValue(val key: String, val value: String) : ReportUnit()
         data class TextLine(val text: String) : ReportUnit()
         data class WordChips(val words: List<Pair<String, Int>>) : ReportUnit()
+
+        /** 活跃热力矩阵的一行：星期标签 + 各小时格的消息数 */
+        data class HeatRow(val label: String, val values: List<Int>)
+
+        /**
+         * 活跃热力矩阵（第 15 轮新增的形状）。
+         *
+         * 为什么单独给一种 unit：7×24 = 168 个格子用条形行 / 柱状图都表达不了（168 根柱子会把
+         * 画布挤爆），而热力图是这个维度的标准读法。数据来自报告里连续的 7 行
+         * `周X → 24 个数字`，判据见 [HeatPattern]/[parseHeatRow]。
+         */
+        data class Heat(val rows: List<HeatRow>) : ReportUnit()
+
         object Gap : ReportUnit()
     }
+
+    /**
+     * 热力数据行：`周一 → 0 0 1 2 …`（恰好 24 个数字）。
+     *
+     * 判据刻意收得很紧（星期名 + 箭头 + 正好 24 个整数）：判不出来就退回普通正文行，
+     * 绝不会把别的数字行误当成矩阵 —— 宁可不画，不画错。
+     */
+    private val HeatPattern = Regex("^(周[一二三四五六日])\\s+→\\s+((?:\\d{1,9}\\s+){23}\\d{1,9})$")
+
+    /** 热力矩阵的行数与列数：与引擎（ChatAnalysisEngine）的输出口径一致 */
+    private const val HeatRowCount = 7
+    private const val HeatColumns = 24
+
 
     /** 键值行的判定阈值：与 PNG 导出（ChatAnalysisPng）同一套规则，弹窗与导图观感一致 */
     private const val KvMaxLineLen = 40
@@ -1644,6 +1686,63 @@ internal object ChatAnalysisUi {
                 }
                 else -> out.add(ReportUnit.TextLine(t))
             }
+        }
+        return collapseHeat(out)
+    }
+
+    /** 解析一行热力数据：格式不对、或数字个数不是 [HeatColumns] 个，一律返回 null */
+    private fun parseHeatRow(text: String): ReportUnit.HeatRow? {
+        val m = HeatPattern.find(text.trim()) ?: return null
+        val nums = ArrayList<Int>(HeatColumns)
+        for (tok in m.groupValues[2].trim().split(" ")) {
+            val v = tok.toIntOrNull() ?: return null
+            nums.add(v)
+        }
+        if (nums.size != HeatColumns) return null
+        return ReportUnit.HeatRow(m.groupValues[1], nums)
+    }
+
+    /**
+     * 把连续的 [HeatRowCount] 行热力数据折叠成一个 [ReportUnit.Heat]。
+     *
+     * 为什么不塞进上面那个逐行循环：循环是「一行一个判定」的无状态结构，而热力块是跨行才成立的
+     * 条件（必须凑满 7 行）。收尾统一折叠的好处是解析循环一行都不用改，老行情的判定结果逐字不变；
+     * 凑不满 7 行就整段退回普通正文行（既有降级路径，不需要新的空态）。
+     */
+    private fun collapseHeat(units: List<ReportUnit>): List<ReportUnit> {
+        var hasHeat = false
+        for (u in units) {
+            if (u is ReportUnit.TextLine && HeatPattern.find(u.text.trim()) != null) {
+                hasHeat = true
+                break
+            }
+        }
+        // 绝大多数报告（第 15 轮之前的段位）没有热力行，直接原样返回，不做第二次遍历
+        if (!hasHeat) return units
+        val out = ArrayList<ReportUnit>(units.size)
+        var i = 0
+        while (i < units.size) {
+            val u = units[i]
+            if (u is ReportUnit.TextLine) {
+                val first = parseHeatRow(u.text)
+                if (first != null) {
+                    val rows = ArrayList<ReportUnit.HeatRow>(HeatRowCount)
+                    rows.add(first)
+                    var j = i + 1
+                    while (j < units.size && rows.size < HeatRowCount) {
+                        val next = units[j] as? ReportUnit.TextLine ?: break
+                        rows.add(parseHeatRow(next.text) ?: break)
+                        j++
+                    }
+                    if (rows.size == HeatRowCount) {
+                        out.add(ReportUnit.Heat(rows))
+                        i = j
+                        continue
+                    }
+                }
+            }
+            out.add(u)
+            i++
         }
         return out
     }
@@ -1739,6 +1838,11 @@ internal object ChatAnalysisUi {
         title.contains("消息长度") || title.contains("口头禅") -> ToneAlt
         title.contains("标点与语气") || title.contains("沉默与主动性") -> ToneThird
         title.contains("互动平衡") || title.contains("话题切换") -> ToneAccent
+        // 第 15 轮新增的六个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
+        // 老报告排在最后的是【话题切换】= ToneAccent，所以热力从 ToneThird 接上）
+        title.contains("活跃热力") || title.contains("媒体与表情") -> ToneThird
+        title.contains("回复延迟") || title.contains("话题关键词") -> ToneAlt
+        title.contains("连击与打断") || title.contains("@与互动") -> ToneAccent
         else -> fallback
     }
 
@@ -1908,6 +2012,12 @@ internal object ChatAnalysisUi {
                         val runs = reportRuns(block.units)
                         runs.forEachIndexed { runIndex, run ->
                             val prevWasKv = runIndex > 0 && runs[runIndex - 1].lastOrNull() is ReportUnit.KeyValue
+                            // 第 15 轮：上一段是「指标网格 / 分布图」时，本段若是纯正文（结论句），
+                            // 补一条细线把"看数字"和"读结论"两件事在视觉上分层。
+                            val prevWasFigure = runIndex > 0 && runs[runIndex - 1].let { prev ->
+                                prev.size >= 2 && (prev.all { it is ReportUnit.KeyValue } ||
+                                    prev.all { it is ReportUnit.BarRow })
+                            }
                             when {
                                 // 连续的可量化指标行 → KPI 网格（大数字 + 单位 + 说明）
                                 run.size >= 2 && run.all { it is ReportUnit.KeyValue } -> {
@@ -1925,6 +2035,9 @@ internal object ChatAnalysisUi {
                                 else -> {
                                     // 连续的两行"键：值"之间补一条细线，把散行收成一张表；
                                     // 其它类型（条形行自带进度条）之间不加线，避免视觉噪音。
+                                    if (prevWasFigure && run.all { it is ReportUnit.TextLine }) {
+                                        ThinDivider(Modifier.padding(vertical = Space2))
+                                    }
                                     if (prevWasKv && run.first() is ReportUnit.KeyValue) {
                                         ThinDivider(Modifier.padding(vertical = Space2))
                                     }
@@ -2494,6 +2607,7 @@ internal object ChatAnalysisUi {
             is ReportUnit.BarRow -> BarRowView(unit, accent)
             is ReportUnit.KeyValue -> KeyValueView(unit)
             is ReportUnit.WordChips -> WordChipsView(unit.words)
+            is ReportUnit.Heat -> HeatView(unit, accent)
             is ReportUnit.TextLine -> {
                 Text(
                     unit.text,
@@ -2638,6 +2752,167 @@ internal object ChatAnalysisUi {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+    }
+
+    /**
+     * 活跃热力（周几 × 小时）。
+     *
+     * 为什么是热力图而不是柱状图：168 根柱子在小屏上既画不清也读不出，热力图才是这个维度的
+     * 标准读法 —— 每行一天、每列一小时、颜色越深消息越多，一眼看出"这段对话什么时候活着"。
+     *
+     * 表现规范（与卡片内其它图元保持同一套语言）：
+     *  - 左侧固定星期标签列，右侧格区按权重占满，任何字号下都不越出卡片；
+     *  - 峰值格只描一圈卡片主色的细边（不引入第二种颜色，避免在浅色卡片上多出一套语义）；
+     *  - 深浅色都只用「主色 + 透明度阶梯」着色，因此浅色/深色主题下观感一致；
+     *  - 底部配 0/6/12/18/23 的小时刻度与「少 → 多」图例，把读法交代清楚，不用猜颜色。
+     */
+    @Composable
+    private fun HeatView(unit: ReportUnit.Heat, accent: Color) {
+        val fs = LocalDensity.current.fontScale
+        val rows = unit.rows
+        if (rows.isEmpty()) return
+        val cols = rows.maxOf { it.values.size }
+        if (cols <= 0) return
+        val maxV = rows.maxOf { r -> r.values.maxOrNull() ?: 0 }.coerceAtLeast(1)
+        // 峰值格：第一个达到最大值的格子（只在非 0 时描边）
+        var peakRow = -1
+        var peakCol = -1
+        for ((ri, r) in rows.withIndex()) {
+            val ci = r.values.indexOfFirst { it == maxV && it > 0 }
+            if (ci >= 0) {
+                peakRow = ri
+                peakCol = ci
+                break
+            }
+        }
+        val track = ToneTrack
+        val dim = ToneTextDim
+        val cellH = HeatCellH * fs
+        val rowGap = HeatRowGap * fs
+        val cellGap = HeatCellGap * fs
+        val labelW = HeatLabelW * fs
+        val axisGap = HeatAxisGap * fs
+        val legendBox = HeatLegendBox * fs
+        val legendShape = RoundedCornerShape(HeatLegendCorner * fs)
+        val legendAlpha = { step: Int ->
+            HeatMinAlpha +
+                (HeatMaxAlpha - HeatMinAlpha) * (step.toFloat() / (HeatLegendSteps - 1).toFloat())
+        }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = (3 * fs).dp),
+        ) {
+            rows.forEachIndexed { ri, row ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(cellH),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = row.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = dim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.width(labelW),
+                    )
+                    Canvas(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                    ) {
+                        val gap = cellGap.toPx()
+                        val cw = (size.width - gap * (cols - 1)) / cols
+                        if (cw <= 0f) return@Canvas
+                        for (ci in 0 until cols) {
+                            val v = row.values.getOrElse(ci) { 0 }
+                            val left = ci * (cw + gap)
+                            if (v <= 0) {
+                                drawRect(
+                                    color = track,
+                                    topLeft = Offset(left, 0f),
+                                    size = Size(cw, size.height),
+                                )
+                            } else {
+                                val ratio = (v.toFloat() / maxV.toFloat()).coerceIn(0f, 1f)
+                                drawRect(
+                                    color = accent.copy(
+                                        alpha = HeatMinAlpha + (HeatMaxAlpha - HeatMinAlpha) * ratio
+                                    ),
+                                    topLeft = Offset(left, 0f),
+                                    size = Size(cw, size.height),
+                                )
+                            }
+                            if (ri == peakRow && ci == peakCol) {
+                                val sw = HeatPeakStroke * fs
+                                drawRect(
+                                    color = accent,
+                                    topLeft = Offset(left + sw / 2f, sw / 2f),
+                                    size = Size(
+                                        (cw - sw).coerceAtLeast(1f),
+                                        (size.height - sw).coerceAtLeast(1f),
+                                    ),
+                                    style = Stroke(width = sw),
+                                )
+                            }
+                        }
+                    }
+                }
+                if (ri < rows.size - 1) Spacer(Modifier.height(rowGap))
+            }
+            Spacer(Modifier.height(axisGap))
+            Row(Modifier.fillMaxWidth()) {
+                Spacer(Modifier.width(labelW))
+                Row(Modifier.weight(1f)) {
+                    HeatAxisTicks.forEachIndexed { i, tick ->
+                        Text(
+                            text = tick,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = dim,
+                            maxLines = 1,
+                            textAlign = when (i) {
+                                0 -> TextAlign.Start
+                                HeatAxisTicks.size - 1 -> TextAlign.End
+                                else -> TextAlign.Center
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(axisGap))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Text(
+                    "少",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = dim,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(cellGap))
+                repeat(HeatLegendSteps) { step ->
+                    Box(
+                        Modifier
+                            .size(legendBox)
+                            .clip(legendShape)
+                            .background(accent.copy(alpha = legendAlpha(step))),
+                    )
+                    if (step < HeatLegendSteps - 1) Spacer(Modifier.width(cellGap))
+                }
+                Spacer(Modifier.width(cellGap))
+                Text(
+                    "多",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = dim,
+                    maxLines = 1,
+                )
+            }
         }
     }
 

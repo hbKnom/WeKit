@@ -4,6 +4,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.view.View
 import dev.ujhhgtg.wekit.utils.android.isDarkMode
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.WeakHashMap
 import kotlin.math.roundToInt
 
@@ -19,7 +20,12 @@ object FloatingChatCardVisuals {
     private const val DARK_STROKE_COLOR = 0x24FFFFFF
     private const val DARK_STROKE_WIDTH_DP = 1
 
-    private data class AppliedStyle(val cornerRadiusDp: Int, val strokeWidthPx: Int)
+    private data class AppliedStyle(
+        val cornerRadiusDp: Int,
+        val strokeWidthPx: Int,
+        val surfaceColor: Int,
+        val strokeColor: Int,
+    )
 
     private val originalBackgrounds = WeakHashMap<View, Drawable?>()
     private val appliedBackgrounds = WeakHashMap<View, Drawable>()
@@ -31,13 +37,19 @@ object FloatingChatCardVisuals {
             return
         }
 
+        // 卡片表面是 WeKit 自己画的 Drawable (微信侧 View, 拿不到 Compose 主题)，莫奈引擎只替换
+        // 宿主资源 id 改不到它，所以莫奈生效时直接取引擎色板; 未生效时保持原来的固定 #242424。
+        val tokens = MonetColors.tokens(true)
+        val surfaceColor = tokens?.surfaceContainer ?: DARK_SURFACE_COLOR
+        val strokeColor = tokens?.let { MonetColors.withAlpha(it.onSurface, 0x24) } ?: DARK_STROKE_COLOR
+
         if (!originalBackgrounds.containsKey(view)) {
             originalBackgrounds[view] = view.background
         }
 
         val density = view.resources.displayMetrics.density
         val strokeWidthPx = (DARK_STROKE_WIDTH_DP * density).roundToInt().coerceAtLeast(1)
-        val style = AppliedStyle(cornerRadiusDp, strokeWidthPx)
+        val style = AppliedStyle(cornerRadiusDp, strokeWidthPx, surfaceColor, strokeColor)
         val appliedBackground = appliedBackgrounds[view]
         if (appliedStyles[view] == style && view.background === appliedBackground) return
 
@@ -45,8 +57,8 @@ object FloatingChatCardVisuals {
         val background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = radiusPx
-            setColor(DARK_SURFACE_COLOR)
-            setStroke(strokeWidthPx, DARK_STROKE_COLOR)
+            setColor(surfaceColor)
+            setStroke(strokeWidthPx, strokeColor)
         }
         view.background = background
         appliedBackgrounds[view] = background
