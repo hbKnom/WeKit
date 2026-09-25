@@ -1,12 +1,22 @@
 package dev.ujhhgtg.wekit.features.items.chat.jev.core
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * 一条情绪概率，供分析卡画横条。[percent] 已取整，[highlight] 标记模型选中的主情绪。
+ */
+data class MoodBar(val name: String, val percent: Int, val highlight: Boolean = false)
 
 /**
  * 分析结果。
  *
  * [label] 是给界面看的短标签（比如「开心」「生气」「敷衍」），
  * [score] 是情绪强度 -1.0（负面）到 1.0（正面），[raw] 留着排查模型返回。
+ *
+ * [detail] 是给「回插会话」和复制用的多行纯文本；[bars] / [advice] 是同一份结果的
+ * 结构化形态，卡片直接照着画 —— 不再靠解析自己的文本行来上色。
  */
 data class Mood(
     val label: String,
@@ -14,21 +24,47 @@ data class Mood(
     val risk: Int,
     val raw: String,
     val detail: String = label,
+    /** 结构化情绪概率；为空时卡片只显示文字。 */
+    val bars: List<MoodBar> = emptyList(),
+    /** 建议的下一步动作（没有推荐时为空）。 */
+    val advice: String? = null,
 )
 
 /**
- * 分析结果缓存。
+ * 分析结果缓存 + 运行流水。
  *
- * 三条约束决定了它的形状：
+ * 约束决定了它的形状：
  * 1. 同一条消息及上下文不能重复请求模型 —— 用会话、消息身份和完整输入做键。
- * 2. 界面线程要能**立刻**拿到结果，不能等网络 —— 所以是「先占位、后填充」，
- *    装饰器拿到 null 就先不画，异步补上再通知刷新。
+ * 2. 界面线程要能**立刻**拿到结果，不能等网络 —— 所以是「先占位、后填充」。
  * 3. 微信进程可能被回收 —— 只放内存，不做持久化；丢了大不了重新分析。
+ *
+ * 合并后新增三样（都是「更强大」的部分，不是装饰）：
+ * - [record] 流水账：成功和失败都记，设置页能直接看到「最近解读」与失败原因；
+ * - [recordScore] / [trendOf] 走势：同一会话最近几句的情绪走向，卡片上给一个 ↑/↓；
+ * - [markInserted]：同一条消息只回插一次系统消息，重试与回填不会刷屏。
  */
 object MoodStore {
 
+    /** 一条分析流水（成功与失败都记）。 */
+    data class Entry(
+        val key: String,
+        val label: String,
+        val talker: String,
+        val at: Long,
+        val ok: Boolean,
+        val note: String = "",
+    )
+
+    private const val JOURNAL_LIMIT = 60
+    private const val TREND_SAMPLES = 6
+
     private val cache = ConcurrentHashMap<String, Mood>()
     private val pending = ConcurrentHashMap.newKeySet<String>()
+    private val journal = ConcurrentLinkedDeque<Entry>()
+    private val trends = ConcurrentHashMap<String, ArrayDeque<Double>>()
+    private val inserted = ConcurrentHashMap.newKeySet<String>()
+    private val completed = AtomicInteger()
+    private val failed = AtomicInteger()
 
     /** Length-prefix every field so different contexts or message identities never share a result. */
     fun keyOf(text: String, talker: String?, context: List<ContextMessage> = emptyList(),
@@ -53,6 +89,9 @@ object MoodStore {
         return pending.add(key)
     }
 
+    /** 是否已经有请求在跑（看门狗用它区分「还在等」与「认领丢了」）。 */
+    fun isPending(key: String): Boolean = pending.contains(key)
+
     fun complete(key: String, mood: Mood) {
         cache[key] = mood
         pending.remove(key)
@@ -65,7 +104,73 @@ object MoodStore {
 
     fun size(): Int = cache.size
 
+    // ------------------------------------------------------------------ 流水
+
+    /** 记一条流水。同一个 key 只保留最新一条：重试成功后不该还留着旧的失败记录。 */
+    fun record(entry: Entry) {
+        runCatching {
+            journal.removeIf { it.key == entry.key }
+            journal.addFirst(entry)
+            while (journal.size > JOURNAL_LIMIT) journal.pollLast()
+        }
+    }
+
+    /** 最近的流水，新的在前。 */
+    fun recent(limit: Int = 12): List<Entry> = runCatching { journal.take(limit) }.getOrDefault(emptyList())
+
+    fun markCompleted() { completed.incrementAndGet() }
+
+    fun markFailed() { failed.incrementAndGet() }
+
+    /** 成功数 / 失败数（自本次进程启动起算），设置页用它显示运行状态。 */
+    fun stats(): Pair<Int, Int> = completed.get() to failed.get()
+
+    // ------------------------------------------------------------------ 走势
+
+    /** 记下这一句的情绪强度，用来给同一会话的下一张卡算走势。 */
+    fun recordScore(talker: String, score: Double) {
+        if (talker.isBlank() || !score.isFinite()) return
+        val deque = trends.getOrPut(talker) { ArrayDeque() }
+        synchronized(deque) {
+            deque.addLast(score)
+            while (deque.size > TREND_SAMPLES) deque.removeFirst()
+        }
+    }
+
+    /**
+     * 走势 = 最新一句 − 之前几句的均值。样本不足 2 条返回 null（不硬编一个箭头出来）。
+     */
+    fun trendOf(talker: String): Double? {
+        val deque = trends[talker] ?: return null
+        synchronized(deque) {
+            if (deque.size < 2) return null
+            val values = deque.toList()
+            return values.last() - values.dropLast(1).average()
+        }
+    }
+
+    // ------------------------------------------------------------------ 回插去重
+
+    /** 标记「这条消息已经回插过」；返回 true 表示是第一次（可以插）。 */
+    fun markInserted(key: String): Boolean = inserted.add(key)
+
+    /** 同一条消息是否已经回插过。 */
+    fun isInserted(key: String): Boolean = inserted.contains(key)
+
+    // ------------------------------------------------------------------ 清理
+
     fun clear() {
+        cache.clear()
+        pending.clear()
+        journal.clear()
+        trends.clear()
+        inserted.clear()
+        completed.set(0)
+        failed.set(0)
+    }
+
+    /** 只清结果缓存，保留流水与统计（设置页的「清空结果，重新分析」用）。 */
+    fun clearResults() {
         cache.clear()
         pending.clear()
     }

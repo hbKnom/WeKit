@@ -108,19 +108,48 @@ object JevProtocol {
             selectedAction != null -> "下一步动作"
             else -> "情绪概率"
         }
-        return Mood(label, emotionScore(profile), 0, "", lines.joinToString("\n"))
+        return Mood(
+            label = label,
+            score = emotionScore(profile),
+            risk = 0,
+            raw = "",
+            detail = lines.joinToString("\n"),
+            // 结构化情绪概率：卡片照它画横条，不再解析自己拼的文本行
+            bars = emotionBars(profile),
+            advice = selectedAction?.text,
+        )
     }
 
-    fun fallback(profile: ChatProfile): Mood = Mood("情绪概率", emotionScore(profile), 0, "",
-        "$header\n${emotionProbabilities(profile)}")
+    /**
+     * 只拿到第一轮（场景/情绪/阶段）时的降级结果。
+     *
+     * [note] 用来把「为什么只有情绪概率」写清楚（第二轮超时、返回不完整、额度用尽…）。
+     * 用户实测的「有些能显示有些不能」，很多就是第二轮失败把第一轮结果一起丢了。
+     */
+    fun fallback(profile: ChatProfile, note: String? = null): Mood {
+        val text = buildString {
+            append(header).append('\n').append(emotionProbabilities(profile))
+            if (!note.isNullOrBlank()) append('\n').append("（").append(note).append("）")
+        }
+        return Mood("情绪概率", emotionScore(profile), 0, "", text, bars = emotionBars(profile))
+    }
 
-    private fun emotionProbabilities(profile: ChatProfile): String {
+    private fun emotionBars(profile: ChatProfile): List<MoodBar> =
+        emotionRows(profile).map { (key, percent) ->
+            MoodBar(emotions.getValue(key), percent, key == profile.emotion.choice)
+        }
+
+    private fun emotionProbabilities(profile: ChatProfile): String =
+        "情绪：" + emotionRows(profile).joinToString(" · ") { "${it.first} ${it.second}%" }
+
+    /** 界面上要显示的情绪行：三个主情绪恒显示，其余只在概率非零时显示。 */
+    private fun emotionRows(profile: ChatProfile): List<Pair<String, Int>> {
         val primary = listOf("happy", "calm", "annoyed")
         val visible = primary + emotions.keys.filter {
             it !in primary && (profile.emotion.probabilities.getValue(it) * 100).roundToInt() > 0
         }
-        return "情绪：" + visible.joinToString(" · ") {
-            "${emotions.getValue(it)} ${(profile.emotion.probabilities.getValue(it) * 100).roundToInt()}%"
+        return visible.map {
+            emotions.getValue(it) to (profile.emotion.probabilities.getValue(it) * 100).roundToInt()
         }
     }
 

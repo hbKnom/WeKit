@@ -23,6 +23,86 @@ object ModulePrefs {
     const val KEY_API_BASE = "yanwai_api_base"
     const val KEY_API_PROVIDER = "yanwai_api_provider"
     const val KEY_API_MODEL = "yanwai_api_model"
+    // 合并「言外潜台词」与「Jev 聊天决策」后新增（键名沿用 yanwai_ 前缀，老用户配置不丢）
+    const val KEY_DISPLAY_MESSAGE = "yanwai_display_message"
+    const val KEY_SCOPE_ALL = "yanwai_scope_all"
+    const val KEY_SCOPE_TALKERS = "yanwai_scope_talkers"
+    const val KEY_SCOPE_TALKER_NAMES = "yanwai_scope_talker_names"
+    /** 上下文条数（0-20，默认 10，与上游 [MessagePolicy.MAX_CONTEXT_MESSAGES] 一致）。 */
+    const val KEY_CONTEXT_LIMIT = "yanwai_context_limit"
+    /** 是否连自己发的消息一起分析（默认只分析对方）。 */
+    const val KEY_ANALYZE_SELF = "yanwai_analyze_self"
+
+    /**
+     * 展示通道 1：在消息下方挂分析卡。
+     *
+     * 与老键 [KEY_SHOW_BADGE] 是同一个开关（合并前叫「显示徽标」），默认**开** ——
+     * 合并后的功能主展示就是这张卡，默认关掉等于装了没反应。
+     */
+    val displayBubble get() = prefs.getBoolOrDef(KEY_SHOW_BADGE, true)
+
+    /** 展示通道 2：把结论作为系统消息插回会话（默认关；复用同一份分析结果，不额外请求模型）。 */
+    val displayMessage get() = prefs.getBoolOrFalse(KEY_DISPLAY_MESSAGE)
+
+    /** 是否对所有会话生效（默认 true）。 */
+    val scopeAll get() = prefs.getBoolOrDef(KEY_SCOPE_ALL, true)
+
+    /** 当前选定的会话（wxId）。 */
+    val scopeTalkers: Set<String> get() = scopeTalkers().toSet()
+
+    /**
+     * 写回分析范围。[names] 只用于会话列表的可读展示（[scopeSummary]），
+     * 键位与上游一致：talkers / names 都是换行分隔。
+     */
+    fun setScope(all: Boolean, talkers: Set<String>, names: Map<String, String>) {
+        prefs.putBool(KEY_SCOPE_ALL, all)
+        val ordered = talkers.toList()
+        prefs.putString(KEY_SCOPE_TALKERS, ordered.joinToString("\n"))
+        prefs.putString(KEY_SCOPE_TALKER_NAMES, ordered.joinToString("\n") { names[it] ?: it })
+    }
+
+    private fun scopeTalkers(): List<String> =
+        prefs.getStringOrDef(KEY_SCOPE_TALKERS, "").split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+
+    /**
+     * 是否分析这个会话。
+     *
+     * 「全部聊天」为默认；即使选了「仅选定聊天」，只要列表是空的也放行 ——
+     * 避免用户把开关拨到「仅选定」却还没选会话时，功能看起来像坏了。
+     */
+    fun inScope(talker: String?): Boolean {
+        if (prefs.getBoolOrDef(KEY_SCOPE_ALL, true)) return true
+        val list = scopeTalkers()
+        if (list.isEmpty()) return true
+        if (talker.isNullOrBlank()) return false
+        return list.contains(talker)
+    }
+
+    fun setDisplayMessage(value: Boolean) = prefs.putBool(KEY_DISPLAY_MESSAGE, value)
+
+    /** 上下文条数：夹在 0..20；0 表示不带前文（只分析这一句）。 */
+    val contextLimit get() = prefs.getIntOrDef(KEY_CONTEXT_LIMIT, MessagePolicy.MAX_CONTEXT_MESSAGES)
+        .coerceIn(0, MAX_CONTEXT_LIMIT)
+
+    fun setContextLimit(value: Int) = prefs.putInt(KEY_CONTEXT_LIMIT, value.coerceIn(0, MAX_CONTEXT_LIMIT))
+
+    val analyzeSelf get() = prefs.getBoolOrDef(KEY_ANALYZE_SELF, false)
+
+    fun setAnalyzeSelf(value: Boolean) = prefs.putBool(KEY_ANALYZE_SELF, value)
+
+    const val MAX_CONTEXT_LIMIT = 20
+
+    fun setScope(all: Boolean, talkers: List<String>, names: List<String>) {
+        prefs.putBool(KEY_SCOPE_ALL, all)
+        prefs.putString(KEY_SCOPE_TALKERS, talkers.joinToString("\n"))
+        prefs.putString(KEY_SCOPE_TALKER_NAMES, names.joinToString("\n"))
+    }
+
+    fun scopeSummary(): String {
+        if (prefs.getBoolOrDef(KEY_SCOPE_ALL, true)) return "全部聊天"
+        val names = prefs.getStringOrDef(KEY_SCOPE_TALKER_NAMES, "").split('\n').filter { it.isNotBlank() }
+        return if (names.isEmpty()) "全部聊天" else "已选 ${names.size} 个聊天"
+    }
 
     private val prefs get() = WePrefs
 

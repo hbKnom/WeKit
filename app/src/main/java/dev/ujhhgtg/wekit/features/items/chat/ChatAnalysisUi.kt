@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +40,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +96,7 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.LocalSegmentedItemShape
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * 聊天记录分析 —— Compose UI 组件（设计系统版 v3）
@@ -1630,6 +1633,55 @@ internal object ChatAnalysisUi {
     /** 一个【段】= 一张卡片：[title] 为该段标题（null 表示报告开头无标题的前置内容）。 */
     private data class ReportBlock(val title: String?, val units: List<ReportUnit>)
 
+    /**
+     * 报告目录：分节较多时给一排可点的胶囊，点一下直接滚到那一节。
+     *
+     * 长报告（AI 正文动辄上万字）最痛的就是"想回看第二节要滑半天"，所以目录只做一件事：
+     * 用分节序号 + 标题做锚点，点击滚过去。序号与正文章节徽章同源（都按"有标题的块"计数），
+     * 不会出现目录 03 跳到正文 05 这种错位。
+     */
+    @Composable
+    private fun ReportToc(
+        entries: List<Pair<Int, String>>,
+        accent: Color,
+        onJump: (Int) -> Unit,
+    ) {
+        val tocAccent = MaterialTheme.colorScheme.tertiary
+        SectionCard(title = "快速跳转", accent = tocAccent, badge = entries.size.toString() + " 节") {
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                verticalArrangement = Arrangement.spacedBy(ChipGap),
+            ) {
+                entries.forEachIndexed { order, entry ->
+                    val label = (order + 1).toString().padStart(2, '0') + " · " + entry.second
+                    TocChip(label, if (order % 2 == 0) tocAccent else accent) { onJump(entry.first) }
+                }
+            }
+        }
+    }
+
+    /** 目录胶囊：比普通 MetaChip 多一点点击反馈与描边，明确"可以点"。 */
+    @Composable
+    private fun TocChip(text: String, accent: Color, onClick: () -> Unit) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(accent.copy(alpha = 0.10f))
+                .clickable { onClick() }
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
     /** 把线性 unit 流按 Section 切块；Gap 不再产生任何间距（节奏由卡片与标题承担）。 */
     private fun groupIntoBlocks(units: List<ReportUnit>): List<ReportBlock> {
         val blocks = mutableListOf<ReportBlock>()
@@ -1757,6 +1809,16 @@ internal object ChatAnalysisUi {
         }
         val rowCount = remember(units) { units.count { it !is ReportUnit.Gap } }
 
+        // 目录（快速跳转）：分节 ≥ 2 才值得给，1 节的报告加目录纯属噪音。
+        val toc = remember(blocks) {
+            blocks.mapIndexedNotNull { i, b -> b.title?.let { t -> i to t } }
+        }
+        val hasToc = toc.size >= 2
+        val listState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
+        // 目录第 i 个分节对应的 LazyColumn 下标 = 1（报告概览）+ 1（目录自身）+ i
+        val tocOffset = if (hasToc) 2 else 1
+
         if (blocks.isEmpty()) {
             // 空报告绝不留白：给一张说明卡，用户至少知道"为什么没有内容"。
             Box(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
@@ -1771,6 +1833,7 @@ internal object ChatAnalysisUi {
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 140.dp, max = maxHeight),
@@ -1784,6 +1847,13 @@ internal object ChatAnalysisUi {
                     aiChars = aiChars,
                     accent = accent,
                 )
+            }
+            if (hasToc) {
+                item(key = "toc") {
+                    ReportToc(toc, accent) { blockIndex ->
+                        scope.launch { listState.animateScrollToItem(blockIndex + tocOffset) }
+                    }
+                }
             }
             itemsIndexed(
                 blocks,

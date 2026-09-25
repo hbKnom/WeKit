@@ -4155,8 +4155,8 @@
     <string name="feature_message_deletion_animation_description">When a message is deleted, it disintegrates into particles and the remaining messages slide smoothly into place (Telegram style).</string>
 
 
-    <string name="feature_yanwai_name">Yanwai · Subtext Assistant</string>
-    <string name="feature_yanwai_description">Attaches an analysis card under each incoming text bubble: emotion probabilities, a possible reading, and one suggested next move. Context comes from the last 10 qualifying messages in the same chat.</string>
+    <string name="feature_yanwai_name">Qianyu · Chat Insight</string>
+    <string name="feature_yanwai_description">Merged chat-analysis decision: one analysis, two displays - an analysis card under each incoming bubble and (optional) a system message posted back into the chat. Reports emotion probabilities, a possible reading and one suggested next move.</string>
     <string name="yanwai_enable">Enable analysis</string>
     <string name="yanwai_enable_desc">Send visible incoming text to your configured model endpoint. Turning this off stops new requests.</string>
     <string name="yanwai_show_badge">Draw analysis cards</string>
@@ -4170,5 +4170,22 @@
     <string name="yanwai_api_key">API Key</string>
     <string name="yanwai_privacy">Only visible incoming plain text is analysed; images, voice, files and links are skipped. Messages longer than 1000 characters are ignored. The target text and its preceding context are sent to the endpoint you configure. Results are cached in memory only and never persisted.</string>
     <string name="yanwai_analyse_now">Re-analyse this screen</string>
+    <string name="yanwai_display_message">Post verdict into the chat</string>
+    <string name="yanwai_display_message_desc">Also insert the verdict as a system message in the original chat. Shares the same analysis as the card, so no extra model request.</string>
+    <string name="yanwai_analyze_self">Analyse my own messages</string>
+    <string name="yanwai_analyze_self_desc">Off by default: only messages received are analysed.</string>
+    <string name="yanwai_scope">Analysis scope</string>
+    <string name="yanwai_scope_all">All chats</string>
+    <string name="yanwai_scope_all_desc">Analyse every conversation.</string>
+    <string name="yanwai_scope_pick">Selected chats only</string>
+    <string name="yanwai_scope_pick_desc">Only the chats ticked below; an empty list still means all chats.</string>
+    <string name="yanwai_scope_summary">%1$d chat(s) selected</string>
+    <string name="yanwai_context_limit">Context messages</string>
+    <string name="yanwai_context_limit_desc">0-20: how many preceding messages are sent along for context. 0 analyses the single message only.</string>
+    <string name="yanwai_test_connection">Test connection</string>
+    <string name="yanwai_retry_failed">Retry failed analyses</string>
+    <string name="yanwai_clear_results">Clear results and re-run this screen</string>
+    <string name="yanwai_recent">Recent verdicts</string>
+    <string name="yanwai_recent_empty">No verdict yet in this session.</string>
 
 </resources>

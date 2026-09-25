@@ -74,8 +74,15 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
 
     private const val TAG = "MessageDeletionAnimation"
 
-    /** 微信在消息行上存放消息 id 的 tag key。 */
-    private const val ROW_TAG_MSG_ID = 2113929222
+    /**
+     * 行 View 上「当前绑定的是哪条消息」的键控标记。
+     *
+     * 由 [WeChatMessageViewApi] 的绑定点统一写入（见那里的 [WeChatMessageViewApi.ROW_TAG_MESSAGE_KEY]）。
+     * 这里只读不写：以前本文件自己定了一个同样的常量却从没人写，`getTag` 永远是 null，
+     * 导致「这一行是否还留在列表里」的判据形同虚设 —— 发送消息时的行重绑被当成删除，
+     * 每条消息都要放一次删除特效（用户 2026-09-25 反馈的根因）。
+     */
+    private const val ROW_TAG_MSG_ID = WeChatMessageViewApi.ROW_TAG_MESSAGE_KEY
 
     private const val SETTLE_MS = 250L
     private const val SETTLE_HFR_MS = 475L
@@ -162,8 +169,14 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
         knownParent.remove(view)
     }
 
-    override fun onMessageViewDetached(view: View, message: MessageInfo) {
+    override fun onMessageViewDetached(view: View, message: MessageInfo, rebound: Boolean) {
         if (!installed) return
+
+        // 重绑不是删除：发送消息、批量刷新、会话去重都会把同一行绑到新消息上。
+        // 判据来自派发点（[WeChatMessageViewApi.IMessageViewLifecycleListener.onMessageViewDetached]），
+        // 不再依赖「view.parent 是否还在」这类启发式 —— 用户实测「每发一条消息先演一次删除特效」
+        // 就是这条路径被误判造成的。
+        if (rebound) return
 
         val list = (view.parent as? ViewGroup)?.takeIf { isRecyclerViewLike(it) }
             ?: knownParent[view]?.get()?.takeIf { isRecyclerViewLike(it) }
@@ -181,6 +194,10 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
         val msgId = runCatching { view.getTag(ROW_TAG_MSG_ID) }.getOrNull()
         val left = view.left + view.translationX.toInt()
         val top = view.top + view.translationY.toInt()
+
+        // 这一行的「行数基线」：真删除必然让列表少一行（removeView 之后 childCount 减一），
+        // 而发送消息引起的行替换/重排是「先摘一行再挂一行」，行数不变。见下面 post 块里的判据。
+        val rowsBefore = list.childCount
 
         // 快照必须在重新布局之前抓：此刻这一行还是删除前的样子（坐标也在列表坐标系里）
         val snapshot = runCatching { capture(view) }.getOrNull()
@@ -201,8 +218,23 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
                 snapshot?.recycle()
                 return@post
             }
-            // 这一行又出现在列表里 ⇒ 是重建/复用，不是删除
-            if (msgId != null && containsMessageId(list, msgId)) {
+            // 这一行自己又被挂回列表 ⇒ 重绑，不是删除
+            if (view.parent != null && view.isAttachedToWindow) {
+                snapshot?.recycle()
+                return@post
+            }
+            // 携带的消息身份还在列表里 ⇒ 重建/复用/行替换，不是删除
+            val identityStillBound = msgId != null && containsMessageId(list, msgId)
+            if (identityStillBound) {
+                snapshot?.recycle()
+                return@post
+            }
+            // 到这里才允许放动画，且还要再过一道「行数」判据：
+            // 真删除必然少一行；行数没少（行替换/重建）就不放。
+            // msgId 可读且不在列表里（identityStillBound 为假）也算确认删除。
+            val rowsDropped = list.childCount < rowsBefore
+            val identityGone = msgId != null
+            if (!rowsDropped && !identityGone) {
                 snapshot?.recycle()
                 return@post
             }

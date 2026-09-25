@@ -58,7 +58,7 @@ import java.util.concurrent.ConcurrentHashMap
  *     每张卡片再额外 clip 一次卡片矩形，即便测量有偏差也绝不会串到相邻列/卡片外。
  *  4. 文字基线统一由 fitBaseline() 计算，并受容器底边硬约束：
  *     baseline + descent ≤ 容器 bottom（越界则上移，永不溢出）。
- *  5. 画布高度按内容累加，底部留 BOTTOM_PAD 收尾；超长报告走"报告过长"降级路径。
+ *  5. 画布高度按内容累加，底部留 BOTTOM_PAD 收尾；超长报告自动分页（绝不因为"太长"导出失败）。
  *  6. 只有 1 张 Bitmap（即画布本身），不做任何全图拷贝，避免宿主堆 OOM。
  *  7. 尺寸常量是 Int，凡流入 RectF / drawText / fitBaseline 一律 .toFloat()
  *     （这条踩过 4 次编译坑，属于硬性纪律）。
@@ -573,12 +573,17 @@ object ChatAnalysisPng {
 
     /**
      * 导出报告 PNG。
+     *
+     * **无论报告多长都能导出**：内容高度超过单页上限（[MAX_HEIGHT]）时按「卡片边界 / 行首」
+     * 自动分页，每页独立成一张图（文件名带「第 N 页」），一次返回全部路径。
+     * 分页只在真正超长时发生 —— 普通长度的报告仍然是单张图，观感不变。
+     *
      * @param stats 本地统计报告文本
      * @param ai AI 报告文本
      * @param sessionName 会话显示名
      * @param sessionWxid 会话 wxid
      * @param period 时段标签
-     * @return 保存路径
+     * @return 保存路径列表（按页序）；单页时只有一个元素
      */
     @Throws(Exception::class)
     fun export(
@@ -587,13 +592,11 @@ object ChatAnalysisPng {
         sessionName: String,
         sessionWxid: String,
         period: String,
-    ): String {
+    ): List<String> {
         val dir = exportDir()
         val fmt = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-        val name = "聊天记录分析_${fmt.format(Date())}.png"
-        val path = "$dir/$name"
-        drawToFile(stats, ai, sessionName, sessionWxid, period, path)
-        return path
+        val base = "聊天记录分析_${fmt.format(Date())}"
+        return drawToFiles(stats, ai, sessionName, sessionWxid, period, dir, base)
     }
 
     fun exportDir(): String {
@@ -1113,63 +1116,189 @@ object ChatAnalysisPng {
     // 六、绘制
     // ==================================================================
 
+    /** 一页的几何：内容区间 [top, contentBottom)，页高 = 内容 + 页脚收尾。 */
+    private class Page(val top: Int, val contentBottom: Int, val height: Int)
+
+    /**
+     * 导出（可能多页）。
+     *
+     * 流程固定为「先算几何 → 再分页 → 逐页绘制」：
+     *  1. 第一遍只做几何（与单页时代完全相同的累加方式），得到内容总高与所有可断点；
+     *  2. [paginate] 在可断点里挑页界 —— 优先落在卡片/行首，实在没有就硬切（内容仍连续）；
+     *  3. 每一页单独分配位图、裁剪、平移后**重放同一套绘制代码**，因此分页不会改变观感，
+     *     也不会出现半行文字被切的情况（行首断点保证）。
+     *
+     * 内存：单页位图 ≤ W × MAX_HEIGHT × 4B（由 init 里的 require 钉死 ≤ 120MB），
+     * 且每页用完立即 recycle，多页不会叠加占用。
+     */
     @Throws(Exception::class)
-    private fun drawToFile(
+    private fun drawToFiles(
         stats: String,
         ai: String,
         sessionName: String,
         sessionWxid: String,
         period: String,
-        path: String,
-    ) {
+        dir: String,
+        baseName: String,
+    ): List<String> {
         val generated = "分析生成于 ${reportDateText()}"
         val bodyP = paint(FS_BODY, COLOR_BODY)
 
-        // ---- 第一遍：纯几何（先把所有高度算准，再画）----
+        // ---- 第一遍：纯几何（先把所有高度算准，再决定分页）----
         val header = layoutHeader(sessionName, sessionWxid, period, generated)
         val items = buildItems(stats, ai, bodyP)
 
-        var total = CANVAS_PAD + header.height
-        for (i in items.indices) total += gapBefore(items, i) + itemHeight(items[i])
-        total += CARD_GAP + FOOTER_H + BOTTOM_PAD
-        if (total < MIN_H) total = MIN_H
-        if (total > MAX_HEIGHT) throw Exception("报告过长，请缩小分析范围后再导出")
-
-        // 单张 Bitmap（即画布本身），不产生任何全图拷贝
-        val bmp = Bitmap.createBitmap(W, total, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(bmp)
-        // 背景：极浅的竖向渐变（上浅蓝 → 下纯白），给白卡片留出层次
-        cv.drawRect(0f, 0f, W.toFloat(), total.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = LinearGradient(
-                0f, 0f, 0f, total.toFloat(),
-                intArrayOf(COLOR_BG_TOP, COLOR_BG_MID, COLOR_BG_BOTTOM),
-                floatArrayOf(0f, 0.35f, 1f),
-                Shader.TileMode.CLAMP,
-            )
-        })
-
-        // ---- 第二遍：按第一遍算出的同一份几何绘制 ----
-        var y = CANVAS_PAD
-        drawHeaderCard(cv, y, header)
-        y += header.height
-
+        val itemTops = IntArray(items.size)
+        var content = CANVAS_PAD + header.height
         for (i in items.indices) {
-            y += gapBefore(items, i)
-            when (val item = items[i]) {
-                is Item.Pill -> {
-                    drawGroupPill(cv, item, y.toFloat())
-                    y += GROUP_PILL_H
+            content += gapBefore(items, i)
+            itemTops[i] = content
+            content += itemHeight(items[i])
+        }
+        val contentEnd = content.coerceAtLeast(CANVAS_PAD + header.height)
+        val canvasHeight = (contentEnd + CARD_GAP + FOOTER_H + BOTTOM_PAD).coerceAtLeast(MIN_H)
+
+        val pages = paginate(pageCuts(items, itemTops, contentEnd), contentEnd)
+        val multi = pages.size > 1
+        val paths = ArrayList<String>(pages.size)
+
+        for ((index, page) in pages.withIndex()) {
+            val label = "第 ${index + 1} / ${pages.size} 页"
+            val path = if (multi) "$dir/${baseName}_第${index + 1}页.png" else "$dir/$baseName.png"
+
+            // 单页时沿用「最小画布高度」（短报告不会被压成一条，观感与旧版一致）；
+            // 多页时每页高度完全由分页几何决定，不额外加高。
+            val pageHeight = if (multi) page.height else maxOf(page.height, MIN_H)
+            val bmp = Bitmap.createBitmap(W, pageHeight, Bitmap.Config.ARGB_8888)
+            try {
+                val cv = Canvas(bmp)
+                // 裁剪 + 平移：之后所有绘制代码用的都是「整幅画布」的绝对坐标，
+                // 与本页落在哪一段无关（绘制代码一行都不用改）。
+                cv.clipRect(0f, 0f, W.toFloat(), page.height.toFloat())
+                cv.translate(0f, -page.top.toFloat())
+
+                // 背景：极浅的竖向渐变（上浅蓝 → 下纯白），跨页仍然连续
+                cv.drawRect(0f, 0f, W.toFloat(), canvasHeight.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = LinearGradient(
+                        0f, 0f, 0f, canvasHeight.toFloat(),
+                        intArrayOf(COLOR_BG_TOP, COLOR_BG_MID, COLOR_BG_BOTTOM),
+                        floatArrayOf(0f, 0.35f, 1f),
+                        Shader.TileMode.CLAMP,
+                    )
+                })
+
+                // ---- 第二遍：按同一份几何绘制 ----
+                var y = CANVAS_PAD
+                drawHeaderCard(cv, y, header)
+                y += header.height
+
+                for (i in items.indices) {
+                    y += gapBefore(items, i)
+                    val item = items[i]
+                    val h = itemHeight(item)
+                    // 完全落在本页之上的：跳过（不画），但 y 必须继续累加
+                    if (y + h <= page.top) {
+                        y += h
+                        continue
+                    }
+                    if (y >= page.contentBottom) break
+                    when (item) {
+                        is Item.Pill -> {
+                            drawGroupPill(cv, item, y.toFloat())
+                        }
+                        is Item.Card -> {
+                            drawCardGroup(cv, item, y, bodyP)
+                        }
+                    }
+                    y += h
                 }
-                is Item.Card -> {
-                    drawCardGroup(cv, item, y, bodyP)
-                    y += item.height
-                }
+
+                // 页脚画在「内容末 + CARD_GAP」，与旧版单张图的位置逐像素一致
+                drawFooter(cv, page.contentBottom + CARD_GAP, label)
+                writePng(bmp, path)
+            } finally {
+                if (!bmp.isRecycled) bmp.recycle()
+            }
+            paths.add(path)
+        }
+        return paths
+    }
+
+    /** 一页的高度 = 内容高度 + 页脚收尾（[CARD_GAP] + [FOOTER_H] + [BOTTOM_PAD]）。 */
+    private fun pageOf(top: Int, contentBottom: Int): Page {
+        val height = (contentBottom - top) + CARD_GAP + FOOTER_H + BOTTOM_PAD
+        require(height <= MAX_HEIGHT) { "PNG 分页高度超限：${height}px" }
+        return Page(top, contentBottom, height)
+    }
+
+    /**
+     * 可断点集合（内容纵坐标）。
+     *
+     * 只允许在「不会被切坏」的位置分页：
+     *  - 卡片/分节条的边界（[itemTops]）；
+     *  - 卡片内部每一行的行首（正文、KPI、图表、标签云都是按行排的，行首断开不会切到文字）。
+     */
+    private fun pageCuts(items: List<Item>, itemTops: IntArray, contentEnd: Int): IntArray {
+        val cuts = java.util.TreeSet<Int>()
+        cuts.add(contentEnd)
+        for (i in items.indices) {
+            val top = itemTops[i]
+            if (top > 0 && top < contentEnd) cuts.add(top)
+            val item = items[i]
+            if (item !is Item.Card) continue
+            val bodyTop = top + CARD_PAD_V + (if (item.title != null) SECTION_HEADER_H else 0)
+            for (row in item.rows) {
+                val rowTop = bodyTop + row.top
+                if (rowTop > 0 && rowTop < contentEnd) cuts.add(rowTop)
             }
         }
+        return cuts.toIntArray()
+    }
 
-        y += CARD_GAP
-        drawFooter(cv, y)
+    /**
+     * 分页：优先均衡（各页高度尽量接近），断点从 [cuts] 里挑最接近理想位置的那个。
+     *
+     * 找不到合适断点（例如某个超大图形卡片内部没有行首）就退化为硬切 —— 因为每页都是
+     * 「平移后重放同一套绘制」，硬切同样**不会丢内容**，只是那一段的卡片圆角会跨页。
+     */
+    private fun paginate(cuts: IntArray, contentEnd: Int): List<Page> {
+        val reserved = CARD_GAP + FOOTER_H + BOTTOM_PAD
+        val usable = MAX_HEIGHT - reserved
+        require(usable > 0) { "PNG 单页可用高度必须为正" }
+        if (contentEnd <= usable) return listOf(pageOf(0, contentEnd))
 
+        val count = Math.ceil(contentEnd.toDouble() / usable).toInt().coerceAtLeast(2)
+        val target = contentEnd.toDouble() / count
+        val pages = ArrayList<Page>(count)
+        var top = 0
+        for (k in 1 until count) {
+            // 本页之后还剩几页（含最后一页）：为了后面放得下，本页至少要切到 minCut；
+            // 本页自己也不能超过 usable，所以最多切到 maxCut。
+            val restPages = count - k
+            val minCut = maxOf(top + 1, contentEnd - restPages * usable)
+            val maxCut = minOf(top + usable, contentEnd - 1)
+            val ideal = Math.round(target * k).toInt()
+            var cut = minCut
+            var best = Int.MAX_VALUE
+            for (c in cuts) {
+                if (c < minCut || c > maxCut) continue
+                val delta = Math.abs(c - ideal)
+                if (delta < best) {
+                    best = delta
+                    cut = c
+                }
+            }
+            if (best == Int.MAX_VALUE) cut = ideal.coerceIn(minCut, maxCut)
+            pages.add(pageOf(top, cut))
+            top = cut
+        }
+        pages.add(pageOf(top, contentEnd))
+        return pages
+    }
+
+    /** 落盘（含目录校验与 fsync），失败一律抛异常交给上层提示。 */
+    @Throws(Exception::class)
+    private fun writePng(bmp: Bitmap, path: String) {
         var fos: FileOutputStream? = null
         try {
             val out = File(path)
@@ -1184,7 +1313,6 @@ object ChatAnalysisPng {
             if (!out.exists() || out.length() <= 0L) throw Exception("PNG 文件未落盘")
         } finally {
             fos?.close()
-            if (!bmp.isRecycled) bmp.recycle()
         }
     }
 
@@ -2013,7 +2141,7 @@ object ChatAnalysisPng {
     }
 
     /** 页脚：顶部渐变细线 + 左品牌 + 右页码，底部再加一条品牌渐变条当水印 */
-    private fun drawFooter(cv: Canvas, top: Int) {
+    private fun drawFooter(cv: Canvas, top: Int, pageLabel: String = FOOTER_PAGE_TEXT) {
         cv.drawRect(
             RectF(CARD_LEFT.toFloat(), top.toFloat(), CARD_RIGHT.toFloat(), top + 3f),
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -2036,7 +2164,7 @@ object ChatAnalysisPng {
         val textH = FOOTER_TEXT_H.toFloat()
         val limitBottom = textTop + textH
         val pageP = paint(FS_SMALL, COLOR_ACCENT, bold = true)
-        val pageText = FOOTER_PAGE_TEXT
+        val pageText = pageLabel
         val pageW = pageP.measureText(pageText)
         val pageClip = RectF(
             CARD_RIGHT - pageW - 8f, textTop,

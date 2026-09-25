@@ -30,7 +30,20 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
 
     interface IMessageViewLifecycleListener {
         fun onMessageViewAttached(view: View, message: MessageInfo) {}
-        fun onMessageViewDetached(view: View, message: MessageInfo) {}
+
+        /**
+         * 行与消息解绑。
+         *
+         * [rebound] 区分两种本质不同的事件，**只能在派发点判断**：
+         *  - `true`：同一个 View 被绑到了另一条消息（发送消息、批量刷新、会话去重都会这样），
+         *    这一行并没有消失，只是换了内容；
+         *  - `false`：这一行真的离开了窗口（删除、整页销毁、回收前的 detach）。
+         *
+         * 以前两种事件共用一个无参回调，下游只能靠「view.parent 还在不在」猜 ——
+         * 而真实 detach 时 parent 往往也还在（先 dispatchDetachedFromWindow 再 removeFromArray），
+         * 于是「误判成删除」和「漏判真删除」同时存在。现在由这里给出确定答案。
+         */
+        fun onMessageViewDetached(view: View, message: MessageInfo, rebound: Boolean) {}
         fun onMessageViewRecycled(view: View, message: MessageInfo) {}
     }
 
@@ -71,6 +84,23 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
 
     private const val TAG = "WeChatMessageViewApi"
 
+    /**
+     * 行 View 上「当前绑定的是哪条消息」的键控标记（`View.setTag(key, value)`）。
+     *
+     * 为什么要放在这里统一写：聊天列表在**发送、重排、去重**时会重新绑定同一批 View
+     * （`onBindView` 会把同一个 View 绑到另一条消息上，先回调一次 Detached 再回调 Attached）。
+     * 下游功能（消息删除动画）必须能区分「这一行真的被删了」和「同一个 View 换了消息」——
+     * 判据就是这条标记；标记由绑定点统一写入，避免每个功能各写一套、或者像以前那样
+     * 只读不写导致判据永久为 null。
+     *
+     * 取值为 [MessageInfo.id]（本地 msgId，> 0 时唯一）；本地暂态消息（msgId 还没落库）没有
+     * 稳定 id，写入消息对象本身，仅用于同对象身份比较。
+     */
+    const val ROW_TAG_MESSAGE_KEY = 2113929222
+
+    private fun rowTagValue(message: MessageInfo): Any =
+        runCatching { message.id }.getOrNull()?.takeIf { it > 0L } ?: message.instance
+
     private val methodChatItemOnBindView by dexMethod {
         matcher {
             usingStrings(
@@ -101,11 +131,14 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
             val previous = synchronized(currentBindings) { currentBindings[view] }
             val bindingChanged = previous?.instance !== message.instance
             if (view.isAttachedToWindow && bindingChanged && previous != null) {
-                dispatchLifecycle { it.onMessageViewDetached(view, previous) }
+                // rebound = true：这一行还在列表里，只是被绑到了另一条消息（不是删除）
+                dispatchLifecycle { it.onMessageViewDetached(view, previous, true) }
             }
             synchronized(currentBindings) {
                 currentBindings[view] = message
             }
+            // 先更新标记再派发 Attached：下游在 Attached 回调里就能读到本条消息的身份。
+            runCatching { view.setTag(ROW_TAG_MESSAGE_KEY, rowTagValue(message)) }
             if (view.isAttachedToWindow && bindingChanged) {
                 dispatchLifecycle { it.onMessageViewAttached(view, message) }
             }
@@ -146,7 +179,8 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
 
                 override fun onViewDetachedFromWindow(view: View) {
                     val message = synchronized(currentBindings) { currentBindings[view] } ?: return
-                    dispatchLifecycle { it.onMessageViewDetached(view, message) }
+                    // rebound = false：这一行真的离开了窗口（删除 / 整页销毁 / 回收）
+                    dispatchLifecycle { it.onMessageViewDetached(view, message, false) }
                 }
             }
             attachStateListeners[view] = listener

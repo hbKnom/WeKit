@@ -4180,8 +4180,8 @@
     <string name="feature_message_deletion_animation_description">删除消息时, 消息化为粒子消散, 其余消息平滑归位 (Telegram 风格)</string>
 
 
-    <string name="feature_yanwai_name">言外 · 潜台词助手</string>
-    <string name="feature_yanwai_description">在对方文字气泡下方追加一张分析卡：情绪概率、可能的解读，以及一句下一步建议。前文取自同一会话最近 10 条合格文字。</string>
+    <string name="feature_yanwai_name">潜语 · 聊天分析决策</string>
+    <string name="feature_yanwai_description">合并后的聊天分析决策：一次分析、两处展示 —— 对方气泡下的分析卡与（可选）回插会话的系统消息，给出情绪概率、可能的言外之意与一条建议动作。</string>
     <string name="yanwai_enable">启用分析</string>
     <string name="yanwai_enable_desc">把本屏可见的对方文字发送到你配置的模型地址。关闭后不再发起新请求。</string>
     <string name="yanwai_show_badge">绘制分析卡</string>
@@ -4195,5 +4195,22 @@
     <string name="yanwai_api_key">API Key</string>
     <string name="yanwai_privacy">只分析本屏可见的对方纯文本；图片、语音、文件与链接一律跳过，单条超过 1000 字符也跳过。目标文字及其前文会发送到你填写的接口地址。结果只缓存在内存，不做持久化。</string>
     <string name="yanwai_analyse_now">重新分析本屏</string>
+    <string name="yanwai_display_message">回插会话消息</string>
+    <string name="yanwai_display_message_desc">把解读结论同时以系统消息插回原会话；与气泡卡共用同一次分析，不会额外请求模型。</string>
+    <string name="yanwai_analyze_self">也分析我发的消息</string>
+    <string name="yanwai_analyze_self_desc">默认只解读对方发来的消息；开启后自己发的消息也会被解读。</string>
+    <string name="yanwai_scope">分析范围</string>
+    <string name="yanwai_scope_all">全部聊天</string>
+    <string name="yanwai_scope_all_desc">对所有会话生效。</string>
+    <string name="yanwai_scope_pick">仅选定聊天</string>
+    <string name="yanwai_scope_pick_desc">只对下面勾选的会话生效；列表为空时等同于全部聊天。</string>
+    <string name="yanwai_scope_summary">已选 %1$d 个会话</string>
+    <string name="yanwai_context_limit">上下文条数</string>
+    <string name="yanwai_context_limit_desc">0–20：把前面几条消息一起送给模型判断；0 表示只看这一句。</string>
+    <string name="yanwai_test_connection">检测连接</string>
+    <string name="yanwai_retry_failed">重试全部失败</string>
+    <string name="yanwai_clear_results">清空结果并重跑本屏</string>
+    <string name="yanwai_recent">最近解读</string>
+    <string name="yanwai_recent_empty">本次运行还没有解读记录。</string>
 
 </resources>

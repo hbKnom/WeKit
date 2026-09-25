@@ -8,6 +8,8 @@ data class AnalysisInput(
     val context: List<ContextMessage> = emptyList(),
     val messageId: Long = 0,
     val speaker: String = "对方",
+    /** 消息本身的创建时间（毫秒）。0 表示读不到；「回插会话」通道用它跳过历史消息。 */
+    val createdAt: Long = 0,
 ) {
     val key: String get() = MoodStore.keyOf(text, talker, context, messageId, speaker)
 }

@@ -26,6 +26,13 @@ object MessageMetadata {
     fun incomingText(message: MessageInfo): String? =
         if (isIncomingText(message)) plainText(message) else null
 
+    /** 按开关取分析正文：默认只分析对方发来的，开启后连自己发的也算。 */
+    fun analyzeText(message: MessageInfo, includeSelf: Boolean): String? =
+        if (includeSelf) {
+            if (message.typeCode == TYPE_TEXT && message.isSend in 0..1 && message.talker.isNotBlank())
+                plainText(message) else null
+        } else incomingText(message)
+
     /** 不计发送方，只要求是纯文本。 */
     fun plainText(message: MessageInfo): String? {
         if (message.typeCode != TYPE_TEXT) return null

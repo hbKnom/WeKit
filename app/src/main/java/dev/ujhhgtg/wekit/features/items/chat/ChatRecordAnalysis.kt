@@ -702,7 +702,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         Thread {
             try {
                 val period = currentPeriodLabel()
-                val path = ChatAnalysisPng.export(
+                val paths = ChatAnalysisPng.export(
                     stats = gStats,
                     ai = gAi,
                     sessionName = gLabel,
@@ -711,7 +711,14 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
                 )
                 mainHandler.post {
                     busy = false
-                    showToast("已导出：$path")
+                    // 正常长度 → 单张图；超长报告自动分页，逐页都导出了才算成功
+                    showToast(
+                        when {
+                            paths.isEmpty() -> "导出失败：没有生成任何图片"
+                            paths.size == 1 -> "已导出：${paths[0]}"
+                            else -> "已导出 ${paths.size} 张（第 1~${paths.size} 页）：${paths[0]}"
+                        },
+                    )
                 }
             } catch (t: Throwable) {
                 mainHandler.post {
