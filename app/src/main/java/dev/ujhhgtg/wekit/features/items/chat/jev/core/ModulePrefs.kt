@@ -52,7 +52,8 @@ object ModulePrefs {
             KEY_ENABLED -> prefs.putBool(KEY_ENABLED, value)
             KEY_SHOW_BADGE -> prefs.putBool(KEY_SHOW_BADGE, value)
         }
-        prefs.save()
+        // 不需要（也不能）调用 WePrefs.save()：companion 上没有该方法，
+        // 且 SQLite 实现每次 put 就已经落库。
     }
 
     /** 上游把运行状态回传给独立 App 的设置页；这里只落模块日志。 */

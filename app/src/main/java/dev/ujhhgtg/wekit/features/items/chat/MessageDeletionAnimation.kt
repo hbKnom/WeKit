@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package dev.ujhhgtg.wekit.features.items.chat
 
-import android.content.res.Resources
-import android.graphics.Bitmap
-import android.graphics.Canvas
+import android.graphics.Bitmapimport android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Picture
 import android.graphics.Rect
@@ -18,6 +16,7 @@ import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
+import dev.ujhhgtg.wekit.utils.HostInfo
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 import kotlin.math.abs
@@ -72,9 +71,20 @@ object MessageDeletionAnimation : SwitchFeature(), WeChatMessageViewApi.IMessage
     @Volatile
     private var installed = false
 
+    /**
+     * 高刷屏判定。
+     *
+     * 不能用 `DisplayMetrics.refreshRate`（API 30 才有，编译期就解析不到），
+     * 改用从 API 1 就存在的 [android.view.Display.getRefreshRate]。
+     */
     private val isHighRefreshRate: Boolean
         get() = runCatching {
-            Resources.getSystem().displayMetrics.refreshRate >= HFR_THRESHOLD
+            val windowManager = HostInfo.application
+                .getSystemService(android.content.Context.WINDOW_SERVICE) as? android.view.WindowManager
+            @Suppress("DEPRECATION")
+            val display = windowManager?.defaultDisplay ?: return@runCatching false
+            @Suppress("DEPRECATION")
+            display.refreshRate >= HFR_THRESHOLD
         }.getOrDefault(false)
 
     override fun onEnable() {
