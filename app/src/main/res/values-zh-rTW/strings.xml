@@ -1291,7 +1291,6 @@
     <string name="conversation_group_mode_friends">自動所有好友</string>
     <string name="conversation_group_mode_officials">自動所有公衆號</string>
     <string name="conversation_group_mode_sql">自定義 SQL 規則</string>
-    <string name="conversation_group_selected_count">已選擇 %1$d 個對話</string>
     <string name="conversation_group_select_conversations">選擇對話</string>
     <string name="conversation_group_unread_match_count">自動分組所有未讀對話（當前匹配到 %1$d 個對話）</string>
     <string name="conversation_group_groups_match_count">自動分組所有羣聊（當前匹配到 %1$d 個對話）</string>
@@ -1299,7 +1298,6 @@
     <string name="conversation_group_officials_match_count">自動分組所有公衆號（當前匹配到 %1$d 個對話）</string>
     <string name="conversation_group_select_fields">SELECT 字段</string>
     <string name="conversation_group_where_clause">WHERE 條件</string>
-    <string name="conversation_group_match_count">當前匹配到 %1$d 個對話</string>
     <string name="conversation_group_sql_help" formatted="false">數據源自 rcontact r、img_flag i、rconversation c\n示例：c.unReadCount &gt; 0 AND r.username LIKE \'%@chatroom\'</string>
     <string name="conversation_group_saved">已保存</string>
     <string name="conversation_grouping_tab_layout_title">標籤佈局</string>
@@ -4075,4 +4073,59 @@
     <string name="qq_music_order_app_id_hint">寫進卡片的 AppID，留空則使用 QQ音樂預設值。注意：微信對第三方 AppID 不一定以音樂卡片呈現。</string>
     <string name="qq_music_order_app_id_reset">恢復預設 AppID</string>
     <string name="qq_music_order_allowed_talkers_count">已選 %1$d 個會話</string>
+
+    <string name="nav_bar_style">底欄樣式</string>
+    <string name="nav_bar_style_native">微信原生</string>
+    <string name="nav_bar_style_docked">貼底</string>
+    <string name="nav_bar_style_floating">懸浮</string>
+    <string name="nav_bar_style_hidden">隱藏</string>
+    <string name="nav_bar_style_liquid_glass">液態玻璃</string>
+    <string name="nav_icon_style">圖標樣式</string>
+    <string name="nav_icon_style_material">Material Symbols</string>
+    <string name="nav_icon_style_native">微信原生</string>
+    <string name="nav_label_content">標籤內容</string>
+    <string name="nav_label_icon">圖標</string>
+    <string name="nav_label_icon_and_text">圖標+文本</string>
+    <string name="nav_label_text">文本</string>
+    <string name="nav_page_management_hint">長按拖動排序，也可以直接拖動底欄上的項；點按頁面切換顯示</string>
+    <string name="nav_page_keep_one">至少保留一個頁面</string>
+    <string name="nav_badge_toggle_description">%1$s角標</string>
+    <string name="nav_edit_enable_first">請先啟用此功能</string>
+
+
+    <string name="chat_floating_header_overflow_badge">+%1$d</string>
+
+
+    <plurals name="conversation_group_match_count">
+
+        <item quantity="other">當前匹配到 %1$d 個對話</item>
+    </plurals>
+
+
+    <plurals name="conversation_group_selected_count">
+
+        <item quantity="other">已選擇 %1$d 個對話</item>
+    </plurals>
+
+
+    <string name="feature_message_deletion_animation_name">消息刪除動畫</string>
+    <string name="feature_message_deletion_animation_description">刪除消息時, 消息化為粒子消散, 其餘消息平滑歸位 (Telegram 風格)</string>
+
+
+    <string name="feature_yanwai_name">言外 · 潛台詞助手</string>
+    <string name="feature_yanwai_description">在對方文字氣泡下方追加一張分析卡：情緒機率、可能的解讀，以及一句下一步建議。前文取自同一會話最近 10 條合格文字。</string>
+    <string name="yanwai_enable">啟用分析</string>
+    <string name="yanwai_enable_desc">把本畫面上可見的對方文字傳送到你設定的模型位址。關閉後不再發起新請求。</string>
+    <string name="yanwai_show_badge">繪製分析卡</string>
+    <string name="yanwai_show_badge_desc">在氣泡下方顯示卡片。隱藏它不會停止已經送出的請求。</string>
+    <string name="yanwai_explore_mode">詳細診斷記錄</string>
+    <string name="yanwai_explore_mode_desc">記錄適配點探測與未識別的訊息物件，便於排查新版微信。</string>
+    <string name="yanwai_provider">模型渠道</string>
+    <string name="yanwai_provider_custom_desc">填寫完整的 Jev 相容 HTTP(S) 位址。</string>
+    <string name="yanwai_endpoint">介面位址</string>
+    <string name="yanwai_model">模型</string>
+    <string name="yanwai_api_key">API Key</string>
+    <string name="yanwai_privacy">只分析本畫面可見的對方純文字；圖片、語音、檔案與連結一律略過，單則超過 1000 字元也略過。目標文字及其前文會傳送到你填寫的介面位址。結果只快取在記憶體，不做持久化。</string>
+    <string name="yanwai_analyse_now">重新分析本畫面</string>
+
 </resources>

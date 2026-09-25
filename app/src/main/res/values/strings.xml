@@ -1345,7 +1345,6 @@
     <string name="conversation_group_mode_friends">All friends automatically</string>
     <string name="conversation_group_mode_officials">All official accounts automatically</string>
     <string name="conversation_group_mode_sql">Custom SQL rule</string>
-    <string name="conversation_group_selected_count">Selected %1$d conversations</string>
     <string name="conversation_group_select_conversations">Select conversations</string>
     <string name="conversation_group_unread_match_count">Automatically group all unread conversations (%1$d currently matched)</string>
     <string name="conversation_group_groups_match_count">Automatically group all group chats (%1$d currently matched)</string>
@@ -1353,7 +1352,6 @@
     <string name="conversation_group_officials_match_count">Automatically group all official accounts (%1$d currently matched)</string>
     <string name="conversation_group_select_fields">SELECT fields</string>
     <string name="conversation_group_where_clause">WHERE clause</string>
-    <string name="conversation_group_match_count">Currently matches %1$d conversations</string>
     <string name="conversation_group_sql_help" formatted="false">Data sources: rcontact r, img_flag i, rconversation c\nExample: c.unReadCount &gt; 0 AND r.username LIKE \'%@chatroom\'</string>
     <string name="conversation_group_saved">Saved</string>
     <string name="conversation_grouping_tab_layout_title">Tab layout</string>
@@ -4116,4 +4114,61 @@
     <string name="qq_music_order_app_id_hint">The AppID written into the card. Empty falls back to the QQ Music one. Some third-party AppIDs are not rendered as music by WeChat.</string>
     <string name="qq_music_order_app_id_reset">Restore the default AppID</string>
     <string name="qq_music_order_allowed_talkers_count">%1$d chat(s) selected</string>
+
+    <string name="nav_bar_style">Bar style</string>
+    <string name="nav_bar_style_native">WeChat native</string>
+    <string name="nav_bar_style_docked">Docked</string>
+    <string name="nav_bar_style_floating">Floating</string>
+    <string name="nav_bar_style_hidden">Hidden</string>
+    <string name="nav_bar_style_liquid_glass">Liquid glass</string>
+    <string name="nav_icon_style">Icon style</string>
+    <string name="nav_icon_style_material">Material Symbols</string>
+    <string name="nav_icon_style_native">WeChat native</string>
+    <string name="nav_label_content">Tab content</string>
+    <string name="nav_label_icon">Icon</string>
+    <string name="nav_label_icon_and_text">Icon + text</string>
+    <string name="nav_label_text">Text</string>
+    <string name="nav_page_management_hint">Long press to drag and reorder, here or directly on the bar. Tap a page to show or hide it.</string>
+    <string name="nav_page_keep_one">Keep at least one page</string>
+    <string name="nav_badge_toggle_description">Badge on %1$s</string>
+    <string name="nav_edit_enable_first">Enable this feature first</string>
+
+
+    <string name="chat_floating_header_overflow_badge">+%1$d</string>
+
+
+    <plurals name="conversation_group_match_count">
+
+        <item quantity="one">Currently matches %1$d conversation</item>
+        <item quantity="other">Currently matches %1$d conversations</item>
+    </plurals>
+
+
+    <plurals name="conversation_group_selected_count">
+
+        <item quantity="one">Selected %1$d conversation</item>
+        <item quantity="other">Selected %1$d conversations</item>
+    </plurals>
+
+
+    <string name="feature_message_deletion_animation_name">Message deletion animation</string>
+    <string name="feature_message_deletion_animation_description">When a message is deleted, it disintegrates into particles and the remaining messages slide smoothly into place (Telegram style).</string>
+
+
+    <string name="feature_yanwai_name">Yanwai · Subtext Assistant</string>
+    <string name="feature_yanwai_description">Attaches an analysis card under each incoming text bubble: emotion probabilities, a possible reading, and one suggested next move. Context comes from the last 10 qualifying messages in the same chat.</string>
+    <string name="yanwai_enable">Enable analysis</string>
+    <string name="yanwai_enable_desc">Send visible incoming text to your configured model endpoint. Turning this off stops new requests.</string>
+    <string name="yanwai_show_badge">Draw analysis cards</string>
+    <string name="yanwai_show_badge_desc">Show the card under the bubble. Hiding it does not stop requests already made.</string>
+    <string name="yanwai_explore_mode">Verbose diagnostics</string>
+    <string name="yanwai_explore_mode_desc">Log adapter detection and unrecognised message objects, for troubleshooting new WeChat versions.</string>
+    <string name="yanwai_provider">Model provider</string>
+    <string name="yanwai_provider_custom_desc">Fill in a full Jev-compatible HTTP(S) address.</string>
+    <string name="yanwai_endpoint">Endpoint</string>
+    <string name="yanwai_model">Model</string>
+    <string name="yanwai_api_key">API Key</string>
+    <string name="yanwai_privacy">Only visible incoming plain text is analysed; images, voice, files and links are skipped. Messages longer than 1000 characters are ignored. The target text and its preceding context are sent to the endpoint you configure. Results are cached in memory only and never persisted.</string>
+    <string name="yanwai_analyse_now">Re-analyse this screen</string>
+
 </resources>

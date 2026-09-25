@@ -95,6 +95,7 @@ import dev.ujhhgtg.wekit.features.api.ui.WeConversationListViewApi
 import dev.ujhhgtg.wekit.features.api.ui.WeMainActivityBeautifyApi
 import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
+import dev.ujhhgtg.wekit.preferences.WePrefs
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
@@ -106,6 +107,7 @@ import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseItemContainer
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.IntNumberPickerWidget
+import dev.ujhhgtg.wekit.ui.content.m3.RadioButtonWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.content.rememberViewBackdrop
@@ -141,13 +143,118 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
         NavItem(3, MaterialSymbols.Outlined.Person, MaterialSymbols.OutlinedFilled.Person, R.string.nav_tab_me),
     )
 
-    private var useFloating by prefOption("nav_bar_use_floating", true)
-    private var useWechatIcons by prefOption("nav_bar_use_wechat_icons", false)
+    // ────────────────────────────────────────────
+    // 0924 重构：将散落的多个布尔开关合并为三态枚举。
+    // 旧键保留为迁移来源（首次读取时推导并落盘）；
+    // 下方五个只读派生属性使下游渲染逻辑零改动。
+    // ────────────────────────────────────────────
+    enum class BarStyle(val storageKey: String) {
+        NATIVE("native"),
+        DOCKED("docked"),
+        FLOATING("floating"),
+        HIDDEN("hidden"),
+        LIQUID_GLASS("liquid_glass");
+
+        companion object {
+            fun from(key: String?): BarStyle? = values().firstOrNull { it.storageKey == key }
+        }
+    }
+
+    enum class IconStyle(val storageKey: String) {
+        MATERIAL("material"),
+        NATIVE("native");
+
+        companion object {
+            fun from(key: String?): IconStyle? = values().firstOrNull { it.storageKey == key }
+        }
+    }
+
+    enum class LabelMode(val storageKey: String) {
+        ICON("icon"),
+        ICON_AND_TEXT("icon_and_text"),
+        TEXT("text");
+
+        companion object {
+            fun from(key: String?): LabelMode? = values().firstOrNull { it.storageKey == key }
+        }
+    }
+
+    private var barStyleKey by prefOption("nav_bar_style", "")
+    private var iconStyleKey by prefOption("nav_bar_icon_style", "")
+    private var labelModeKey by prefOption("nav_bar_label_mode", "")
+    private var badgeTabIndices by prefOption("nav_bar_badge_tabs", emptySet<String>())
+
+    // 旧开关：仅作为迁移输入，新代码不再写入
+    private var legacyUseFloating by prefOption("nav_bar_use_floating", true)
+    private var legacyUseBackdrop by prefOption("nav_bar_use_backdrop", true)
+    private var legacyUseWechatIcons by prefOption("nav_bar_use_wechat_icons", false)
+    private var legacyHideLabels by prefOption("nav_bar_hide_labels", false)
+    private var legacyShowFinderBadge by prefOption("nav_bar_show_finder_badge", true)
+
+    val barStyle: BarStyle
+        get() = BarStyle.from(barStyleKey) ?: run {
+            val derived = when {
+                !legacyUseFloating -> BarStyle.DOCKED
+                legacyUseBackdrop -> BarStyle.LIQUID_GLASS
+                else -> BarStyle.FLOATING
+            }
+            barStyleKey = derived.storageKey
+            derived
+        }
+
+    val iconStyle: IconStyle
+        get() = IconStyle.from(iconStyleKey) ?: run {
+            val derived = if (legacyUseWechatIcons) IconStyle.NATIVE else IconStyle.MATERIAL
+            iconStyleKey = derived.storageKey
+            derived
+        }
+
+    val labelMode: LabelMode
+        get() = LabelMode.from(labelModeKey) ?: run {
+            val derived = if (legacyHideLabels) LabelMode.ICON else LabelMode.ICON_AND_TEXT
+            labelModeKey = derived.storageKey
+            derived
+        }
+
+    // ↓↓↓ 只读派生属性：「渲染零改动」的关键 ↓↓↓
+    private val useFloating: Boolean
+        get() = barStyle == BarStyle.FLOATING || barStyle == BarStyle.LIQUID_GLASS
+
+    private val useBackdrop: Boolean
+        get() = barStyle == BarStyle.LIQUID_GLASS
+
+    private val useWechatIcons: Boolean
+        get() = iconStyle == IconStyle.NATIVE
+
+    private val hideLabels: Boolean
+        get() = labelMode == LabelMode.ICON
+
+    private val textOnlyLabels: Boolean
+        get() = labelMode == LabelMode.TEXT
+
+    /**
+     * 每页独立角标（0924 把「发现页角标」总开关拆成了逐页开关）。
+     *
+     * 迁移口径与上面三个枚举一致：新键缺席时用旧开关 `nav_bar_show_finder_badge` 推导一次并落盘。
+     * 否则老用户即使把发现页角标关掉了，升级后也会被默认值（全开）重新打开。
+     */
+    private val badgeTabs: Set<String>
+        get() {
+            WePrefs.getStringSet("nav_bar_badge_tabs")?.let { return it }
+            val derived = if (legacyShowFinderBadge) {
+                TAB_ITEMS.map { it.wechatIndex.toString() }.toSet()
+            } else {
+                emptySet()
+            }
+            badgeTabIndices = derived
+            return derived
+        }
+
+    private val showFinderBadge: Boolean
+        get() = 2 in normalizedEnabledTabIndices(badgeTabs)
+
     private var autoHideOnScroll by prefOption("nav_bar_auto_hide_on_scroll", false)
-    private var useBackdrop by prefOption("nav_bar_use_backdrop", true)
     private var animatePageChange by prefOption("nav_bar_animate_page_change", true)
-    private var showFinderBadge by prefOption("nav_bar_show_finder_badge", true)
-    private var hideLabels by prefOption("nav_bar_hide_labels", false)
     private var blurRadius by prefOption("nav_bar_blur_radius", 8)
     private var dynamicGravityHighlight by prefOption("nav_bar_dynamic_gravity_highlight", false)
     private var barScalePercent by prefOption("nav_bar_scale", 100)
@@ -195,7 +302,16 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
         // the meaning of already-instantiated positions.
         val orderedTabItems = normalizedTabOrder()
         val enabledTabIndices = normalizedEnabledTabIndices()
-        val visibleTabItems = orderedTabItems.filter { it.wechatIndex in enabledTabIndices }
+
+        // 0924：「微信原生」样式 = 功能启用但不插手底栏（完全保持微信自己的渲染）
+        if (barStyle == BarStyle.NATIVE) return
+
+        // 0924：「隐藏」样式 = 清空可见页集合，直接复用下方已有的隐藏分支
+        //（该分支会移除底栏子 View 并同步关掉 FrostedContentView 磨砂）
+        val effectiveEnabledIndices =
+            if (barStyle == BarStyle.HIDDEN) emptySet<Int>() else enabledTabIndices
+
+        val visibleTabItems = orderedTabItems.filter { it.wechatIndex in effectiveEnabledIndices }
 
         if (visibleTabItems.isEmpty()) {
             WeMainActivityBeautifyApi.methodDoOnCreate.hookAfter {
@@ -702,14 +818,15 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                                     }
                                                 }
                                             ) {
+                                                // 0924：标签内容=「文本」时不渲染图标
                                                 val wechatIconFloating = wechatTabIcons.value[item.wechatIndex]
-                                                if (useWechatIcons && wechatIconFloating != null) {
+                                                if (!textOnlyLabels && useWechatIcons && wechatIconFloating != null) {
                                                     Image(
                                                         bitmap = wechatIconFloating,
                                                         contentDescription = label,
                                                         modifier = Modifier.size(24.dp),
                                                     )
-                                                } else {
+                                                } else if (!textOnlyLabels) {
                                                     Crossfade(
                                                         targetState = isSelected,
                                                         animationSpec = tween(200),
@@ -971,24 +1088,104 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            var useFloatingInput by remember { mutableStateOf(useFloating) }
+            var barStyleInput by remember { mutableStateOf(barStyle) }
+            var iconStyleInput by remember { mutableStateOf(iconStyle) }
+            var labelModeInput by remember { mutableStateOf(labelMode) }
             var autoHideOnScrollInput by remember { mutableStateOf(autoHideOnScroll) }
-            var useBackdropInput by remember { mutableStateOf(useBackdrop) }
-            var useWechatIconsInput by remember { mutableStateOf(useWechatIcons) }
-            var animatePageChangeInput by remember { mutableStateOf(animatePageChange) }
-            var showFinderBadgeInput by remember { mutableStateOf(showFinderBadge) }
-            var hideLabelsInput by remember { mutableStateOf(hideLabels) }
-            var blurRadiusInput by remember { mutableFloatStateOf(blurRadius.toFloat()) }
             var dynamicGravityHighlightInput by remember { mutableStateOf(dynamicGravityHighlight) }
+            var animatePageChangeInput by remember { mutableStateOf(animatePageChange) }
+            var blurRadiusInput by remember { mutableFloatStateOf(blurRadius.toFloat()) }
             var barScaleInput by remember {
                 mutableFloatStateOf(barScalePercent.coerceIn(MIN_BAR_SCALE, MAX_BAR_SCALE).toFloat())
             }
+
+            // 0924：底栏样式决定哪些子项生效
+            val floatingInput = barStyleInput == BarStyle.FLOATING || barStyleInput == BarStyle.LIQUID_GLASS
+            val glassInput = barStyleInput == BarStyle.LIQUID_GLASS
+            val zeroPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
 
             AlertDialogContent(
                 title = { Text(stringResource(R.string.feature_replace_navigation_bar_name)) },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState())) {
-                        SegmentedColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        SegmentedColumn(
+                            title = stringResource(R.string.nav_bar_style),
+                            contentPadding = zeroPadding,
+                        ) {
+                            listOf(
+                                BarStyle.NATIVE to R.string.nav_bar_style_native,
+                                BarStyle.DOCKED to R.string.nav_bar_style_docked,
+                                BarStyle.FLOATING to R.string.nav_bar_style_floating,
+                                BarStyle.HIDDEN to R.string.nav_bar_style_hidden,
+                                BarStyle.LIQUID_GLASS to R.string.nav_bar_style_liquid_glass,
+                            ).forEach { option ->
+                                item {
+                                    RadioButtonWidget(
+                                        iconPlaceholder = false,
+                                        title = stringResource(option.second),
+                                        selected = barStyleInput == option.first,
+                                        onClick = {
+                                            val picked = option.first
+                                            barStyleInput = picked
+                                            barStyleKey = picked.storageKey
+                                            // 退出悬浮/液态玻璃时重置滚动隐藏态
+                                            if (picked != BarStyle.FLOATING && picked != BarStyle.LIQUID_GLASS) {
+                                                barScrollHiddenState.value = false
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        SegmentedColumn(
+                            title = stringResource(R.string.nav_icon_style),
+                            contentPadding = zeroPadding,
+                            modifier = Modifier.padding(top = 16.dp),
+                        ) {
+                            listOf(
+                                IconStyle.MATERIAL to R.string.nav_icon_style_material,
+                                IconStyle.NATIVE to R.string.nav_icon_style_native,
+                            ).forEach { option ->
+                                item {
+                                    RadioButtonWidget(
+                                        iconPlaceholder = false,
+                                        title = stringResource(option.second),
+                                        selected = iconStyleInput == option.first,
+                                        onClick = {
+                                            iconStyleInput = option.first
+                                            iconStyleKey = option.first.storageKey
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        SegmentedColumn(
+                            title = stringResource(R.string.nav_label_content),
+                            contentPadding = zeroPadding,
+                            modifier = Modifier.padding(top = 16.dp),
+                        ) {
+                            listOf(
+                                LabelMode.ICON to R.string.nav_label_icon,
+                                LabelMode.ICON_AND_TEXT to R.string.nav_label_icon_and_text,
+                                LabelMode.TEXT to R.string.nav_label_text,
+                            ).forEach { option ->
+                                item {
+                                    RadioButtonWidget(
+                                        iconPlaceholder = false,
+                                        title = stringResource(option.second),
+                                        selected = labelModeInput == option.first,
+                                        onClick = {
+                                            labelModeInput = option.first
+                                            labelModeKey = option.first.storageKey
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        SegmentedColumn(contentPadding = zeroPadding, modifier = Modifier.padding(top = 16.dp)) {
                             item {
                                 BaseWidget(
                                     iconPlaceholder = false,
@@ -1016,18 +1213,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                     },
                                 )
                             }
-                            item {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = stringResource(R.string.nav_use_floating_bar),
-                                    checked = useFloatingInput,
-                                    onCheckedChange = {
-                                        useFloatingInput = it
-                                        useFloating = it
-                                    },
-                                )
-                            }
-                            item(animatedVisibility = useFloatingInput) {
+                            item(animatedVisibility = floatingInput) {
                                 SwitchWidget(
                                     iconPlaceholder = false,
                                     title = stringResource(R.string.nav_auto_hide_bar),
@@ -1040,26 +1226,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                     },
                                 )
                             }
-                            item(animatedVisibility = useFloatingInput) {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = stringResource(R.string.nav_use_liquid_glass),
-                                    checked = useBackdropInput,
-                                    onCheckedChange = {
-                                        useBackdropInput = it
-                                        useBackdrop = it
-                                    },
-                                )
-                            }
-                            item {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = stringResource(R.string.nav_use_wechat_icons),
-                                    checked = useWechatIconsInput,
-                                    onCheckedChange = { useWechatIconsInput = it; useWechatIcons = it },
-                                )
-                            }
-                            item(animatedVisibility = useFloatingInput && useBackdropInput) {
+                            item(animatedVisibility = glassInput) {
                                 SwitchWidget(
                                     iconPlaceholder = false,
                                     title = stringResource(R.string.nav_dynamic_gravity_highlight),
@@ -1071,7 +1238,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                     },
                                 )
                             }
-                            item(animatedVisibility = useFloatingInput && useBackdropInput) {
+                            item(animatedVisibility = glassInput) {
                                 BaseItemContainer {
                                     val radius = blurRadiusInput.roundToInt()
                                     IntNumberPickerWidget(
@@ -1087,17 +1254,6 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                         },
                                     )
                                 }
-                            }
-                            item(animatedVisibility = useFloatingInput) {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = stringResource(R.string.nav_hide_labels),
-                                    checked = hideLabelsInput,
-                                    onCheckedChange = {
-                                        hideLabelsInput = it
-                                        hideLabels = it
-                                    },
-                                )
                             }
                             item {
                                 BaseItemContainer {
@@ -1115,18 +1271,6 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                     )
                                 }
                             }
-                            item {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = stringResource(R.string.nav_show_discover_badge),
-                                    description = stringResource(R.string.nav_discover_badge_summary),
-                                    checked = showFinderBadgeInput,
-                                    onCheckedChange = {
-                                        showFinderBadgeInput = it
-                                        showFinderBadge = it
-                                    },
-                                )
-                            }
                         }
                     }
                 },
@@ -1141,6 +1285,10 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
             val currentOrder = remember { normalizedTabOrder().toMutableStateList() }
             val currentEnabled = remember {
                 normalizedEnabledTabIndices().toMutableStateList()
+            }
+            // 0924：每个页面独立的角标开关
+            val currentBadges = remember {
+                normalizedEnabledTabIndices(badgeTabs).toMutableStateList()
             }
 
             AlertDialogContent(
@@ -1211,6 +1359,24 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                         }
                                     },
                                 )
+                                Text(
+                                    text = stringResource(R.string.nav_badge_toggle_description, ""),
+                                    modifier = Modifier.padding(start = 8.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Switch(
+                                    checked = item.wechatIndex in currentBadges,
+                                    onCheckedChange = { badged ->
+                                        if (badged) {
+                                            if (item.wechatIndex !in currentBadges) {
+                                                currentBadges += item.wechatIndex
+                                            }
+                                        } else {
+                                            currentBadges.remove(item.wechatIndex)
+                                        }
+                                    },
+                                )
                             }
                         }
                     }
@@ -1220,6 +1386,7 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                     Button(onClick = {
                         tabOrder = currentOrder.joinToString(",") { it.wechatIndex.toString() }
                         enabledTabs = currentEnabled.map(Int::toString).toSet()
+                        badgeTabIndices = currentBadges.map(Int::toString).toSet()
                         onDismiss()
                     }) { Text(stringResource(R.string.dialog_confirm)) }
                 },

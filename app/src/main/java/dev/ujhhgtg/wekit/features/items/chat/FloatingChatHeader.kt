@@ -2120,7 +2120,7 @@ object FloatingChatHeader : ClickableFeature(), IResolveDex {
         ) {
             text.setPaddingRelative(original[0], original[1], reservedEnd, original[3])
         }
-        badge.text = "+$remainingCount"
+        badge.text = group.context.getString(R.string.chat_floating_header_overflow_badge, remainingCount)
         val color = text.currentTextColor
         badge.setTextColor(color and 0x00FFFFFF or (0x99 shl 24))
         badge.visibility = View.VISIBLE

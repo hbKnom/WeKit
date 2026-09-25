@@ -70,6 +70,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -1980,7 +1981,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
 
                     when (type) {
                         GroupType.MANUAL -> {
-                            Text(stringResource(R.string.conversation_group_selected_count, matchedCount))
+                            Text(pluralStringResource(R.plurals.conversation_group_selected_count, matchedCount, matchedCount))
                             val context = LocalContext.current
                             Button(
                                 modifier = Modifier.fillMaxWidth(),
@@ -2036,7 +2037,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                                 maxLines = 4
                             )
                             Text(
-                                text = stringResource(R.string.conversation_group_match_count, matchedCount),
+                                text = pluralStringResource(R.plurals.conversation_group_match_count, matchedCount, matchedCount),
                                 style = MaterialTheme.typography.bodyMedium
                             )
                             Text(

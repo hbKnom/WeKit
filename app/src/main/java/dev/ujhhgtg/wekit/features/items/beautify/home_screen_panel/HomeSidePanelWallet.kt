@@ -76,8 +76,15 @@ object HomeSidePanelWalletBalanceSource {
     fun onCacheWrite(key: Any?, value: Any?) {
         synchronized(lock) {
             if ((key as? Enum<*>)?.name != BALANCE_KEY) return
-            if (value !is Long) return
-            _updates.value = value
+            // 账户余额在不同写入路径下可能是 Long / 包装 Number /
+            // 字符串，先归一到 Long 再推送，避免类型不匹配导致余额不刷新。
+            val fen = when (value) {
+                is Long -> value
+                is Number -> value.toLong()
+                is String -> value.toLongOrNull()
+                else -> null
+            } ?: return
+            _updates.value = fen
         }
     }
 }

@@ -160,6 +160,11 @@ object HomeSidePanel : SwitchFeature(), IResolveDex {
         methodWalletCacheWrite.hookAfter {
             HomeSidePanelWalletBalanceSource.onCacheWrite(args[0], args[1])
         }
+        // 余额也会从其他通道变化（支付页写入、服务端回包后的读取等），
+        // 只监听写入会漏掉这些更新，在读取路径上补一次同步。
+        methodWalletCacheRead.hookAfter {
+            HomeSidePanelWalletBalanceSource.onCacheWrite(args[0], result)
+        }
         LauncherUI::class.reflekt().firstMethodOrNull {
             name = "enableEdge2Edge"
             parameters()
