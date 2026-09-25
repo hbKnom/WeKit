@@ -132,9 +132,9 @@ data class XmlAttribute(val name: String, val id: Int, val value: XmlValue)
 /** Typed attribute value understood by the resource writer. */
 sealed interface XmlValue {
     data class Reference(val id: Int) : XmlValue
-    data class NamedReference(val type: String, val name: String) : XmlValue
+    data class NamedReference(val type: kotlin.String, val name: kotlin.String) : XmlValue
     data class Color(val argb: Int) : XmlValue
-    data class Dimension(val dp: Float) : XmlValue
+    data class Dimension(val dp: kotlin.Float) : XmlValue
     data class Integer(val value: Int) : XmlValue
     data class Boolean(val value: kotlin.Boolean) : XmlValue
     data class Float(val value: kotlin.Float) : XmlValue

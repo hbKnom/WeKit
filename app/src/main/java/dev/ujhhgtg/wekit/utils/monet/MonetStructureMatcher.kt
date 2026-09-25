@@ -79,18 +79,29 @@ object MonetStructureMatcher {
                 rule.requiredDexEvidence.mapNotNull { token ->
                     token.removePrefix("neighbor:").takeIf { token.startsWith("neighbor:") }
                 }
-            }.associateWith { role -> candidates.entries.single { it.key.id == role }.value.single() }
+            }.mapNotNull { role ->
+                candidates.entries.firstOrNull { it.key.id == role }?.value?.singleOrNull()
+                    ?.let { role to it }
+            }.toMap()
             val requestedIds = (anchored.values.flatten() + neighborIds.values).distinct().sorted()
-            val evidence = provider.query(requestedIds.map { id ->
-                val node = requireNotNull(graph.node(id))
-                MonetDexCandidate(id, node.key.type, node.key.name)
-            })
-            val byId = evidence.distinctBy { it.resourceId }.associateBy { it.resourceId }
-            anchored.mapValues { (rule, ids) ->
-                ids.filterTo(linkedSetOf()) { id ->
-                    byId[id]?.methods.orEmpty().any { method ->
-                        val tokens = method.tokens(neighborIds)
-                        tokens.containsAll(rule.requiredDexEvidence)
+            // DexKit 不可用、扫描失败、图里取不到节点，都只退化成「结构消歧」：
+            // 歧义角色的候选原样保留，其余角色照常解析，绝不把整次解析打断。
+            val evidence = runCatching {
+                provider.query(requestedIds.mapNotNull { id ->
+                    val node = graph.node(id) ?: return@mapNotNull null
+                    MonetDexCandidate(id, node.key.type, node.key.name)
+                })
+            }.onFailure { WeLogger.w(TAG, "DEX 证据扫描失败，改用结构消歧", it) }.getOrDefault(emptyList())
+            if (evidence.isEmpty()) {
+                emptyMap()
+            } else {
+                val byId = evidence.distinctBy { it.resourceId }.associateBy { it.resourceId }
+                anchored.mapValues { (rule, ids) ->
+                    ids.filterTo(linkedSetOf()) { id ->
+                        byId[id]?.methods.orEmpty().any { method ->
+                            val tokens = method.tokens(neighborIds)
+                            tokens.containsAll(rule.requiredDexEvidence)
+                        }
                     }
                 }
             }
@@ -166,6 +177,9 @@ object MonetStructureMatcher {
             // Reuse the type-indexed node list built for the evidence scan instead of rebuilding it
             // for every rule (hundreds of rules × tens of thousands of resources).
             val nodesOfType = nodesByType.getValue(rule.type)
+            // 单个角色的特征计算失败（某版本没有这块资源 / 基线断言不成立）只让**该角色缺席**。
+            // 旧实现让 `require` 直接抛出去，用户看到的就是整次「解析失败」（解析报错的主要来源之一）。
+            val matchedCandidates = runCatching {
             val baseline = COLOR_BASELINES[rule.id]
             val colorCandidates = baseline?.let { expected ->
                 nodesOfType.filterTo(linkedSetOf()) { node ->
@@ -206,7 +220,7 @@ object MonetStructureMatcher {
                         (!rule.id.endsWith("received") || graph.xmlTrees(node.id).any { it.name == "selector" })
                 }?.id
             }?.let(::setOf)
-            val matchedCandidates = if (semanticCandidates != null) {
+            if (semanticCandidates != null) {
                 semanticCandidates
             } else if (static != null && (structural.isEmpty() || static.any { it in structural })) {
                 static.intersect(structural).takeIf { it.isNotEmpty() } ?: static
@@ -218,6 +232,9 @@ object MonetStructureMatcher {
                     structural.intersect(colors).takeIf { it.isNotEmpty() } ?: colors
                 } ?: structural
             }
+            }.onFailure {
+                WeLogger.w(TAG, "角色 ${rule.id} 特征计算失败，跳过该角色", it)
+            }.getOrDefault(emptySet())
             matched++
             onProgress(matched, MONET_RULES.size, "已检查角色候选：${rule.id}")
             matchedCandidates

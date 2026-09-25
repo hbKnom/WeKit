@@ -181,7 +181,7 @@ object JevProtocol {
         val confidence = probability(answer, "confidence")
         val distribution = normalizeDistribution(answer.optJSONObject("probabilities"), options)
         val chosen = normalizeChoice(answer.optString("choice"), options)
-            ?: distribution.entries.maxByOrNull { it.value }?.key?.takeIf { it > 0.0 }
+            ?: distribution.maxByOrNull { it.value }?.takeIf { it.value > 0.0 }?.key
             ?: error("$key 未给出有效选项：${answer.optString("choice")}")
         val total = distribution.values.sum()
         val values = if (total > 0.0) {

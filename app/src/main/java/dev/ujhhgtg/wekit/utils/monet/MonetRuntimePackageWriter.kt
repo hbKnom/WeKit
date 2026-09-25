@@ -16,7 +16,7 @@ import java.util.zip.ZipEntry
 
 /**
  * Writes the runtime resource package that [MonetEngine] hands to
- * `android.content.res.loader.ResourcesProvider.loadFromTable`.
+ * `android.content.res.loader.ResourcesProvider.loadFromApk`.
  *
  * This replaces the 09-19 RRO/Magisk pipeline (`MonetOverlayApkWriter` + `MonetModulePackager` +
  * `MonetApkSigner`). Consequences that drove the rewrite:

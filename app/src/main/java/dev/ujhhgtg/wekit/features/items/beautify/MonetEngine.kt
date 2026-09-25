@@ -82,7 +82,7 @@ import kotlin.io.path.div
  * Rebuilt for 09-25. The previous design generated signed RRO APKs and shipped them inside a Magisk
  * module, which meant rooting the device, a reboot, and a separate "module generator" feature. The
  * current one writes `runtime-<fingerprint>-<options>.apk` under the module cache and hands it to
- * `ResourcesProvider.loadFromTable`, so:
+ * `ResourcesProvider.loadFromApk`, so:
  *
  *  - no root, no Magisk/KernelSU/APatch, no reboot;
  *  - changing an option regenerates the package and re-injects it live;
@@ -118,6 +118,19 @@ object MonetEngine : ClickableFeature() {
     private var bubbleStyleName by prefOption(KEY_BUBBLE_STYLE, MonetBubbleStyle.MODERN.name)
     private var multiSceneCornersPref by prefOption(KEY_MULTI_SCENE_CORNERS, false)
     private var errorColorsPref by prefOption(KEY_ERROR_COLORS, false)
+
+    /**
+     * DEX 证据提供者：歧义角色交给 [MonetDexEvidenceCollector]（旧版成功运行时就是这么消歧的）。
+     *
+     * DexKit 没起来（未 root / native 没加载）或扫描失败都只返回空表 —— 调用方
+     * [MonetStructureMatcher.resolveCandidateIds] 拿到空表会退化成纯结构消歧，
+     * 绝不会因为「拿不到证据」把整次解析打断成「解析出错」。
+     */
+    private val dexEvidenceProvider = MonetDexEvidenceProvider { candidates ->
+        runCatching { MonetDexEvidenceCollector.collect(candidates) }
+            .onFailure { WeLogger.w(TAG, "DEX 证据收集失败，改用结构消歧", it) }
+            .getOrDefault(emptyList())
+    }
 
     private val bindingsFile: File by lazy { (KnownPaths.moduleData / "monet_bindings.json").toFile() }
     private val runtimeDir: File by lazy { (KnownPaths.moduleCache / "monet").toFile() }
@@ -284,7 +297,7 @@ object MonetEngine : ClickableFeature() {
                     fallbackPalette = runCatching { MonetPaletteFactory.fromTheme(app) }.getOrNull(),
                     // 「哪些角色该配对哪个资源」的歧义用 DEX 证据消歧（旧版成功运行时的做法）。
                     // DexKit 不可用／扫描失败都只退化成结构消歧，不影响其余角色。
-                    dexProvider = DEX_EVIDENCE_PROVIDER,
+                    dexProvider = dexEvidenceProvider,
                 ) { completed, total, detail ->
                     _progress.value = MonetResolveProgress(
                         MonetResolveStage.RESOLVING_ROLES,
@@ -337,7 +350,9 @@ object MonetEngine : ClickableFeature() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         val resources = HostInfo.application.resources
         ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
-            val provider = ResourcesProvider.loadFromTable(descriptor)
+            // 运行时包是「resources.arsc + res/*.xml」打出来的 APK（无 AndroidManifest、不安装），
+            // 必须走 loadFromApk：loadFromTable 期望的是**裸 .arsc** fd，且要额外传 AssetsProvider。
+            val provider = ResourcesProvider.loadFromApk(descriptor)
             val loader = android.content.res.loader.ResourcesLoader().apply { addProvider(provider) }
             resources.addLoaders(loader)
         }
