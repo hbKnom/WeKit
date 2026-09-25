@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package dev.ujhhgtg.wekit.features.items.chat
 
-import android.graphics.Bitmapimport android.graphics.Canvas
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Picture
 import android.graphics.Rect
