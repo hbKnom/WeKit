@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,17 +23,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,9 +46,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -55,15 +62,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Add
+import com.composables.icons.materialsymbols.outlined.Article
 import com.composables.icons.materialsymbols.outlined.Bolt
 import com.composables.icons.materialsymbols.outlined.Check
 import com.composables.icons.materialsymbols.outlined.Check_circle
 import com.composables.icons.materialsymbols.outlined.Chevron_right
+import com.composables.icons.materialsymbols.outlined.Close
 import com.composables.icons.materialsymbols.outlined.Content_copy
 import com.composables.icons.materialsymbols.outlined.Delete
 import com.composables.icons.materialsymbols.outlined.Download
 import com.composables.icons.materialsymbols.outlined.Edit
+import com.composables.icons.materialsymbols.outlined.Error
 import com.composables.icons.materialsymbols.outlined.History
+import com.composables.icons.materialsymbols.outlined.Info
 import com.composables.icons.materialsymbols.outlined.Memory
 import com.composables.icons.materialsymbols.outlined.Refresh
 import com.composables.icons.materialsymbols.outlined.Schedule
@@ -77,11 +88,15 @@ import com.composables.icons.materialsymbols.outlined.Visibility
 import com.composables.icons.materialsymbols.outlined.Visibility_off
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
+import dev.ujhhgtg.wekit.ui.content.IconButton
+import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
+import dev.ujhhgtg.wekit.ui.content.m3.LocalSegmentedItemShape
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
+import java.util.Locale
 
 /**
- * 聊天记录分析 —— Compose UI 组件（排版规范版 v2）
+ * 聊天记录分析 —— Compose UI 组件（设计系统版 v3）
  *
  * 全部弹窗基于 showComposeDialog + AlertDialogContent（WeKit 标准）。
  *
@@ -92,8 +107,20 @@ import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
  *  2. **绝不越出容器**：所有文本都带 maxLines + TextOverflow.Ellipsis
  *     （长文本该换行的换行、该省略的省略），所有 Row 的宽度都由 weight /
  *     fillMaxWidth 分配，不靠"内容自己撑"，因此不存在把兄弟节点顶出去的情况。
- *  3. **数值只有一个来源**：圆角、间距、字号、进度条厚度全部取自下文的
- *     设计规范常量（Design Tokens），不在各处写魔法数字。
+ *  3. **数值只有一个来源**：圆角、间距、字号、颜色、进度条厚度全部取自下文的
+ *     设计规范常量（Design Tokens）与语义色（Tone*），不在各处写魔法数字、
+ *     更不写死颜色 —— 写死的色值在深色主题下会直接失去对比度。
+ *
+ * ── 设计系统（v3 新增，为什么这样定）──────────────────────────────────
+ *  间距：4dp 基准的有限梯度（2/4/6/8/10/12/16），跨弹窗复用同一组常量，
+ *        于是"标题→正文""卡片→卡片"的节奏在任何屏上都一致。
+ *  圆角：卡片 20 / 卡内块 16 / 胶囊 10 / 徽章 8 —— 圆角随层级递减，
+ *        越靠里的元素越"小"，视觉上自然收敛。
+ *  颜色：全部映射到 MaterialTheme 的语义槽位（见 [ToneAccent] 等），
+ *        只保留"强调/次强调/第三强调/危险/文本/表面/轨道"七种语义，
+ *        深浅主题自动适配，不再出现写死的金色银色。
+ *  层级：弹窗标题块（Hero）→ 分节卡片（带序号 + 计数徽章）→ 卡内行，
+ *        三级之间靠留白与字号拉开，而不是靠加线加框。
  */
 internal object ChatAnalysisUi {
 
@@ -107,7 +134,7 @@ internal object ChatAnalysisUi {
     private val RadiusChip = 10.dp
     private val RadiusBadge = 8.dp
 
-    // ---- 间距梯度（4dp 基准）：2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 ----
+    // ---- 间距梯度（4dp 基准）：2 / 4 / 6 / 8 / 10 / 12 / 16 ----
     private val Space2 = 2.dp
     private val Space4 = 4.dp
     private val Space6 = 6.dp
@@ -126,12 +153,12 @@ internal object ChatAnalysisUi {
     /** 相邻分节卡片之间的留白（比行距大一档，分节感来自留白而不是线） */
     private val SectionGap = Space12
 
-    /** 胶囊之间的留白 */
+    /** 胶囊 / 芯片之间的留白 */
     private val ChipGap = Space6
 
     // ---- 组件尺寸 ----
     /** KPI 数字卡片的最小高度（保证一行两格高度一致） */
-    private val KpiCellMinH = 92.dp
+    private val KpiCellMinH = 96.dp
 
     /** KPI 网格的列/行间距 */
     private val KpiGap = Space10
@@ -145,6 +172,15 @@ internal object ChatAnalysisUi {
     /** 触控友好的图标按钮边长（44dp ≥ 无障碍最小触控尺寸） */
     private val IconTouchSize = 44.dp
 
+    /** 会话首字方块边长（报告 / 选择页的头像位） */
+    private val GlyphTileSize = 44.dp
+
+    /** 状态图标圆底边长 */
+    private val StatusIconSize = 40.dp
+
+    /** 步骤点直径（测试进度条上的序号圆点） */
+    private val StepDotSize = 20.dp
+
     /** 报告弹窗正文区的兜底高度（无高度预算上下文时使用） */
     private val DialogBodyFallback = 360.dp
 
@@ -152,8 +188,14 @@ internal object ChatAnalysisUi {
     /** 弹窗总高上限 = 可用高度 × 0.9（留出上下呼吸空间，绝不顶满） */
     private const val DialogScreenFraction = 0.9f
 
-    /** 预留：标题 + 分隔线 + 按钮行 + 内边距（实测 ~160dp，留足余量） */
-    private val DialogChrome = 184.dp
+    /**
+     * 弹窗框架预留高度：标题块（Hero 最多两行 + 副标题 + 胶囊）+ 分隔线 + 按钮区
+     * （v3 起按钮区最多两行）+ 内边距。实测 ~200dp，这里留到 216dp。
+     *
+     * 为什么宁可高估：本值只用于「扣减正文高度」，高估只会让正文短一点（仍然滚动），
+     * 低估则会让正文把按钮顶出弹窗（AlertDialogContent 的 Surface 会直接裁掉）。
+     */
+    private val DialogChrome = 216.dp
 
     /** 弹窗总高下限 / 正文高度下限（超小屏也要能看能点） */
     private val MinDialogHeight = 320.dp
@@ -162,10 +204,67 @@ internal object ChatAnalysisUi {
     /** 判断宿主约束是否"无界"的阈值（超过即视为无界，退回屏幕高度估算） */
     private const val UnboundedDp = 4000f
 
-    // ---- 语义配色（与 PNG 导出保持同一套观感）----
-    private val RankGold = Color(0xFFD89A16)
-    private val RankSilver = Color(0xFF7F8C9B)
-    private val RankBronze = Color(0xFFB9754A)
+    // ---- 字号微调（只在主题字号不够用时覆盖）----
+    /** 徽章内数字字号 */
+    private val FsBadge = 11.sp
+
+    /** 正文行距（bodyMedium 默认 20sp → 23sp：长段落更透气） */
+    private val LhBody = 23.sp
+
+    /** 分节标题字距（加一点字距，中文标题更像"标题"） */
+    private val LsHeader = 0.5.sp
+
+    // ---- 语义色映射（唯一颜色来源，全部取自 MaterialTheme）----
+    /** 强调：主行动、当前项、主要数据 */
+    private val ToneAccent: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.primary
+
+    /** 次强调：次要分组 / 载体偏好 / 高频词 */
+    private val ToneAlt: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.secondary
+
+    /** 第三强调：成功态、AI 相关、活跃频次 */
+    private val ToneThird: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.tertiary
+
+    /** 危险 / 错误态 */
+    private val ToneDanger: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.error
+
+    /** 正文色 */
+    private val ToneText: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.onSurface
+
+    /** 次要文本色（说明、单位、辅助信息） */
+    private val ToneTextDim: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.onSurfaceVariant
+
+    /** 卡片底色 */
+    private val ToneSurface: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.surfaceBright
+
+    /** 进度条轨道 / 未激活底 */
+    private val ToneTrack: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.surfaceVariant
+
+    /**
+     * 强调色底上的前景色。
+     *
+     * 为什么用 surface 而不是写死 Color.White：surface 在浅色主题下近白、深色主题下近黑，
+     * 恰好与各自主题里的 primary/secondary/tertiary 形成对比；写死白色在深色主题的
+     * 浅色调强调色上会糊成一片。
+     */
+    private val OnAccent: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.surface
 
     /** 统一卡片描边：浅色细边，深浅主题下都规整 */
     private val CardStroke: BorderStroke
@@ -199,6 +298,37 @@ internal object ChatAnalysisUi {
         }
     }
 
+    /**
+     * 弹窗骨架 —— 把「高度预算 → AlertDialogContent → 正文限高」这套固定动作收成一处。
+     *
+     * 为什么要有它：v3 有 9 个弹窗，如果每个都手写一遍 heightIn(max = totalDp) /
+     * 正文 heightIn(max = bodyDp)，早晚会漏掉一个（漏掉的那个必然越出窗口）。
+     * 收成一个入口后，"正文一律内部滚动"这件事在结构上就不可能被忘记：
+     * [body] 的形参就是「正文最大高度」，调用方不拿到它就没法写内容。
+     *
+     * @param title 标题块（[DialogTitle] 或 [DialogHero]）。
+     * @param confirmButton 主行动区（右对齐，可传一行或两行）。
+     * @param dismissButton 次行动（M3 惯例：文字按钮，视觉弱于主行动）。
+     * @param body 正文；形参为正文可用高度，必须用它约束滚动容器。
+     */
+    @Composable
+    private fun BudgetedDialog(
+        title: @Composable () -> Unit,
+        confirmButton: (@Composable () -> Unit)? = null,
+        dismissButton: (@Composable () -> Unit)? = null,
+        body: @Composable (bodyDp: Dp) -> Unit,
+    ) {
+        DialogBudget { totalDp, bodyDp ->
+            AlertDialogContent(
+                modifier = Modifier.heightIn(max = totalDp),
+                title = title,
+                text = { body(bodyDp) },
+                confirmButton = confirmButton,
+                dismissButton = dismissButton,
+            )
+        }
+    }
+
     // ==================================================================
     // 二、通用小组件
     // ==================================================================
@@ -206,6 +336,9 @@ internal object ChatAnalysisUi {
     /**
      * 弹窗标题块：主标题（titleLarge/Bold）+ 可选副标题（bodySmall/次要色）。
      * 主标题限 2 行省略、副标题自由换行，长会话名不会把标题区撑爆。
+     *
+     * 副标题不是装饰：每个弹窗都在这里回答"这个弹窗干什么、有什么前提"，
+     * 用户不必靠猜（例如"改动即时保存"「0 = 不限制」）。
      */
     @Composable
     private fun DialogTitle(title: String, subtitle: String? = null) {
@@ -214,6 +347,7 @@ internal object ChatAnalysisUi {
                 title,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
+                color = ToneText,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -222,9 +356,78 @@ internal object ChatAnalysisUi {
                 Text(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = ToneTextDim,
                 )
             }
+        }
+    }
+
+    /**
+     * 报告 / 选择页的标题块（Hero）：会话首字方块 + 标题 + 副标题 + 胶囊行。
+     *
+     * 为什么和 [DialogTitle] 分开：报告弹窗的标题区承担"报告抬头"的职责 ——
+     * 一块彩色首字方块把"这是哪个会话的报告"变成一眼可辨的视觉锚点，
+     * 胶囊行再把时段 / 条数 / AI 状态摊平在标题下面，读者不必往下滚就知道数据口径。
+     *
+     * @param chips 标题下方的胶囊行（FlowRow），传 null 则不占位。
+     */
+    @Composable
+    private fun DialogHero(
+        glyph: String,
+        title: String,
+        accent: Color,
+        subtitle: String? = null,
+        chips: @Composable (() -> Unit)? = null,
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                GlyphTile(glyph, accent)
+                Spacer(Modifier.width(Space12))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = ToneText,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!subtitle.isNullOrBlank()) {
+                        Spacer(Modifier.height(Space2))
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ToneTextDim,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            if (chips != null) {
+                Spacer(Modifier.height(Space10))
+                chips()
+            }
+        }
+    }
+
+    /** 会话首字方块：强调色渐变 + 首字，报告与选择页共用同一个"身份标识"。 */
+    @Composable
+    private fun GlyphTile(glyph: String, accent: Color, size: Dp = GlyphTileSize) {
+        Box(
+            Modifier
+                .size(size)
+                .clip(RoundedCornerShape(RadiusInner))
+                .background(Brush.linearGradient(listOf(accent, accent.copy(alpha = 0.72f)))),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                glyph,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = OnAccent,
+                maxLines = 1,
+            )
         }
     }
 
@@ -233,23 +436,33 @@ internal object ChatAnalysisUi {
      *
      * @param index 可选的序号（从 1 开始）。报告各分节带序号后，读者能一眼看出结构，
      *              设置页的三大块也用同一套序号视觉，全弹窗观感一致。
+     * @param badge 可选的右侧计数徽章（如「5 项指标」）。v3 新增：
+     *              标题右边直接标出这一节有多少条数据，"还有多少没看"一目了然。
      */
     @Composable
     fun SectionHeader(
         title: String,
         accent: Color = MaterialTheme.colorScheme.primary,
         index: Int? = null,
+        badge: String? = null,
     ) {
-        SectionHeaderRow(title, accent, Modifier.padding(top = SectionGap), index = index)
+        SectionHeaderRow(
+            title = title,
+            accent = accent,
+            modifier = Modifier.padding(top = SectionGap),
+            index = index,
+            badge = badge,
+        )
     }
 
     /**
-     * 分节标题的实际渲染：3dp 竖条（accent）+ 序号徽章 + titleSmall/Bold。
+     * 分节标题的实际渲染：3dp 竖条（accent）+ 序号徽章 + titleSmall/Bold + 可选计数徽章。
      * 竖条先 clip 再 background，保证圆角外不会溢出颜色。
      *
-     * @param index 分节序号（从 1 开始）。传 null 表示不是报告分节（如设置页的小标题），
+     * @param index 分节序号（从 1 开始）。传 null 表示不是报告分节（如设置页的状态块），
      *              不显示序号徽章 —— 报告里加了序号后，读者能一眼看出共有几大块、
      *              现在读到第几块，长篇报告的"结构感"明显更强。
+     * @param badge 右侧计数徽章文本（传 null 不占位，标题仍独占剩余宽度）。
      */
     @Composable
     private fun SectionHeaderRow(
@@ -257,6 +470,7 @@ internal object ChatAnalysisUi {
         accent: Color,
         modifier: Modifier = Modifier,
         index: Int? = null,
+        badge: String? = null,
     ) {
         Row(
             modifier = modifier
@@ -282,7 +496,7 @@ internal object ChatAnalysisUi {
                 ) {
                     Text(
                         index.toString(),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = FsBadge),
                         fontWeight = FontWeight.Bold,
                         color = accent,
                         maxLines = 1,
@@ -292,16 +506,24 @@ internal object ChatAnalysisUi {
             }
             Text(
                 title,
-                style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.5.sp),
+                style = MaterialTheme.typography.titleSmall.copy(letterSpacing = LsHeader),
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = ToneText,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (!badge.isNullOrBlank()) {
+                Spacer(Modifier.width(Space8))
+                MetaChip(badge, accent)
+            }
         }
     }
 
+    /**
+     * 大按钮：整宽主行动（保留旧签名，语义等价于 kit 的 Button）。
+     * 单独存在的意义是让"弹窗里唯一的整宽按钮"有统一叫法，避免各处手写 fillMaxWidth。
+     */
     @Composable
     fun BigButton(
         onClick: () -> Unit,
@@ -319,18 +541,26 @@ internal object ChatAnalysisUi {
     /**
      * 元信息胶囊（时段 / 条数 / 模型名这类次级信息）：小字号 + 强调色浅底，
      * 与标题形成明确的字号层级。宽高都由 FlowRow 约束，长文本按测量宽度省略。
+     *
+     * @param icon 可选前置小图标（状态胶囊用它把"通过/失败/提示"再强调一层）。
      */
     @Composable
     private fun MetaChip(
         text: String,
         accent: Color = MaterialTheme.colorScheme.primary,
+        icon: ImageVector? = null,
     ) {
-        Box(
+        Row(
             Modifier
                 .clip(RoundedCornerShape(RadiusChip))
                 .background(accent.copy(alpha = 0.13f))
-                .padding(horizontal = Space8, vertical = Space4)
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (icon != null) {
+                Icon(icon, null, Modifier.size(14.dp), tint = accent)
+                Spacer(Modifier.width(Space4))
+            }
             Text(
                 text,
                 style = MaterialTheme.typography.labelMedium,
@@ -342,19 +572,115 @@ internal object ChatAnalysisUi {
     }
 
     /**
-     * 设置页 / 列表页的「分组卡片」：标题（带序号）+ 内容，统一圆角与描边。
+     * 状态 / 说明横幅：浅色底 + 同色描边 + 前置图标。
+     *
+     * 为什么需要：v3 之前"帮助文字"是裸 Text，和正文混在一起分不清主次；
+     * 收成横幅后，每个弹窗的"说明 / 校验 / 结果"都有统一容器与语义色，
+     * 用户扫一眼颜色就知道是提示还是错误。
+     *
+     * @param tone 语义色（[ToneAccent] 提示 / [ToneThird] 成功 / [ToneDanger] 错误）。
+     */
+    @Composable
+    private fun StatusBanner(
+        text: String,
+        tone: Color,
+        icon: ImageVector,
+        modifier: Modifier = Modifier,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(RadiusInner),
+            color = tone.copy(alpha = 0.10f),
+            border = BorderStroke(1.dp, tone.copy(alpha = 0.25f)),
+            modifier = modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space12, vertical = Space10),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(icon, null, Modifier.size(16.dp), tint = tone)
+                Spacer(Modifier.width(Space8))
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = ToneText,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+
+    /**
+     * 空状态：图标圆底 + 标题 + 说明。**每个可能没有内容的界面都必须走它**，
+     * 绝不允许出现"一个空白框"（用户看到空白只会以为功能坏了）。
+     */
+    @Composable
+    private fun EmptyState(
+        icon: ImageVector,
+        title: String,
+        hint: String,
+        modifier: Modifier = Modifier,
+        tone: Color = MaterialTheme.colorScheme.primary,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(RadiusCard),
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            border = CardStroke,
+            modifier = modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(CardPad),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    Modifier
+                        .size(StatusIconSize)
+                        .clip(CircleShape)
+                        .background(tone.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(icon, null, Modifier.size(20.dp), tint = tone)
+                }
+                Spacer(Modifier.height(Space10))
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = ToneText,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(Space4))
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = ToneTextDim,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+
+    /**
+     * 设置页 / 列表页的「分组卡片」：标题（带序号与计数徽章）+ 内容，统一圆角与描边。
      * 把散落的开关收进卡片后，弹窗从"一长条控件流"变成"几块功能"，层级一眼可辨。
+     *
+     * @param index 序号；传 null 表示这是状态块而非编号分节。
      */
     @Composable
     private fun GroupCard(
         title: String,
-        index: Int,
+        index: Int? = null,
         accent: Color = MaterialTheme.colorScheme.primary,
+        badge: String? = null,
         content: @Composable ColumnScope.() -> Unit,
     ) {
         Surface(
             shape = RoundedCornerShape(RadiusCard),
-            color = MaterialTheme.colorScheme.surfaceBright,
+            color = ToneSurface,
             tonalElevation = 1.dp,
             shadowElevation = 1.dp,
             border = CardStroke,
@@ -365,6 +691,7 @@ internal object ChatAnalysisUi {
                     title = title,
                     accent = accent,
                     index = index,
+                    badge = badge,
                     modifier = Modifier.padding(
                         start = CardPad,
                         end = CardPad,
@@ -378,7 +705,7 @@ internal object ChatAnalysisUi {
         }
     }
 
-    /** 卡片内的行间分隔线（左右与内容对齐） */
+    /** 卡片内的行间分隔线（左右与内容对齐，给 BaseWidget 行留出它们的内部缩进） */
     @Composable
     private fun InCardDivider() {
         HorizontalDivider(
@@ -387,14 +714,26 @@ internal object ChatAnalysisUi {
         )
     }
 
-    /** 排名徽章：Top1-3 金银铜，其余用主色浅底；数字固定宽度，不会挤压昵称以外的空间 */
+    /** 卡内通用细分隔线（不加横向缩进，用于已经处在卡片内边距里的内容） */
+    @Composable
+    private fun ThinDivider(modifier: Modifier = Modifier) {
+        HorizontalDivider(modifier = modifier.fillMaxWidth(), color = RowDivider)
+    }
+
+    /**
+     * 排名徽章：Top1-3 用主/次/第三强调色实底，其余用本节强调色浅底。
+     *
+     * 为什么不再写死金/银/铜：写死的三色在深色主题下与卡片底色对比度不足，
+     * 而且和主题强调色互相打架；改用主题的三个强调槽位后，"前三名"依然醒目，
+     * 却始终落在当前主题的色系里（浅色/深色/动态取色下都成立）。
+     */
     @Composable
     private fun RankBadge(rank: Int, accent: Color) {
         val medal = rank in 1..3
         val container = when (rank) {
-            1 -> RankGold
-            2 -> RankSilver
-            3 -> RankBronze
+            1 -> ToneAccent
+            2 -> ToneAlt
+            3 -> ToneThird
             else -> accent.copy(alpha = 0.16f)
         }
         Box(
@@ -406,11 +745,111 @@ internal object ChatAnalysisUi {
         ) {
             Text(
                 rank.toString(),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = FsBadge),
                 fontWeight = FontWeight.Bold,
-                color = if (medal) Color.White else accent,
+                color = if (medal) OnAccent else accent,
                 maxLines = 1,
             )
+        }
+    }
+
+    /** 右侧「进入 / 编辑」箭头（多处复用，避免每处重写 tint） */
+    @Composable
+    private fun ChevronTrailing() {
+        Icon(
+            MaterialSymbols.Outlined.Chevron_right,
+            null,
+            tint = ToneTextDim,
+        )
+    }
+
+    /** 次行动按钮（关闭 / 取消 / 导出 / 复制）：M3 惯例用文字按钮，视觉让位给主行动 */
+    @Composable
+    private fun DismissAction(text: String, onClick: () -> Unit) {
+        TextButton(onClick = onClick) {
+            Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+
+    /** 带图标的文字按钮（等宽排布时用 weight 兜住，任何字号下都不会把兄弟顶出去） */
+    @Composable
+    private fun SecondaryAction(
+        icon: ImageVector,
+        text: String,
+        onClick: () -> Unit,
+        modifier: Modifier = Modifier,
+    ) {
+        TextButton(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = Space8, vertical = Space6),
+        ) {
+            Icon(icon, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(Space4))
+            Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+
+    /**
+     * 表单输入框（模型配置 / 数值输入共用）。
+     *
+     * 为什么不用裸 OutlinedTextField：每个输入框都需要"标签 + 说明 + 校验态 + 可选尾部按钮"，
+     * 手写四遍必然出现间距不一致。统一在这里定：说明文字永远存在（保证行高一致），
+     * 校验态由 [isError] 驱动（由调用方算好，组合期不做解析）。
+     */
+    @Composable
+    private fun AnalysisTextField(
+        value: String,
+        onValueChange: (String) -> Unit,
+        label: String,
+        helper: String,
+        modifier: Modifier = Modifier,
+        isError: Boolean = false,
+        singleLine: Boolean = true,
+        keyboardType: KeyboardType = KeyboardType.Text,
+        visualTransformation: VisualTransformation = VisualTransformation.None,
+        trailingIcon: (@Composable () -> Unit)? = null,
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            isError = isError,
+            supportingText = { Text(helper, style = MaterialTheme.typography.labelSmall) },
+            singleLine = singleLine,
+            visualTransformation = visualTransformation,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            trailingIcon = trailingIcon,
+            modifier = modifier.fillMaxWidth(),
+        )
+    }
+
+    /** 表单分组卡片（内部左右带卡片内边距，输入框不再各自调间距） */
+    @Composable
+    private fun FormCard(
+        title: String,
+        index: Int? = null,
+        badge: String? = null,
+        accent: Color = MaterialTheme.colorScheme.primary,
+        content: @Composable ColumnScope.() -> Unit,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(RadiusCard),
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(CardPad)
+            ) {
+                SectionHeaderRow(title = title, accent = accent, index = index, badge = badge)
+                Spacer(Modifier.height(CardInnerGap))
+                content()
+            }
         }
     }
 
@@ -431,7 +870,7 @@ internal object ChatAnalysisUi {
 
     private val RangeHints = listOf(
         "今天 00:00 至今",
-        "昨天全天",
+        "昨天全天（00:00 - 24:00）",
         "本周一 00:00 至今",
         "上周一至上周日",
         "本月 1 日至今",
@@ -445,65 +884,93 @@ internal object ChatAnalysisUi {
         onSettings: () -> Unit,
         onClose: () -> Unit,
     ) {
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    DialogTitle(
-                        title = "分析时间范围",
-                        subtitle = "本地统计与 AI 总结都只使用所选范围内的纯文本消息。",
-                    )
-                },
-                text = {
-                    LazyColumn(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp),
-                        verticalArrangement = Arrangement.spacedBy(Space2),
-                    ) {
-                        itemsIndexed(RangeLabels) { index, label ->
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = "分析时间范围",
+                    subtitle = "本地统计与 AI 总结都只读取所选时段内的纯文本消息。",
+                )
+            },
+            dismissButton = { DismissAction("关闭", onClose) },
+        ) { bodyDp ->
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp),
+                verticalArrangement = Arrangement.spacedBy(SectionGap),
+            ) {
+                // 会话卡片置顶：先让用户确认"分析的是哪一个会话"，再看时段。
+                item(key = "session") {
+                    SessionCard(sessionName)
+                }
+                item(key = "ranges") {
+                    GroupCard(title = "统计时段", index = 1, badge = "${RangeLabels.size} 项") {
+                        RangeLabels.forEachIndexed { index, label ->
+                            if (index > 0) InCardDivider()
                             BaseWidget(
                                 icon = RangeIcons[index],
                                 iconPlaceholder = true,
                                 title = label,
-                                description = "统计并总结「$sessionName」该时段内的纯文本聊天记录 · ${RangeHints[index]}",
+                                description = RangeHints[index],
                                 onClick = { onPick(index) },
-                                trailingDivider = true,
-                                trailingContent = {
-                                    Icon(
-                                        MaterialSymbols.Outlined.Chevron_right,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                            )
-                        }
-                        item {
-                            InCardDivider()
-                        }
-                        item {
-                            BaseWidget(
-                                icon = MaterialSymbols.Outlined.Settings,
-                                iconPlaceholder = true,
-                                title = "⚙️ 设置",
-                                description = "功能开关 / 分析参数 / AI 模型管理",
-                                onClick = onSettings,
-                                trailingDivider = true,
-                                trailingContent = {
-                                    Icon(
-                                        MaterialSymbols.Outlined.Chevron_right,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
+                                trailingContent = { ChevronTrailing() },
                             )
                         }
                     }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-            )
+                }
+                item(key = "more") {
+                    GroupCard(title = "更多", index = 2) {
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Settings,
+                            iconPlaceholder = true,
+                            title = "设置",
+                            description = "功能开关 / 分析参数 / AI 模型管理",
+                            onClick = onSettings,
+                            trailingContent = { ChevronTrailing() },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** 会话卡片：首字方块 + 会话名 + 统计口径说明（口径写在这里，用户不必去猜"算不算图片"） */
+    @Composable
+    private fun SessionCard(sessionName: String, accent: Color = MaterialTheme.colorScheme.primary) {
+        Surface(
+            shape = RoundedCornerShape(RadiusCard),
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(CardPad),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlyphTile(firstGlyph(sessionName), accent)
+                Spacer(Modifier.width(Space12))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "当前会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ToneTextDim,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.height(Space2))
+                    Text(
+                        sessionName.ifBlank { "（未知会话）" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = ToneText,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 
@@ -528,136 +995,241 @@ internal object ChatAnalysisUi {
         onTestModel: () -> Unit,
         onClose: () -> Unit,
     ) {
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    DialogTitle(title = "聊天记录分析 · 设置")
-                },
-                text = {
-                    LazyColumn(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp),
-                        verticalArrangement = Arrangement.spacedBy(SectionGap),
+        val aiOn = ChatAnalysisEngine.FEATURE_AI in features
+        val statsOn = ChatAnalysisEngine.FEATURE_STATS in features
+        val rankOn = ChatAnalysisEngine.FEATURE_RANK in features
+        val enabledCount = listOf(aiOn, statsOn, rankOn).count { it }
+        val modelReady = selectedModelName.isNotBlank()
+
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = "聊天记录分析 · 设置",
+                    subtitle = "改动即时保存，下一次分析生效。",
+                )
+            },
+            dismissButton = { DismissAction("关闭", onClose) },
+        ) { bodyDp ->
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp),
+                verticalArrangement = Arrangement.spacedBy(SectionGap),
+            ) {
+                // 状态块置顶：先回答"我现在这套配置能不能跑"，再让用户去调开关。
+                item(key = "status") {
+                    StatusCard(
+                        aiOn = aiOn,
+                        statsOn = statsOn,
+                        rankOn = rankOn,
+                        enabledCount = enabledCount,
+                        modelReady = modelReady,
+                    )
+                }
+                item(key = "features") {
+                    GroupCard(
+                        title = "功能开关",
+                        index = 1,
+                        badge = "已启用 $enabledCount/3",
                     ) {
-                        item {
-                            GroupCard(title = "功能开关", index = 1) {
-                                SwitchWidget(
-                                    icon = MaterialSymbols.Outlined.Smart_toy,
-                                    iconPlaceholder = true,
-                                    title = "AI 总结",
-                                    description = "用大模型总结该时段聊天内容",
-                                    checked = ChatAnalysisEngine.FEATURE_AI in features,
-                                    onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_AI, it) },
-                                )
-                                InCardDivider()
-                                SwitchWidget(
-                                    icon = MaterialSymbols.Outlined.Tune,
-                                    iconPlaceholder = true,
-                                    title = "本地统计",
-                                    description = "核心指标 / 载体偏好 / 活跃频次 / 高频词 / 情绪指纹",
-                                    checked = ChatAnalysisEngine.FEATURE_STATS in features,
-                                    onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_STATS, it) },
-                                )
-                                InCardDivider()
-                                SwitchWidget(
-                                    icon = MaterialSymbols.Outlined.Sort,
-                                    iconPlaceholder = true,
-                                    title = "发言排行",
-                                    description = "发言对比 / 群成员发言 Top10",
-                                    checked = ChatAnalysisEngine.FEATURE_RANK in features,
-                                    onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_RANK, it) },
-                                )
-                            }
-                        }
-                        item {
-                            GroupCard(title = "分析参数", index = 2) {
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Tune,
-                                    iconPlaceholder = true,
-                                    title = "分析条数上限",
-                                    description = if (maxCount <= 0) {
-                                        "0 = 全部（读该时段所有消息，越大越慢）"
-                                    } else {
-                                        "当前：$maxCount 条（0 = 全部）"
-                                    },
-                                    onClick = onEditMaxCount,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
-                                )
-                                InCardDivider()
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Tune,
-                                    iconPlaceholder = true,
-                                    title = "抽样上限",
-                                    description = "喂给 AI 的最大文本条数（当前：$sampleLimit）；大群建议 5000~20000",
-                                    onClick = onEditSampleLimit,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
-                                )
-                                InCardDivider()
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Tune,
-                                    iconPlaceholder = true,
-                                    title = "单条文本上限",
-                                    description = "一条消息喂给 AI 的最多字数（当前：$lineMax 字）",
-                                    onClick = onEditLineMax,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
-                                )
-                                InCardDivider()
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Tune,
-                                    iconPlaceholder = true,
-                                    title = "喂给 AI 的文本上限",
-                                    description = "整段记录的总字数上限（当前：$transcriptMaxChars 字）；" +
-                                        "模型上下文小就要调小，否则服务端会报上下文超限",
-                                    onClick = onEditTranscriptMaxChars,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
-                                )
-                            }
-                        }
-                        item {
-                            GroupCard(title = "AI 模型", index = 3) {
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Memory,
-                                    iconPlaceholder = true,
-                                    title = "当前模型",
-                                    description = selectedModelName.ifEmpty { "未配置" },
-                                    onClick = onModelManager,
-                                    trailingContent = {
-                                        Icon(
-                                            MaterialSymbols.Outlined.Chevron_right,
-                                            null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    },
-                                )
-                                InCardDivider()
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Settings,
-                                    iconPlaceholder = true,
-                                    title = "模型管理",
-                                    description = "新增 / 编辑 / 删除 / 选择（支持多套 baseURL + APIKey）",
-                                    onClick = onModelManager,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Edit, null) },
-                                )
-                                InCardDivider()
-                                BaseWidget(
-                                    icon = MaterialSymbols.Outlined.Bolt,
-                                    iconPlaceholder = true,
-                                    title = "测试连接",
-                                    description = "验证当前模型能否正常请求（拉取模型列表 + 最小对话）",
-                                    onClick = onTestModel,
-                                    trailingContent = { Icon(MaterialSymbols.Outlined.Refresh, null) },
-                                )
-                            }
-                        }
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Smart_toy,
+                            iconPlaceholder = true,
+                            title = "AI 总结",
+                            description = "用大模型总结该时段聊天内容（需要先配置模型）",
+                            checked = aiOn,
+                            onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_AI, it) },
+                        )
+                        InCardDivider()
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Tune,
+                            iconPlaceholder = true,
+                            title = "本地统计",
+                            description = "核心指标 / 载体偏好 / 活跃频次 / 高频词 / 情绪指纹",
+                            checked = statsOn,
+                            onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_STATS, it) },
+                        )
+                        InCardDivider()
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Sort,
+                            iconPlaceholder = true,
+                            title = "发言排行",
+                            description = "发言对比 / 群成员发言 Top10",
+                            checked = rankOn,
+                            onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_RANK, it) },
+                        )
                     }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
+                }
+                item(key = "params") {
+                    GroupCard(title = "分析参数", index = 2, badge = "4 项") {
+                        ParamRow(
+                            title = "分析条数上限",
+                            description = if (maxCount <= 0) {
+                                "0 = 全部（读该时段所有消息，越大越慢）"
+                            } else {
+                                "当前 $maxCount 条 · 0 = 全部"
+                            },
+                            onClick = onEditMaxCount,
+                        )
+                        InCardDivider()
+                        ParamRow(
+                            title = "抽样上限",
+                            description = "喂给 AI 的最大文本条数（当前 $sampleLimit）· 0 = 全部",
+                            onClick = onEditSampleLimit,
+                        )
+                        InCardDivider()
+                        ParamRow(
+                            title = "单条文本上限",
+                            description = "一条消息喂给 AI 的最多字数（当前 $lineMax 字）",
+                            onClick = onEditLineMax,
+                        )
+                        InCardDivider()
+                        ParamRow(
+                            title = "喂给 AI 的文本上限",
+                            description = "整段记录的总字数上限（当前 $transcriptMaxChars 字）；" +
+                                "模型上下文小就要调小，否则服务端会报上下文超限",
+                            onClick = onEditTranscriptMaxChars,
+                        )
+                    }
+                }
+                item(key = "model") {
+                    GroupCard(
+                        title = "AI 模型",
+                        index = 3,
+                        badge = if (modelReady) "已配置" else "未配置",
+                    ) {
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Memory,
+                            iconPlaceholder = true,
+                            title = "当前模型",
+                            description = selectedModelName.ifEmpty { "未配置，点下方「模型管理」添加" },
+                            onClick = onModelManager,
+                            trailingContent = { ChevronTrailing() },
+                        )
+                        InCardDivider()
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Edit,
+                            iconPlaceholder = true,
+                            title = "模型管理",
+                            description = "新增 / 编辑 / 删除 / 选择（支持多套 baseURL + APIKey）",
+                            onClick = onModelManager,
+                            trailingContent = {
+                                Icon(MaterialSymbols.Outlined.Edit, null, tint = ToneTextDim)
+                            },
+                        )
+                        InCardDivider()
+                        BaseWidget(
+                            icon = MaterialSymbols.Outlined.Bolt,
+                            iconPlaceholder = true,
+                            title = "测试连接",
+                            description = "拉取模型列表 + 最小对话，验证当前模型能否正常请求",
+                            onClick = onTestModel,
+                            trailingContent = {
+                                Icon(MaterialSymbols.Outlined.Refresh, null, tint = ToneTextDim)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 配置状态块：三个模块的开关态（芯片）+ 一条按优先级取色的结论横幅。
+     *
+     * 为什么放最上面：设置页有 3 个开关 + 4 个数值 + 3 个模型入口，共 10 个可点项；
+     * 用户改完最想知道的是"现在能不能跑"。把校验结论前置成一块状态面板，
+     * 比在 10 个控件里自己拼凑语义要省事得多。
+     */
+    @Composable
+    private fun StatusCard(
+        aiOn: Boolean,
+        statsOn: Boolean,
+        rankOn: Boolean,
+        enabledCount: Int,
+        modelReady: Boolean,
+    ) {
+        val tone = when {
+            enabledCount == 0 -> ToneDanger
+            aiOn && !modelReady -> ToneAlt
+            else -> ToneThird
+        }
+        val icon = when {
+            enabledCount == 0 -> MaterialSymbols.Outlined.Error
+            aiOn && !modelReady -> MaterialSymbols.Outlined.Info
+            else -> MaterialSymbols.Outlined.Check_circle
+        }
+        val message = when {
+            enabledCount == 0 ->
+                "三个模块都没开：分析结果会是空的，请至少开启一个。"
+            aiOn && !modelReady ->
+                "AI 总结已开启，但还没有可用模型：AI 总结会直接失败，请先在「AI 模型」里添加并选中。"
+            aiOn ->
+                "配置就绪：本地统计与 AI 总结都可以执行。"
+            else ->
+                "配置就绪：只做本地统计，不会发起任何网络请求。"
+        }
+
+        GroupCard(title = "配置状态", accent = tone, badge = "已启用 $enabledCount/3") {
+            Column(Modifier.padding(horizontal = CardPad)) {
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                    verticalArrangement = Arrangement.spacedBy(ChipGap),
+                ) {
+                    ModuleChip("AI 总结", aiOn)
+                    ModuleChip("本地统计", statsOn)
+                    ModuleChip("发言排行", rankOn)
+                }
+                Spacer(Modifier.height(Space10))
+                StatusBanner(message, tone, icon)
+                // 补足卡片底部内边距：GroupCard 只给内容留 4dp 收尾，
+                // 状态块的横幅是"贴边元素"，必须自己凑到 CardPad 才不显得局促。
+                Spacer(Modifier.height(Space12))
+            }
+        }
+    }
+
+    /** 模块状态芯片：开启=第三强调色 + 勾，关闭=次要文本色 + 叉（一眼分清"有没有开"） */
+    @Composable
+    private fun ModuleChip(label: String, on: Boolean) {
+        val tone = if (on) ToneThird else ToneTextDim
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(tone.copy(alpha = 0.12f))
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (on) MaterialSymbols.Outlined.Check_circle else MaterialSymbols.Outlined.Close,
+                null,
+                Modifier.size(14.dp),
+                tint = tone,
+            )
+            Spacer(Modifier.width(Space4))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = tone,
+                maxLines = 1,
             )
         }
+    }
+
+    /** 参数行：BaseWidget + 统一的编辑图标（四处参数行共用，避免图标/描述风格漂移） */
+    @Composable
+    private fun ParamRow(title: String, description: String, onClick: () -> Unit) {
+        BaseWidget(
+            icon = MaterialSymbols.Outlined.Tune,
+            iconPlaceholder = true,
+            title = title,
+            description = description,
+            onClick = onClick,
+            trailingContent = {
+                Icon(MaterialSymbols.Outlined.Edit, null, tint = ToneTextDim)
+            },
+        )
     }
 
     // ==================================================================
@@ -674,90 +1246,127 @@ internal object ChatAnalysisUi {
         onAdd: () -> Unit,
         onClose: () -> Unit,
     ) {
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    DialogTitle(title = "AI 模型管理")
-                },
-                text = {
-                    LazyColumn(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp),
-                    ) {
-                        if (models.isEmpty()) {
-                            item {
-                                Surface(
-                                    shape = RoundedCornerShape(RadiusCard),
-                                    color = MaterialTheme.colorScheme.surfaceBright,
-                                    border = CardStroke,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(
-                                        "还没有模型配置，点击下方「新增模型」添加。",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(CardPad),
-                                    )
-                                }
-                            }
+        val selectedModel = remember(models, selectedName) {
+            models.firstOrNull { it.name == selectedName }
+        }
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = "AI 模型管理",
+                    subtitle = "支持多套 OpenAI 兼容配置（不同 baseURL + APIKey），点按即切换当前模型。",
+                )
+            },
+            confirmButton = {
+                Button(onClick = onAdd) {
+                    Icon(MaterialSymbols.Outlined.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(Space6))
+                    Text("新增模型", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            },
+            dismissButton = { DismissAction("关闭", onClose) },
+        ) { bodyDp ->
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp),
+                verticalArrangement = Arrangement.spacedBy(Space8),
+            ) {
+                item(key = "summary") {
+                    StatusBanner(
+                        text = if (models.isEmpty()) {
+                            "暂无模型配置：AI 总结不可用，本地统计不受影响。"
+                        } else {
+                            "共 ${models.size} 个配置 · 当前：${selectedModel?.name ?: "未选择"}"
+                        },
+                        tone = ToneAccent,
+                        icon = MaterialSymbols.Outlined.Memory,
+                    )
+                }
+                if (models.isEmpty()) {
+                    item(key = "empty") {
+                        EmptyState(
+                            icon = MaterialSymbols.Outlined.Memory,
+                            title = "还没有模型配置",
+                            hint = "点下方「新增模型」，填写 Base URL / API Key / 模型 ID 即可。\n" +
+                                "配置只保存在本机，不会上传到任何服务器。",
+                        )
+                    }
+                }
+                itemsIndexed(
+                    models,
+                    key = { _, model -> "model-" + model.name },
+                ) { _, model ->
+                    ModelRow(
+                        model = model,
+                        selected = model.name == selectedName,
+                        onSelect = onSelect,
+                        onEdit = onEdit,
+                        onDelete = onDelete,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 模型卡片：外层 Surface 提供卡片描边，内层用 [BaseWidget] 承担点按 / 选中底色 / 尾部按钮。
+     *
+     * 为什么要 provide LocalSegmentedItemShape：BaseWidget 的行形状默认取
+     * CornerRadius(16dp)，与卡片圆角(20dp)不同；不统一的话选中态的主色底会在
+     * 卡片里露出一圈"错位的圆角"。把局部形状对齐成卡片形状后，两者严丝合缝。
+     */
+    @Composable
+    private fun ModelRow(
+        model: AiModelConfig,
+        selected: Boolean,
+        onSelect: (AiModelConfig) -> Unit,
+        onEdit: (AiModelConfig) -> Unit,
+        onDelete: (AiModelConfig) -> Unit,
+    ) {
+        val shape = RoundedCornerShape(RadiusCard)
+        Surface(
+            shape = shape,
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            CompositionLocalProvider(LocalSegmentedItemShape provides shape) {
+                BaseWidget(
+                    icon = MaterialSymbols.Outlined.Memory,
+                    iconPlaceholder = true,
+                    title = model.name.ifBlank { "未命名模型" },
+                    description = model.model.ifBlank { "（未填模型 ID）" } + "\n" +
+                        model.baseUrl.ifBlank { "（未填 Base URL）" },
+                    selected = selected,
+                    onClick = { onSelect(model) },
+                    headlineTrailingContent = {
+                        if (selected) {
+                            Spacer(Modifier.width(Space6))
+                            MetaChip("当前使用", ToneAccent)
                         }
-                        itemsIndexed(models) { _, model ->
-                            val selected = model.name == selectedName
-                            BaseWidget(
-                                icon = MaterialSymbols.Outlined.Memory,
-                                iconPlaceholder = true,
-                                title = if (selected) "✓ ${model.name}" else model.name,
-                                description = "${model.model}\n${model.baseUrl}",
-                                selected = selected,
-                                onClick = { onSelect(model) },
-                                trailingDivider = true,
-                                trailingContent = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (selected) {
-                                            Icon(
-                                                MaterialSymbols.Outlined.Check_circle,
-                                                contentDescription = "当前使用",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.padding(end = Space4),
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { onEdit(model) },
-                                            modifier = Modifier.size(IconTouchSize),
-                                        ) {
-                                            Icon(MaterialSymbols.Outlined.Edit, "编辑")
-                                        }
-                                        IconButton(
-                                            onClick = { onDelete(model) },
-                                            modifier = Modifier.size(IconTouchSize),
-                                        ) {
-                                            Icon(
-                                                MaterialSymbols.Outlined.Delete,
-                                                "删除",
-                                                tint = MaterialTheme.colorScheme.error,
-                                            )
-                                        }
-                                    }
-                                },
+                    },
+                    trailingContent = {
+                        IconButton(
+                            onClick = { onEdit(model) },
+                            modifier = Modifier.size(IconTouchSize),
+                        ) {
+                            Icon(MaterialSymbols.Outlined.Edit, "编辑模型")
+                        }
+                        IconButton(
+                            onClick = { onDelete(model) },
+                            modifier = Modifier.size(IconTouchSize),
+                        ) {
+                            Icon(
+                                MaterialSymbols.Outlined.Delete,
+                                "删除模型",
+                                tint = ToneDanger,
                             )
                         }
-                    }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                confirmButton = {
-                    Button(onAdd) {
-                        Icon(MaterialSymbols.Outlined.Add, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(Space6))
-                        Text("新增模型", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                },
-            )
+                    },
+                )
+            }
         }
     }
 
@@ -779,126 +1388,164 @@ internal object ChatAnalysisUi {
         var path by remember { mutableStateOf(model.path) }
         var showKey by remember { mutableStateOf(false) }
 
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    DialogTitle(if (model.name.isBlank()) "新增模型" else "编辑模型")
-                },
-                text = {
-                    // 输入区内部滚动：横屏时也不会把输入框挤成一条缝
-                    LazyColumn(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp),
-                        verticalArrangement = Arrangement.spacedBy(Space10),
+        val urlInvalid = baseUrl.isNotBlank() &&
+            !baseUrl.trim().startsWith("http://") &&
+            !baseUrl.trim().startsWith("https://")
+        // 校验在组合期只做一次字符串判断（不做 IO、不做正则回溯），开销可忽略；
+        // 结论同时喂给「字段 isError」与「底部状态横幅」，两处永远一致。
+        val missing = buildList {
+            if (name.isBlank()) add("模型名称")
+            if (baseUrl.isBlank()) add("Base URL")
+            if (apiKey.isBlank()) add("API Key")
+            if (modelId.isBlank()) add("模型 ID")
+        }
+
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = if (model.name.isBlank()) "新增模型" else "编辑模型",
+                    subtitle = "OpenAI 兼容接口：Base URL + API Key + 模型 ID 三项齐全即可请求。",
+                )
+            },
+            confirmButton = {
+                // 等分宽度 + 省略号：任何字号下两个动作按钮都不会顶出弹窗
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Space8),
+                ) {
+                    TextButton(
+                        onClick = onTest,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
                     ) {
-                        item {
-                            OutlinedTextField(
-                                value = name,
-                                onValueChange = { name = it },
-                                label = { Text("模型名称") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        item {
-                            OutlinedTextField(
-                                value = baseUrl,
-                                onValueChange = { baseUrl = it },
-                                label = { Text("Base URL") },
-                                placeholder = { Text("https://api.deepseek.com/v1") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        item {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(
-                                    value = apiKey,
-                                    onValueChange = { apiKey = it },
-                                    label = { Text("API Key") },
-                                    singleLine = true,
-                                    visualTransformation = if (showKey) {
-                                        VisualTransformation.None
-                                    } else {
-                                        PasswordVisualTransformation()
-                                    },
-                                    modifier = Modifier.weight(1f),
+                        Icon(MaterialSymbols.Outlined.Bolt, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(Space6))
+                        Text("测试连接", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Button(
+                        onClick = {
+                            onSave(
+                                AiModelConfig(
+                                    name = name.trim().ifEmpty { "未命名模型" },
+                                    baseUrl = baseUrl.trim(),
+                                    apiKey = apiKey.trim(),
+                                    model = modelId.trim(),
+                                    path = path.trim().ifEmpty { "/chat/completions" },
                                 )
+                            )
+                        },
+                        modifier = Modifier.weight(1.2f),
+                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+                    ) {
+                        Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(Space6))
+                        Text("保存", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            },
+            dismissButton = { DismissAction("取消", onClose) },
+        ) { bodyDp ->
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp),
+                verticalArrangement = Arrangement.spacedBy(SectionGap),
+            ) {
+                item(key = "basic") {
+                    FormCard(title = "基本信息", index = 1) {
+                        AnalysisTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = "模型名称",
+                            helper = "必填，仅用于在模型列表里区分不同配置",
+                        )
+                        Spacer(Modifier.height(Space10))
+                        AnalysisTextField(
+                            value = modelId,
+                            onValueChange = { modelId = it },
+                            label = "模型 ID",
+                            helper = "服务端识别的模型名，如 deepseek-chat / gpt-4o-mini",
+                        )
+                    }
+                }
+                item(key = "endpoint") {
+                    FormCard(title = "接口地址", index = 2) {
+                        AnalysisTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            label = "Base URL",
+                            helper = if (urlInvalid) {
+                                "需以 http:// 或 https:// 开头"
+                            } else {
+                                "服务根地址，例：https://api.deepseek.com/v1"
+                            },
+                            isError = urlInvalid,
+                            keyboardType = KeyboardType.Uri,
+                        )
+                        Spacer(Modifier.height(Space10))
+                        AnalysisTextField(
+                            value = path,
+                            onValueChange = { path = it },
+                            label = "请求路径",
+                            helper = "默认 /chat/completions，兼容 OpenAI 协议时不用改",
+                            keyboardType = KeyboardType.Uri,
+                        )
+                    }
+                }
+                item(key = "auth") {
+                    FormCard(title = "鉴权", index = 3) {
+                        AnalysisTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            label = "API Key",
+                            helper = "仅保存在本机，用于请求鉴权；留空则无法发起 AI 总结",
+                            visualTransformation = if (showKey) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            trailingIcon = {
                                 IconButton(
                                     onClick = { showKey = !showKey },
                                     modifier = Modifier.size(IconTouchSize),
                                 ) {
                                     Icon(
-                                        if (showKey) MaterialSymbols.Outlined.Visibility_off
-                                        else MaterialSymbols.Outlined.Visibility,
-                                        "显示/隐藏",
+                                        if (showKey) {
+                                            MaterialSymbols.Outlined.Visibility_off
+                                        } else {
+                                            MaterialSymbols.Outlined.Visibility
+                                        },
+                                        "显示/隐藏 API Key",
                                     )
                                 }
-                            }
-                        }
-                        item {
-                            OutlinedTextField(
-                                value = modelId,
-                                onValueChange = { modelId = it },
-                                label = { Text("模型 ID") },
-                                placeholder = { Text("deepseek-chat / gpt-4o-mini") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        item {
-                            OutlinedTextField(
-                                value = path,
-                                onValueChange = { path = it },
-                                label = { Text("请求路径（默认 /chat/completions）") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("取消", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                confirmButton = {
-                    // 等分宽度 + 省略号：任何字号下两个动作按钮都不会顶出弹窗
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(Space8),
-                    ) {
-                        Button(
-                            onTest,
-                            Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
-                        ) {
-                            Icon(MaterialSymbols.Outlined.Bolt, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(Space6))
-                            Text("测试", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Button(
-                            {
-                                onSave(
-                                    AiModelConfig(
-                                        name = name.trim().ifEmpty { "未命名模型" },
-                                        baseUrl = baseUrl.trim(),
-                                        apiKey = apiKey.trim(),
-                                        model = modelId.trim(),
-                                        path = path.trim().ifEmpty { "/chat/completions" },
-                                    )
-                                )
                             },
-                            Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
-                        ) {
-                            Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(Space6))
-                            Text("保存", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
+                        )
                     }
-                },
-            )
+                }
+                item(key = "status") {
+                    StatusBanner(
+                        text = when {
+                            missing.isEmpty() && !urlInvalid ->
+                                "配置完整：可以直接「测试连接」，或保存后在模型列表里点选使用。"
+                            urlInvalid ->
+                                "Base URL 格式不对：需要以 http:// 或 https:// 开头。"
+                            else ->
+                                "还缺：" + missing.joinToString(" / ") +
+                                    "（可先保存草稿，稍后补齐；缺 Base URL 或 API Key 时请求会失败）"
+                        },
+                        tone = when {
+                            missing.isEmpty() && !urlInvalid -> ToneThird
+                            urlInvalid -> ToneDanger
+                            else -> ToneAlt
+                        },
+                        icon = when {
+                            missing.isEmpty() && !urlInvalid -> MaterialSymbols.Outlined.Check_circle
+                            urlInvalid -> MaterialSymbols.Outlined.Error
+                            else -> MaterialSymbols.Outlined.Info
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -914,6 +1561,11 @@ internal object ChatAnalysisUi {
         data class WordChips(val words: List<Pair<String, Int>>) : ReportUnit()
         object Gap : ReportUnit()
     }
+
+    /** 键值行的判定阈值：与 PNG 导出（ChatAnalysisPng）同一套规则，弹窗与导图观感一致 */
+    private const val KvMaxLineLen = 40
+    private const val KvMaxKeyLen = 20
+    private const val KvMaxValueLen = 18
 
     fun parseReport(text: String): List<ReportUnit> {
         if (text.isBlank()) return emptyList()
@@ -955,11 +1607,19 @@ internal object ChatAnalysisUi {
                     if (words.isNotEmpty()) out.add(ReportUnit.WordChips(words))
                     else out.add(ReportUnit.TextLine(t))
                 }
-                t.contains("：") && t.length <= 40 -> {
+                t.contains("：") && t.length <= KvMaxLineLen -> {
                     val idx = t.indexOf("：")
-                    val key = t.substring(0, idx)
-                    val value = t.substring(idx + 1)
-                    out.add(ReportUnit.KeyValue(key, value))
+                    val key = t.substring(0, idx).trim()
+                    val value = t.substring(idx + 1).trim()
+                    // 键或值过长（多半是整句话里带了个冒号）时不当作指标行，
+                    // 否则会被渲染成"左边一句话、右边一句话"的错位两列。
+                    if (key.isNotEmpty() && key.length <= KvMaxKeyLen &&
+                        value.isNotEmpty() && value.length <= KvMaxValueLen
+                    ) {
+                        out.add(ReportUnit.KeyValue(key, value))
+                    } else {
+                        out.add(ReportUnit.TextLine(t))
+                    }
                 }
                 else -> out.add(ReportUnit.TextLine(t))
             }
@@ -994,15 +1654,36 @@ internal object ChatAnalysisUi {
     @Composable
     private fun sectionAccent(title: String?, fallback: Color): Color = when {
         title == null -> fallback
-        title.contains("载体偏好") || title.contains("高频词") -> MaterialTheme.colorScheme.secondary
-        title.contains("活跃频次") || title.contains("情绪指纹") -> MaterialTheme.colorScheme.tertiary
-        title.contains("核心指标") || title.contains("发言排行") -> MaterialTheme.colorScheme.primary
+        title.contains("载体偏好") || title.contains("高频词") -> ToneAlt
+        title.contains("活跃频次") || title.contains("情绪指纹") -> ToneThird
+        title.contains("核心指标") || title.contains("发言排行") -> ToneAccent
         else -> fallback
+    }
+
+    /** 是否是「核心指标」式的纯 KeyValue 段，适合用 KPI 网格（大数字卡片）渲染。
+     *
+     * 三个条件缺一不可：全是键值行、至少两项、且至少两项的值以数字开头。
+     * 为什么要卡"数字"这一条：私聊的核心指标里有「会话类型：私聊（我 / 对方）」这种文字值，
+     * 它一旦进了 KPI 卡片就会被大字号渲染成"标题"，反而被省略号截断；
+     * 留在普通键值行里则两列对齐、完整可读。数字类指标（消息总数/百分比）才是网格的适用场景。
+     */
+    private val ReportBlock.isKpiLike: Boolean
+        get() = units.size >= 2 &&
+            units.all { it is ReportUnit.KeyValue } &&
+            units.count { it is ReportUnit.KeyValue && isNumericValue(it.value) } >= 2
+
+    /** 分节右侧计数徽章：KPI 段说"几项指标"，其余说"几行数据"（无内容则不显示徽章） */
+    private fun sectionBadge(block: ReportBlock): String? = when {
+        block.units.isEmpty() -> null
+        block.isKpiLike -> "${block.units.size} 项指标"
+        else -> "${block.units.size} 行数据"
     }
 
     /**
      * 统一分节卡片：20dp 圆角 + 浅色细描边 + 极轻投影，顶部一条渐变发丝线标明归属色。
      * 卡片宽度始终 fillMaxWidth，卡内所有文本都限行/省略，绝不会顶出卡片。
+     *
+     * @param badge 标题右侧的计数徽章（[sectionBadge] 算好传入）。
      */
     @Composable
     private fun SectionCard(
@@ -1010,11 +1691,12 @@ internal object ChatAnalysisUi {
         accent: Color,
         modifier: Modifier = Modifier,
         index: Int? = null,
+        badge: String? = null,
         content: @Composable () -> Unit,
     ) {
         Surface(
             shape = RoundedCornerShape(RadiusCard),
-            color = MaterialTheme.colorScheme.surfaceBright,
+            color = ToneSurface,
             tonalElevation = 1.dp,
             shadowElevation = 1.dp,
             border = CardStroke,
@@ -1040,7 +1722,7 @@ internal object ChatAnalysisUi {
                         .padding(CardPad)
                 ) {
                     if (title != null) {
-                        SectionHeaderRow(title, accent, index = index)
+                        SectionHeaderRow(title = title, accent = accent, index = index, badge = badge)
                         Spacer(Modifier.height(CardInnerGap))
                     }
                     content()
@@ -1049,11 +1731,22 @@ internal object ChatAnalysisUi {
         }
     }
 
+    /**
+     * 报告正文。
+     *
+     * 结构：概览条（数据分节 / 数据行 / AI 字数）→ 逐分节卡片。
+     * 概览条放在滚动区最上方而不是弹窗标题区：标题区高度是"框架预留"，
+     * 每多一行就少一行正文；放在滚动区里则无论多长都不会挤掉按钮行。
+     *
+     * @param maxHeight 正文最大高度（由 [DialogBudget] 给出）。
+     * @param aiChars AI 报告字数；≤0 表示本次没有 AI 内容，概览条不显示这一格。
+     */
     @Composable
     fun ReportContent(
         units: List<ReportUnit>,
         accent: Color = MaterialTheme.colorScheme.primary,
         maxHeight: Dp = DialogBodyFallback,
+        aiChars: Int = 0,
     ) {
         val blocks = remember(units) { groupIntoBlocks(units) }
         // 分节序号预计算（只数"有标题"的块）。不能放在 itemsIndexed 里用可变计数器累加：
@@ -1062,37 +1755,138 @@ internal object ChatAnalysisUi {
             var n = 0
             blocks.map { b -> if (b.title != null) ++n else null }
         }
+        val rowCount = remember(units) { units.count { it !is ReportUnit.Gap } }
+
+        if (blocks.isEmpty()) {
+            // 空报告绝不留白：给一张说明卡，用户至少知道"为什么没有内容"。
+            Box(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+                EmptyState(
+                    icon = MaterialSymbols.Outlined.Article,
+                    title = "报告为空",
+                    hint = "该时段没有可统计的文本消息（图片 / 语音 / 表情不计入）。\n" +
+                        "换个时间范围，或在设置里确认「本地统计」已开启。",
+                )
+            }
+            return
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 140.dp, max = maxHeight),
             contentPadding = PaddingValues(bottom = Space4),
+            verticalArrangement = Arrangement.spacedBy(SectionGap),
         ) {
-            itemsIndexed(blocks) { index, block ->
+            item(key = "overview") {
+                OverviewStrip(
+                    sectionCount = blocks.size,
+                    rowCount = rowCount,
+                    aiChars = aiChars,
+                    accent = accent,
+                )
+            }
+            itemsIndexed(
+                blocks,
+                key = { index, block -> "blk-" + index + "-" + block.title.orEmpty() },
+            ) { index, block ->
                 val blockAccent = sectionAccent(block.title, accent)
                 val no = sectionNos.getOrNull(index)
                 SectionCard(
                     title = block.title,
                     accent = blockAccent,
                     index = no,
-                    modifier = Modifier.padding(top = if (index == 0) 0.dp else SectionGap),
+                    badge = sectionBadge(block),
                 ) {
                     // 「核心指标」这类纯 key/value 段改用 KPI 网格（大数字卡片）渲染：
-                    // 一行行"指标 … 数值"读起来像表格，网格卡片才像数据看板，
-                    // 这是用户要求的"数据分析的美化"里最直观的一处。
+                    // 一行行"指标 … 数值"读起来像表格，网格卡片才像数据看板。
                     if (block.isKpiLike) {
                         KpiGrid(block.units.filterIsInstance<ReportUnit.KeyValue>(), blockAccent)
                     } else {
-                        block.units.forEach { unit -> ReportUnitView(unit, blockAccent) }
+                        block.units.forEachIndexed { i, unit ->
+                            // 连续的两行"键：值"之间补一条细线，把散行收成一张表；
+                            // 其它类型（条形行自带进度条）之间不加线，避免视觉噪音。
+                            if (i > 0 && unit is ReportUnit.KeyValue &&
+                                block.units[i - 1] is ReportUnit.KeyValue
+                            ) {
+                                ThinDivider(Modifier.padding(vertical = Space2))
+                            }
+                            ReportUnitView(unit, blockAccent)
+                        }
                     }
                 }
             }
         }
     }
 
-    /** 是否是「核心指标」式的纯 KeyValue 段（≥3 项且没有其它类型），适合用 KPI 网格渲染。 */
-    private val ReportBlock.isKpiLike: Boolean
-        get() = units.size >= 3 && units.all { it is ReportUnit.KeyValue }
+    /** 概览条：报告级 KPI 三格（分节数 / 数据行数 / AI 正文字数），像看板抬头一样先给全局量级 */
+    @Composable
+    private fun OverviewStrip(
+        sectionCount: Int,
+        rowCount: Int,
+        aiChars: Int,
+        accent: Color,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(RadiusCard),
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(CardPad)
+            ) {
+                Text(
+                    "报告概览",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = LsHeader),
+                    color = ToneTextDim,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(Space8))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(KpiGap),
+                ) {
+                    MiniStat("数据分节", sectionCount.toString(), accent, Modifier.weight(1f))
+                    MiniStat("数据行", rowCount.toString(), ToneAlt, Modifier.weight(1f))
+                    if (aiChars > 0) {
+                        MiniStat("AI 正文", aiChars.toString(), ToneThird, Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+
+    /** 概览条小格：标签 + 等宽数字（等宽字体让三格数字列对齐，读起来像仪表盘） */
+    @Composable
+    private fun MiniStat(label: String, value: String, tone: Color, modifier: Modifier = Modifier) {
+        Column(
+            modifier
+                .clip(RoundedCornerShape(RadiusInner))
+                .background(tone.copy(alpha = 0.08f))
+                .padding(horizontal = Space10, vertical = Space8)
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = ToneTextDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(Space2))
+            Text(
+                value,
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                fontWeight = FontWeight.Bold,
+                color = tone,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 
     /** 数值 / 单位拆分用的正则（与 PNG 导出用同一套规则，弹窗与导图观感一致） */
     private val ValueUnitRegex = Regex("^([0-9][0-9 .,%:+\\-]*)(.*)$")
@@ -1112,7 +1906,7 @@ internal object ChatAnalysisUi {
     /**
      * KPI 网格：默认每行 2 张大数字卡片；窄屏/特大字号自动降为单列（宁可长，不要挤）。
      * 这里手写 Column + Row 而不是 LazyVerticalGrid —— 后者嵌在 LazyColumn 里高度无界会直接崩。
-     * 数值按"数字 + 单位"拆开：数字大而重、单位小而轻，读起来才像数据看板而不是表格。
+     * 数值按"数字 + 单位"拆开：数字大而重（等宽）、单位小而轻，读起来才像数据看板而不是表格。
      */
     @Composable
     private fun KpiGrid(items: List<ReportUnit.KeyValue>, accent: Color) {
@@ -1155,7 +1949,7 @@ internal object ChatAnalysisUi {
         Box(
             modifier
                 .clip(shape)
-                .background(accent.copy(alpha = 0.09f))
+                .background(accent.copy(alpha = 0.08f))
                 .padding(horizontal = Space12, vertical = Space10)
         ) {
             Column(
@@ -1166,7 +1960,7 @@ internal object ChatAnalysisUi {
                 Text(
                     item.key,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = ToneTextDim,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1174,10 +1968,15 @@ internal object ChatAnalysisUi {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         number,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = if (isNumericValue(number)) {
+                            numericStyle(MaterialTheme.typography.titleLarge, number)
+                        } else {
+                            // 非数值（如「私聊（我 / 对方）」）降一档字号：大字号会把长文本截断
+                            MaterialTheme.typography.bodyLarge
+                        },
                         fontWeight = FontWeight.Bold,
                         color = accent,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -1186,7 +1985,7 @@ internal object ChatAnalysisUi {
                         Text(
                             unit,
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = ToneTextDim,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
@@ -1198,7 +1997,7 @@ internal object ChatAnalysisUi {
                     Text(
                         unit,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = ToneTextDim,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1224,16 +2023,15 @@ internal object ChatAnalysisUi {
     private fun ReportUnitView(unit: ReportUnit, accent: Color) {
         when (unit) {
             is ReportUnit.Gap -> Unit
-            is ReportUnit.Section -> SectionHeaderRow(unit.title, accent, Modifier.padding(top = Space6))
+            is ReportUnit.Section -> SectionHeaderRow(title = unit.title, accent = accent)
             is ReportUnit.BarRow -> BarRowView(unit, accent)
             is ReportUnit.KeyValue -> KeyValueView(unit)
             is ReportUnit.WordChips -> WordChipsView(unit.words)
             is ReportUnit.TextLine -> {
                 Text(
                     unit.text,
-                    // 正文行距放开一点（bodyMedium 默认 20sp → 23sp）：长段落更透气
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 23.sp),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = LhBody),
+                    color = ToneText,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = Space4),
@@ -1269,7 +2067,7 @@ internal object ChatAnalysisUi {
                 Text(
                     name,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = ToneText,
                     modifier = Modifier.weight(1f),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1278,7 +2076,7 @@ internal object ChatAnalysisUi {
                     Spacer(Modifier.width(Space8))
                     Text(
                         unit.value,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = numericStyle(MaterialTheme.typography.bodySmall, unit.value),
                         fontWeight = FontWeight.SemiBold,
                         color = accent,
                         maxLines = 1,
@@ -1294,7 +2092,7 @@ internal object ChatAnalysisUi {
                     .fillMaxWidth()
                     .height(BarThickness * fs)
                     .clip(barShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .background(ToneTrack)
             ) {
                 Box(
                     Modifier
@@ -1312,9 +2110,41 @@ internal object ChatAnalysisUi {
         }
     }
 
+    /**
+     * 键值行。
+     *
+     * 两种排版：值是"短数值"时左右两列对齐（像表格，便于纵向扫读）；
+     * 值本身还带冒号（例如"≤5字：12%　≤20字：34%"这种一行塞了两组数据）
+     * 时改为"标签在上、值在下"的通栏排版 —— 两列排版会把这种复合值截断。
+     */
     @Composable
     private fun KeyValueView(unit: ReportUnit.KeyValue) {
         val fs = LocalDensity.current.fontScale
+        val compound = unit.value.contains("：")
+        if (compound) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = (3 * fs).dp)
+            ) {
+                Text(
+                    unit.key,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ToneTextDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(Space2))
+                Text(
+                    unit.value,
+                    style = numericStyle(MaterialTheme.typography.bodyMedium, unit.value),
+                    color = ToneText,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            return
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1325,7 +2155,7 @@ internal object ChatAnalysisUi {
             Text(
                 unit.key,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = ToneTextDim,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1333,9 +2163,9 @@ internal object ChatAnalysisUi {
             Spacer(Modifier.width(Space12))
             Text(
                 unit.value,
-                style = MaterialTheme.typography.bodyLarge,
+                style = numericStyle(MaterialTheme.typography.bodyLarge, unit.value),
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = ToneText,
                 textAlign = TextAlign.End,
                 modifier = Modifier.weight(1f),
                 maxLines = 2,
@@ -1399,44 +2229,62 @@ internal object ChatAnalysisUi {
         onClose: () -> Unit,
     ) {
         var text by remember { mutableStateOf(initial.toString()) }
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = { DialogTitle(title) },
-                text = {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Text(
-                            hint,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(Space10))
-                        OutlinedTextField(
-                            value = text,
-                            onValueChange = { text = it.filter { c -> c.isDigit() }.take(9) },
-                            singleLine = true,
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("取消", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                confirmButton = {
-                    Button({
-                        text.trim().toIntOrNull()?.let(onSave)
+        val parsed = text.trim().toIntOrNull()
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = title,
+                    subtitle = "0 = 不限制；数值越大越慢，但统计越完整。",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        parsed?.let(onSave)
                         onClose()
-                    }) { Text("保存", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-            )
+                    },
+                    enabled = parsed != null,
+                ) {
+                    Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(Space6))
+                    Text("保存", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            },
+            dismissButton = { DismissAction("取消", onClose) },
+        ) { bodyDp ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                StatusBanner(hint, ToneAccent, MaterialSymbols.Outlined.Info)
+                Spacer(Modifier.height(SectionGap))
+                AnalysisTextField(
+                    value = text,
+                    onValueChange = { text = it.filter { c -> c.isDigit() }.take(9) },
+                    label = "数值",
+                    helper = "最多 9 位数字（上限 999,999,999）",
+                    isError = parsed == null,
+                    keyboardType = KeyboardType.Number,
+                )
+                Spacer(Modifier.height(Space10))
+                // 实时回显"将会保存成什么"：输入框里的裸数字没有量级感，
+                // 补一句千分位 + 语义说明，用户能立刻确认自己填的是 0 还是 0 的个数。
+                StatusBanner(
+                    text = when {
+                        parsed == null -> "还没有填写数值：保存按钮已禁用。"
+                        parsed == 0 -> "将保存为 0 = 不限制（读取该时段全部消息）。"
+                        else -> "将保存为 " + formatCount(parsed ?: 0) + "。"
+                    },
+                    tone = if (parsed == null) ToneDanger else ToneThird,
+                    icon = if (parsed == null) {
+                        MaterialSymbols.Outlined.Error
+                    } else {
+                        MaterialSymbols.Outlined.Check_circle
+                    },
+                )
+            }
         }
     }
 
@@ -1446,39 +2294,113 @@ internal object ChatAnalysisUi {
         onClose: () -> Unit,
     ) {
         var text by remember { mutableStateOf("") }
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = { DialogTitle("AI 附加要求") },
-                text = {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = bodyDp)
-                            .verticalScroll(rememberScrollState())
+        // 常用要求做成可点芯片：用户不必每次手打同一句话，点一下就能叠加到输入框。
+        val presets = listOf(
+            "重点总结待办与决定",
+            "多写人物发言风格",
+            "按时间线还原经过",
+            "语气更犀利一点",
+        )
+        BudgetedDialog(
+            title = {
+                DialogTitle(
+                    title = "AI 附加要求",
+                    subtitle = "可留空。填写后会被拼进提示词，用于调整总结的重点与语气。",
+                )
+            },
+            confirmButton = {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Space8),
+                ) {
+                    if (text.isNotBlank()) {
+                        TextButton(
+                            onClick = { text = "" },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+                        ) {
+                            Icon(MaterialSymbols.Outlined.Close, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(Space6))
+                            Text("清空", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            onStart(text.trim())
+                            onClose()
+                        },
+                        modifier = Modifier.weight(1.2f),
+                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
                     ) {
-                        Text(
-                            "可留空。例如：重点总结讨论的事项、语气更毒舌一点",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(Space10))
-                        OutlinedTextField(
-                            value = text,
-                            onValueChange = { text = it },
-                            placeholder = { Text("可留空…") },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        Icon(MaterialSymbols.Outlined.Smart_toy, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(Space6))
+                        Text("开始生成", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                },
-                dismissButton = {
-                    Button(onClose) { Text("取消", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                confirmButton = {
-                    Button({ onStart(text.trim()); onClose() }) {
-                        Text("开始", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            },
+            dismissButton = { DismissAction("取消", onClose) },
+        ) { bodyDp ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = bodyDp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                StatusBanner(
+                    "留空则只按默认提示词生成（约 1500~2500 字深度报告）。",
+                    ToneAccent,
+                    MaterialSymbols.Outlined.Info,
+                )
+                Spacer(Modifier.height(SectionGap))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("附加要求", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    placeholder = { Text("例如：重点总结讨论的事项、语气更毒舌一点") },
+                    supportingText = { Text("${text.length} 字", style = MaterialTheme.typography.labelSmall) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp),
+                )
+                Spacer(Modifier.height(Space10))
+                Text(
+                    "常用要求（点按填入）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ToneTextDim,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(Space6))
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                    verticalArrangement = Arrangement.spacedBy(ChipGap),
+                ) {
+                    presets.forEach { preset ->
+                        PresetChip(preset) {
+                            text = if (text.isBlank()) preset else text.trimEnd() + "；" + preset
+                        }
                     }
-                },
+                }
+            }
+        }
+    }
+
+    /** 可点芯片（常用要求）：点一下就把该条要求追加进输入框 */
+    @Composable
+    private fun PresetChip(text: String, onClick: () -> Unit) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(ToneAccent.copy(alpha = 0.10f))
+                .clickable(onClick = onClick)
+                .padding(horizontal = Space10, vertical = Space6)
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = ToneAccent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -1488,10 +2410,13 @@ internal object ChatAnalysisUi {
     // ==================================================================
 
     /**
-     * 报告弹窗底部操作栏：次级动作（导出 / 复制）用图标按钮靠左，
-     * 主级动作（关闭 / AI 总结）等分宽度靠右。整行 fillMaxWidth + weight，
-     * 任何屏宽与字号下都不会换行、不会溢出弹窗（AlertDialogContent 会裁剪，
-     * 越界 = 按钮被切掉，所以必须由权重兜住）。
+     * 报告弹窗底部操作栏（两行）：
+     *   第一行 = 次级动作（导出 PNG / 复制报告），等宽文字按钮；
+     *   第二行 = 关闭（文字按钮，视觉次要）+ AI 总结（填充按钮，唯一主行动）。
+     *
+     * 为什么分两行：v3 之前是"两个图标按钮 + 两个等宽按钮"挤在一行，
+     * 图标按钮没有文字标签（看不懂），四个动作也没分出主次。
+     * 拆成两行后每个动作都有完整文字，主行动（AI 总结）在视觉上唯一突出。
      */
     @Composable
     private fun ReportActionBar(
@@ -1500,40 +2425,46 @@ internal object ChatAnalysisUi {
         onClose: () -> Unit,
         onAiSummary: (() -> Unit)? = null,
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(Space8),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onExportPng, modifier = Modifier.size(IconTouchSize)) {
-                Icon(
-                    MaterialSymbols.Outlined.Download,
-                    "导出 PNG",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            IconButton(onClick = onCopy, modifier = Modifier.size(IconTouchSize)) {
-                Icon(
-                    MaterialSymbols.Outlined.Content_copy,
-                    "复制报告",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Spacer(Modifier.weight(0.35f))
-            Button(
-                onClose,
-                Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Space8),
             ) {
-                Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                SecondaryAction(
+                    icon = MaterialSymbols.Outlined.Download,
+                    text = "导出 PNG",
+                    onClick = onExportPng,
+                    modifier = Modifier.weight(1f),
+                )
+                SecondaryAction(
+                    icon = MaterialSymbols.Outlined.Content_copy,
+                    text = "复制报告",
+                    onClick = onCopy,
+                    modifier = Modifier.weight(1f),
+                )
             }
-            if (onAiSummary != null) {
-                Button(
-                    onAiSummary,
-                    Modifier.weight(1.15f),
+            Spacer(Modifier.height(Space8))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Space8),
+            ) {
+                TextButton(
+                    onClick = onClose,
+                    modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
                 ) {
-                    Text("AI 总结", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (onAiSummary != null) {
+                    Button(
+                        onClick = onAiSummary,
+                        modifier = Modifier.weight(1.15f),
+                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+                    ) {
+                        Icon(MaterialSymbols.Outlined.Smart_toy, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(Space6))
+                        Text("AI 总结", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
@@ -1547,10 +2478,12 @@ internal object ChatAnalysisUi {
             horizontalArrangement = Arrangement.spacedBy(ChipGap),
             verticalArrangement = Arrangement.spacedBy(ChipGap),
         ) {
-            MetaChip(periodLabel)
-            MetaChip("纯文本 ${countText(stats)} 条", MaterialTheme.colorScheme.tertiary)
+            MetaChip(periodLabel, ToneAccent)
+            MetaChip("纯文本 " + countText(stats) + " 条", ToneAlt)
             if (ai.isNotBlank()) {
-                MetaChip("已生成 AI 总结", MaterialTheme.colorScheme.secondary)
+                MetaChip("已含 AI 总结", ToneThird, MaterialSymbols.Outlined.Check_circle)
+            } else {
+                MetaChip("仅本地统计", ToneTextDim)
             }
         }
     }
@@ -1568,45 +2501,38 @@ internal object ChatAnalysisUi {
         onCopy: () -> Unit,
         onClose: () -> Unit,
     ) {
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(
-                            "📊 $sessionName",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(Space6))
-                        ReportMetaFlow(periodLabel, stats, ai)
-                    }
-                },
-                text = {
-                    Column(Modifier.fillMaxWidth()) {
-                        if (hasTranscript) {
-                            ReportContent(units, maxHeight = bodyDp)
-                        } else {
-                            Text(
-                                "分析完成，但该时段没有可统计的文本消息。",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = Space8),
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    ReportActionBar(
-                        onExportPng = onExportPng,
-                        onCopy = onCopy,
-                        onClose = onClose,
-                        onAiSummary = onAiSummary,
+        BudgetedDialog(
+            title = {
+                DialogHero(
+                    glyph = firstGlyph(sessionName),
+                    title = sessionName.ifBlank { "聊天记录分析" },
+                    accent = ToneAccent,
+                    subtitle = "本地统计报告",
+                ) {
+                    ReportMetaFlow(periodLabel, stats, ai)
+                }
+            },
+            confirmButton = {
+                ReportActionBar(
+                    onExportPng = onExportPng,
+                    onCopy = onCopy,
+                    onClose = onClose,
+                    onAiSummary = onAiSummary,
+                )
+            },
+        ) { bodyDp ->
+            if (hasTranscript) {
+                ReportContent(units, maxHeight = bodyDp, aiChars = ai.length)
+            } else {
+                Box(Modifier.fillMaxWidth().heightIn(max = bodyDp)) {
+                    EmptyState(
+                        icon = MaterialSymbols.Outlined.Article,
+                        title = "该时段没有可统计的文本消息",
+                        hint = "统计只覆盖纯文本消息（图片 / 语音 / 表情不计入）。\n" +
+                            "换个时间范围，或在设置里确认「本地统计」已开启。",
                     )
-                },
-            )
+                }
+            }
         }
     }
 
@@ -1619,60 +2545,79 @@ internal object ChatAnalysisUi {
         onCopy: () -> Unit,
         onClose: () -> Unit,
     ) {
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(
-                            "🤖 AI 总结 · $sessionName",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(Space6))
-                        FlowRow(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(ChipGap),
-                            verticalArrangement = Arrangement.spacedBy(ChipGap),
-                        ) {
-                            MetaChip("基于抽样转录的大模型洞察", MaterialTheme.colorScheme.tertiary)
-                        }
+        BudgetedDialog(
+            title = {
+                DialogHero(
+                    glyph = firstGlyph(sessionName),
+                    title = sessionName.ifBlank { "聊天记录分析" },
+                    accent = ToneThird,
+                    subtitle = "AI 总结 · 基于抽样转录的大模型洞察",
+                ) {
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                        verticalArrangement = Arrangement.spacedBy(ChipGap),
+                    ) {
+                        MetaChip("AI 生成", ToneThird, MaterialSymbols.Outlined.Smart_toy)
+                        MetaChip("正文 " + ai.length + " 字", ToneAlt)
                     }
-                },
-                text = {
-                    Column(Modifier.fillMaxWidth()) {
-                        if (units.isEmpty()) {
-                            // 长文本分支：显式限高 + 内部滚动，保证按钮行始终可见、内容能滚到底
+                }
+            },
+            confirmButton = {
+                ReportActionBar(
+                    onExportPng = onExportPng,
+                    onCopy = onCopy,
+                    onClose = onClose,
+                )
+            },
+        ) { bodyDp ->
+            when {
+                units.isNotEmpty() ->
+                    ReportContent(
+                        units,
+                        MaterialTheme.colorScheme.tertiary,
+                        maxHeight = bodyDp,
+                        aiChars = ai.length,
+                    )
+                ai.isNotBlank() -> {
+                    // 长文本分支：显式限高 + 内部滚动，保证按钮行始终可见、内容能滚到底。
+                    // 外面套一张卡片，让"整段散文"也有明确的内容边界（不再是一堵无框文字墙）。
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = bodyDp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        SectionCard(title = "AI 分析正文", accent = ToneThird) {
                             Text(
                                 ai,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 140.dp, max = bodyDp)
-                                    .verticalScroll(rememberScrollState()),
+                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = LhBody),
+                                color = ToneText,
+                                modifier = Modifier.fillMaxWidth(),
                             )
-                        } else {
-                            ReportContent(units, MaterialTheme.colorScheme.tertiary, maxHeight = bodyDp)
                         }
                     }
-                },
-                confirmButton = {
-                    ReportActionBar(
-                        onExportPng = onExportPng,
-                        onCopy = onCopy,
-                        onClose = onClose,
-                    )
-                },
-            )
+                }
+                else -> {
+                    Box(Modifier.fillMaxWidth().heightIn(max = bodyDp)) {
+                        EmptyState(
+                            icon = MaterialSymbols.Outlined.Article,
+                            title = "AI 没有返回内容",
+                            hint = "模型返回为空。请检查模型配置与网络，或调小「喂给 AI 的文本上限」后重试。",
+                        )
+                    }
+                }
+            }
         }
     }
 
+    /**
+     * 从统计文本里抠出「纯文本 N 条」的 N；拿不到返回 0。
+     * 只在标题胶囊里用（组合期一次字符串查找，不涉及解析报告结构）。
+     */
     private fun countText(stats: String): Int {
-        val m = Regex("纯文本 (\\d+)").find(stats)
-        return m?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val m = Regex("纯文本\\s*(\\d+)").find(stats) ?: return 0
+        return m.groupValues[1].toIntOrNull() ?: 0
     }
 
     // ==================================================================
@@ -1696,163 +2641,407 @@ internal object ChatAnalysisUi {
     ) {
         val titleText = when (state) {
             is TestUiState.LoadingModels -> "测试连接"
-            is TestUiState.ModelList -> "选择要测试的模型（${state.models.size} 个）"
-            is TestUiState.Testing -> "测试中 · ${state.model}"
+            is TestUiState.ModelList -> "选择要测试的模型"
+            is TestUiState.Testing -> "测试中"
             is TestUiState.Result ->
-                if (state.result.success) "✅ 测试通过" else "❌ 测试失败"
+                if (state.result.success) "测试通过" else "测试失败"
         }
-        DialogBudget { totalDp, bodyDp ->
-            AlertDialogContent(
-                modifier = Modifier.heightIn(max = totalDp),
-                title = {
+        val subtitle = when (state) {
+            is TestUiState.LoadingModels -> "先拉取服务端模型列表"
+            is TestUiState.ModelList -> "已获取 ${state.models.size} 个可选模型"
+            is TestUiState.Testing -> state.model
+            is TestUiState.Result -> state.result.testedModel.ifBlank { "未指定模型" }
+            else -> ""
+        }
+
+        BudgetedDialog(
+            title = { DialogTitle(titleText, subtitle) },
+            confirmButton = { TestResultActions(state, onTestModel, onUseModel, onClose) },
+        ) { bodyDp ->
+            when (state) {
+                is TestUiState.LoadingModels -> {
+                    TestProgressCard(
+                        activeStep = 0,
+                        model = null,
+                        bodyDp = bodyDp,
+                    )
+                }
+                is TestUiState.Testing -> {
+                    TestProgressCard(
+                        activeStep = 1,
+                        model = state.model,
+                        bodyDp = bodyDp,
+                    )
+                }
+                is TestUiState.ModelList -> {
                     Column(Modifier.fillMaxWidth()) {
+                        if (state.error.isNullOrBlank()) {
+                            StatusBanner(
+                                text = "已拉取 ${state.models.size} 个模型，点按任一模型即可发起验证。",
+                                tone = ToneAccent,
+                                icon = MaterialSymbols.Outlined.Check_circle,
+                            )
+                        } else {
+                            StatusBanner(
+                                text = "拉取列表失败：" + state.error +
+                                    "（仍可在「模型管理」里手动填写模型 ID）",
+                                tone = ToneDanger,
+                                icon = MaterialSymbols.Outlined.Error,
+                            )
+                        }
+                        Spacer(Modifier.height(Space8))
                         Text(
-                            titleText,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
+                            "验证内容：流式 + 非流式各发一次最小请求。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ToneTextDim,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        val subtitle = when (state) {
-                            is TestUiState.Testing -> state.model
-                            is TestUiState.Result -> state.result.testedModel
-                            else -> ""
-                        }
-                        if (subtitle.isNotBlank()) {
-                            Spacer(Modifier.height(Space6))
-                            MetaChip(subtitle)
-                        }
-                    }
-                },
-                text = {
-                    when (state) {
-                        is TestUiState.LoadingModels -> {
-                            Column(Modifier.fillMaxWidth()) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                Spacer(Modifier.height(Space10))
-                                Text("正在拉取模型列表（GET /models），请稍候…")
-                            }
-                        }
-                        is TestUiState.ModelList -> {
-                            Column(Modifier.fillMaxWidth()) {
-                                if (!state.error.isNullOrBlank()) {
-                                    Text(
-                                        "⚠️ 拉取列表失败：${state.error}（仍可手动测试下方默认模型）",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.padding(bottom = Space6),
-                                    )
-                                }
-                                Text(
-                                    "点击某个模型即可发起流式 + 非流式请求验证其可用性：",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.height(Space8))
-                                LazyColumn(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = bodyDp)
+                        Spacer(Modifier.height(Space8))
+                        // 用 weight 而非固定高度：上方的横幅先占位，列表吃剩下的空间，
+                        // 于是无论横幅几行、字号多大，列表都不会把按钮行顶出弹窗。
+                        LazyColumn(
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false),
+                            verticalArrangement = Arrangement.spacedBy(Space8),
+                        ) {
+                            itemsIndexed(
+                                state.models,
+                                key = { index, model -> "tm-" + index + "-" + model },
+                            ) { _, model ->
+                                Surface(
+                                    shape = RoundedCornerShape(RadiusCard),
+                                    color = ToneSurface,
+                                    tonalElevation = 1.dp,
+                                    border = CardStroke,
+                                    modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    itemsIndexed(state.models) { _, m ->
-                                        BaseWidget(
-                                            icon = MaterialSymbols.Outlined.Smart_toy,
-                                            iconPlaceholder = true,
-                                            title = m,
-                                            description = "点击测试此模型",
-                                            onClick = { onTestModel(m) },
-                                            trailingDivider = true,
-                                            trailingContent = {
-                                                Icon(
-                                                    MaterialSymbols.Outlined.Chevron_right,
-                                                    null,
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        is TestUiState.Testing -> {
-                            Column(Modifier.fillMaxWidth()) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                Spacer(Modifier.height(Space10))
-                                Text("正在验证「${state.model}」（流式 + 非流式请求），请稍候…")
-                            }
-                        }
-                        is TestUiState.Result -> {
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = bodyDp)
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                Text(
-                                    state.result.message,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                if (!state.error.isNullOrBlank()) {
-                                    Spacer(Modifier.height(Space8))
-                                    Text(
-                                        "注意：${state.error}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
+                                    BaseWidget(
+                                        icon = MaterialSymbols.Outlined.Smart_toy,
+                                        iconPlaceholder = true,
+                                        title = model,
+                                        description = "点按测试此模型",
+                                        onClick = { onTestModel(model) },
+                                        trailingContent = { ChevronTrailing() },
                                     )
                                 }
                             }
                         }
                     }
-                },
-                confirmButton = {
-                    when (state) {
-                        is TestUiState.ModelList -> {
-                            Button(onClose) {
-                                Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
+                }
+                is TestUiState.Result -> {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = bodyDp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        TestResultCard(state.result)
+                        Spacer(Modifier.height(SectionGap))
+                        SectionCard(
+                            title = "测试详情",
+                            accent = if (state.result.success) ToneThird else ToneDanger,
+                        ) {
+                            Text(
+                                state.result.message,
+                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = LhBody),
+                                color = ToneText,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                         }
-                        is TestUiState.Result -> {
-                            // 三个动作放进同一行并等分宽度：原来的自然宽度相加会超过弹窗宽度，
-                            // 被 AlertDialogContent 的 Surface 裁掉右半截（即"组件超出边框"）。
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(Space8),
-                            ) {
-                                Button(
-                                    onClose,
-                                    Modifier.weight(1f),
-                                    contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
-                                ) {
-                                    Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                                if (state.result.testedModel.isNotBlank()) {
-                                    Button(
-                                        { onTestModel(state.result.testedModel) },
-                                        Modifier.weight(1.25f),
-                                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
-                                    ) {
-                                        Icon(MaterialSymbols.Outlined.Refresh, null, Modifier.size(18.dp))
-                                        Spacer(Modifier.width(Space6))
-                                        Text("再测一次", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
-                                if (state.result.success && state.result.testedModel.isNotBlank()) {
-                                    Button(
-                                        { onUseModel(state.result.testedModel) },
-                                        Modifier.weight(1.6f),
-                                        contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
-                                    ) {
-                                        Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
-                                        Spacer(Modifier.width(Space6))
-                                        Text("同步为当前模型", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
-                            }
+                        if (!state.error.isNullOrBlank()) {
+                            Spacer(Modifier.height(SectionGap))
+                            StatusBanner(
+                                text = "注意：" + state.error,
+                                tone = ToneDanger,
+                                icon = MaterialSymbols.Outlined.Error,
+                            )
                         }
-                        else -> Unit
                     }
-                },
+                }
+            }
+        }
+    }
+
+    /** 测试结果抬头：状态图标 + 结论 + 模型名 + 流式/非流式两项能力芯片 */
+    @Composable
+    private fun TestResultCard(result: AiTestResult) {
+        val tone = if (result.success) ToneThird else ToneDanger
+        Surface(
+            shape = RoundedCornerShape(RadiusCard),
+            color = ToneSurface,
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            border = CardStroke,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(CardPad)
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(StatusIconSize)
+                            .clip(CircleShape)
+                            .background(tone.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (result.success) {
+                                MaterialSymbols.Outlined.Check_circle
+                            } else {
+                                MaterialSymbols.Outlined.Error
+                            },
+                            null,
+                            Modifier.size(22.dp),
+                            tint = tone,
+                        )
+                    }
+                    Spacer(Modifier.width(Space12))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (result.success) "连接正常" else "连接失败",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = tone,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.height(Space2))
+                        Text(
+                            result.testedModel.ifBlank { "（未指定模型）" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ToneTextDim,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Space10))
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                    verticalArrangement = Arrangement.spacedBy(ChipGap),
+                ) {
+                    CapabilityChip("流式请求", result.streamOk)
+                    CapabilityChip("非流式请求", result.plainOk)
+                }
+            }
+        }
+    }
+
+    /** 单项能力芯片：通过=第三强调色 + 勾，失败=危险色 + 叉 */
+    @Composable
+    private fun CapabilityChip(label: String, ok: Boolean) {
+        val tone = if (ok) ToneThird else ToneDanger
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(tone.copy(alpha = 0.12f))
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (ok) MaterialSymbols.Outlined.Check_circle else MaterialSymbols.Outlined.Close,
+                null,
+                Modifier.size(14.dp),
+                tint = tone,
+            )
+            Spacer(Modifier.width(Space4))
+            Text(
+                label + if (ok) "正常" else "失败",
+                style = MaterialTheme.typography.labelMedium,
+                color = tone,
+                maxLines = 1,
             )
         }
+    }
+
+    /**
+     * 测试进度卡片：三步清单 + 进度条。
+     *
+     * 为什么做成分步清单：拉列表 / 发两次请求 / 出结果之间有 5~20 秒空窗，
+     * 只给一条转圈进度条用户会以为卡死；标出"现在在哪一步、后面还有几步"，
+     * 长等待也能被理解（并给出超时说明）。
+     */
+    @Composable
+    private fun TestProgressCard(activeStep: Int, model: String?, bodyDp: Dp) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = bodyDp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            SectionCard(title = "正在测试连接", accent = ToneAccent) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Spacer(Modifier.height(Space12))
+                TestStepRow(
+                    step = 0,
+                    activeStep = activeStep,
+                    text = "拉取模型列表（GET /models）",
+                )
+                Spacer(Modifier.height(Space8))
+                TestStepRow(
+                    step = 1,
+                    activeStep = activeStep,
+                    text = if (model.isNullOrBlank()) {
+                        "验证模型可用性（流式 + 非流式）"
+                    } else {
+                        "验证模型「" + model + "」（流式 + 非流式）"
+                    },
+                )
+                Spacer(Modifier.height(Space8))
+                TestStepRow(step = 2, activeStep = activeStep, text = "生成测试结果")
+            }
+            Spacer(Modifier.height(SectionGap))
+            StatusBanner(
+                text = "大模型首次响应可能较慢，通常 5~20 秒；超时或失败会给出具体原因。",
+                tone = ToneAccent,
+                icon = MaterialSymbols.Outlined.Info,
+            )
+        }
+    }
+
+    /** 进度步骤行：序号圆点按"已完成/进行中/未开始"取色，进行中的一行加粗 */
+    @Composable
+    private fun TestStepRow(step: Int, activeStep: Int, text: String) {
+        val done = step < activeStep
+        val active = step == activeStep
+        val tone = when {
+            active -> ToneAccent
+            done -> ToneThird
+            else -> ToneTextDim
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(StepDotSize)
+                    .clip(CircleShape)
+                    .background(if (active || done) tone else ToneTrack),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (done) {
+                    Icon(
+                        MaterialSymbols.Outlined.Check,
+                        null,
+                        Modifier.size(12.dp),
+                        tint = OnAccent,
+                    )
+                } else {
+                    Text(
+                        (step + 1).toString(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = FsBadge),
+                        fontWeight = FontWeight.Bold,
+                        color = if (active) OnAccent else ToneTextDim,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Spacer(Modifier.width(Space10))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                color = if (active || done) ToneText else ToneTextDim,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    /**
+     * 测试弹窗的底部按钮区。
+     *
+     * 三种状态各一套：加载/测试中不给按钮（避免用户误以为要确认）；
+     * 列表态只给「关闭」；结果态给「再测一次」（次）与「关闭 + 同步为当前模型」（主）。
+     * 结果态用两行而不是一行三按钮：三个中文标签挤在一行必然被省略号截断。
+     */
+    @Composable
+    private fun TestResultActions(
+        state: TestUiState,
+        onTestModel: (String) -> Unit,
+        onUseModel: (String) -> Unit,
+        onClose: () -> Unit,
+    ) {
+        when (state) {
+            is TestUiState.ModelList -> {
+                TextButton(onClick = onClose) {
+                    Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            is TestUiState.Result -> {
+                val result = state.result
+                Column(Modifier.fillMaxWidth()) {
+                    if (result.testedModel.isNotBlank()) {
+                        Row(Modifier.fillMaxWidth()) {
+                            SecondaryAction(
+                                icon = MaterialSymbols.Outlined.Refresh,
+                                text = "再测一次",
+                                onClick = { onTestModel(result.testedModel) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(Modifier.height(Space8))
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(Space8),
+                    ) {
+                        TextButton(
+                            onClick = onClose,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+                        ) {
+                            Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (result.success && result.testedModel.isNotBlank()) {
+                            Button(
+                                onClick = { onUseModel(result.testedModel) },
+                                modifier = Modifier.weight(1.6f),
+                                contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
+                            ) {
+                                Icon(MaterialSymbols.Outlined.Check, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(Space6))
+                                Text("同步为当前模型", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    // ==================================================================
+    // 十一、工具
+    // ==================================================================
+
+    /**
+     * 数值字体：数字开头的文本用等宽字体（tabular 效果），中文/混合文本保持默认字体。
+     *
+     * 为什么只对"数字开头"生效：报告里的数值列（12,345 / 45条 / 62%）在等宽字体下
+     * 位数对齐、扫读更快；而像"正常人类浓度"这种文字值用等宽字体会显得突兀。
+     */
+    private fun numericStyle(base: TextStyle, value: String): TextStyle {
+        return if (isNumericValue(value)) base.copy(fontFamily = FontFamily.Monospace) else base
+    }
+
+    /** 值是否以数字开头（= 适合等宽 + 大字号渲染的数值型内容） */
+    private fun isNumericValue(value: String): Boolean {
+        val first = value.trim().firstOrNull() ?: return false
+        return first in '0'..'9'
+    }
+
+    /** 千分位格式化（固定 Locale.US：不同地区分隔符不一致会误导用户读数量级） */
+    private fun formatCount(value: Int): String = String.format(Locale.US, "%,d", value)
+
+    /** 取首个码点作为"头像字"：用 codePointAt 而不是 first()，避免把 emoji 切成半个代理对 */
+    private fun firstGlyph(text: String): String {
+        val t = text.trim()
+        if (t.isEmpty()) return "#"
+        return runCatching { String(Character.toChars(t.codePointAt(0))) }.getOrDefault("#")
     }
 }
