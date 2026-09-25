@@ -168,7 +168,7 @@ object MonetRuntimePackageWriter {
             val binding = color.binding
             aligned.entry(binding, "")?.let { entry ->
                 entry.setValueAsRaw(ValueType.COLOR_ARGB8, color.lightArgb)
-                record(binding.type, binding.name, "")
+                record(entry, "")
             }
             color.nightArgb?.let { argb ->
                 aligned.entry(binding, NIGHT_QUALIFIERS)?.let { entry ->

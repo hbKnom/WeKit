@@ -246,7 +246,7 @@ object ChatAnalysisEngine {
                 typeCount[tn] = (typeCount[tn] ?: 0) + 1
                 // ---- 第 15 轮：引用回复（type 49 且带 <refermsg> 节点）----
                 // 只对卡片类消息做一次 contains：不解析 XML、不为它多查一次库、也不留中间结果。
-                if (type == 49 && content.contains("<refermsg>")) ex.quoteMsgs++
+                if (type == 49 && m["content"]?.toString()?.contains("<refermsg>") == true) ex.quoteMsgs++
 
                 hc.timeInMillis = ct
                 val hour = hc.get(Calendar.HOUR_OF_DAY)

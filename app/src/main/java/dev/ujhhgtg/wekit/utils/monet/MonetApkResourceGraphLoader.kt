@@ -45,10 +45,13 @@ object MonetApkResourceGraphLoader {
                 val structures = LazyFileStructures(resFiles)
                 val tableStart = System.nanoTime()
                 onProgress("解析 ${apk.name} 的资源表", index, apkPaths.size)
+                // 后面解析二进制 XML 时要用宿主 PackageBlock 做值解析，所以在这里接出来。
+                var hostPackage: PackageBlock? = null
                 module.tableBlock.listPackages()
                     .filter { it.name == targetPackage }
-                    .forEach { packageBlock ->
-                        packageBlock.getResources().asSequence().forEach { resource ->
+                    .forEach { pkg ->
+                        hostPackage = pkg
+                        pkg.getResources().asSequence().forEach { resource ->
                             resources.merge(resource, apk, structures)
                         }
                     }
@@ -72,7 +75,7 @@ object MonetApkResourceGraphLoader {
                         .toList()
                     if (owners.isEmpty() || !resFile.isBinaryXml) null else resFile to owners
                 }
-                val xmlFailures = parseXmlInto(candidates, packageBlock, xmlDocuments)
+                val xmlFailures = hostPackage?.let { parseXmlInto(candidates, it, xmlDocuments) } ?: 0
                 WeLogger.i(
                     TAG,
                     "${apk.name}: $binaryXmlCount 个二进制 XML（候选 ${candidates.size}），读取 " +
@@ -115,7 +118,7 @@ object MonetApkResourceGraphLoader {
      */
     private fun parseXmlInto(
         candidates: List<Pair<ResFile, List<XmlIdentity>>>,
-        packageBlock: PackageBlock,
+        hostPackage: PackageBlock,
         out: MutableList<OwnedXml>,
     ): Int {
         if (candidates.isEmpty()) return 0
@@ -135,7 +138,9 @@ object MonetApkResourceGraphLoader {
                         Callable {
                             if (bytes == null) return@Callable null
                             runCatching {
-                                val document = ResXmlDocument().apply { packageBlock = packageBlock }
+                                // apply 的接收者是 ResXmlDocument，这里的 packageBlock 是它的
+                                // 属性（ARSCLib 的 setPackageBlock）；右边的 hostPackage 才是参数。
+                                val document = ResXmlDocument().apply { packageBlock = hostPackage }
                                 document.readBytes(ByteArrayInputStream(bytes))
                                 MonetBinaryXmlReader.read(document)
                             }.getOrElse { t ->

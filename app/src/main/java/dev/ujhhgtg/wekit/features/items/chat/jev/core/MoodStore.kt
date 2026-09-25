@@ -159,6 +159,16 @@ object MoodStore {
 
     // ------------------------------------------------------------------ 走势
 
+    /**
+     * 走势数据的版本号：每次走势被写入/清空都 +1。
+     *
+     * 为什么需要：卡片指纹（[YanwaiBubble] 里的 fingerprint）靠它感知「走势变了」——
+     * 走势是后台分析线程写的，UI 侧拿不到回调，没有版本号就只能靠轮询或干脆不刷新。
+     */
+    @Volatile
+    var trendVersion: Int = 0
+        private set
+
     /** 记下这一句的情绪强度，用来给同一会话的下一张卡算走势。 */
     fun recordScore(talker: String, score: Double) {
         if (talker.isBlank() || !score.isFinite()) return
@@ -167,6 +177,7 @@ object MoodStore {
             deque.addLast(score)
             while (deque.size > TREND_SAMPLES) deque.removeFirst()
         }
+        trendVersion++
     }
 
     /**
@@ -215,6 +226,7 @@ object MoodStore {
         pending.clear()
         journal.clear()
         trends.clear()
+        trendVersion++
         inserted.clear()
         completed.set(0)
         failed.set(0)
