@@ -200,7 +200,7 @@ object YanwaiBubble {
                     bottomMargin = dp(row, 6)
                 }
                 // Append only: do not shift the indexes of the host's original children.
-                parent.addView(card.container, lp)
+                parent.addView(views.container, lp)
                 target = parent
                 break
             }
@@ -224,7 +224,7 @@ object YanwaiBubble {
                 topMargin = dp(row, 3)
                 bottomMargin = dp(row, 6)
             }
-            root.addView(card.container, lp)
+            root.addView(views.container, lp)
             target = root
         }
         if (target == null) {
