@@ -4,6 +4,7 @@ import com.reandroid.apk.ApkModule
 import com.reandroid.arsc.model.ResourceEntry
 import com.reandroid.arsc.value.ValueItem
 import com.reandroid.arsc.value.ValueType
+import dev.ujhhgtg.wekit.utils.WeLogger
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -11,6 +12,9 @@ import java.security.MessageDigest
 import java.util.zip.InflaterInputStream
 
 object MonetApkResourceGraphLoader {
+
+    private const val TAG = "MonetApkResourceGraphLoader"
+
     fun load(
         apkPaths: List<File>,
         targetPackage: String,
@@ -66,10 +70,15 @@ object MonetApkResourceGraphLoader {
         xmlDocuments.forEach { ownedXml ->
             val definition = ownedXml.xml.root
             val existing = definitions[ownedXml.identity]
-            require(existing == null || existing == definition) {
-                "conflicting binary XML for ${ownedXml.identity}"
+            when {
+                existing == null -> definitions[ownedXml.identity] = definition
+                // 同一个 id 被多个 APK 重复定义且内容不同（厂商 overlay / 重复 split）。
+                // 旧实现直接抛错，会让整次「莫奈解析」失败，用户看到的就是解析出问题。
+                existing != definition -> WeLogger.w(
+                    TAG,
+                    "conflicting binary XML for ${ownedXml.identity}, keeping the first definition",
+                )
             }
-            if (existing == null) definitions[ownedXml.identity] = definition
         }
         val xmlByOwner = definitions.entries.groupBy(
             keySelector = { it.key.ownerId },
@@ -85,41 +94,46 @@ object MonetApkResourceGraphLoader {
     ) {
         if (resource.isEmpty) return
         val id = resource.resourceId
-        val key = MonetResourceKey(
-            type = requireNotNull(resource.type) { "resource 0x${id.toUInt().toString(16)} has no type" },
-            name = requireNotNull(resource.name) { "resource 0x${id.toUInt().toString(16)} has no name" },
-        )
+        val type = resource.type ?: return
+        val name = resource.name ?: return
+        val key = MonetResourceKey(type = type, name = name)
         val merged = getOrPut(id) { MutableResource(id, key) }
-        require(merged.key == key) {
-            "resource 0x${id.toUInt().toString(16)} changes identity from ${merged.key} to $key in $apk"
+        if (merged.key != key) {
+            // 同一 id 在不同 APK 里换了身份：以先到者为准，保留旧身份继续合并值。
+            WeLogger.w(
+                TAG,
+                "resource 0x${id.toUInt().toString(16)} changes identity from ${merged.key} to $key in $apk",
+            )
         }
         resource.asSequence().forEach { entry ->
             val qualifiers = entry.resConfig.qualifiers
             val value = if (entry.isComplex) {
-                val complex = requireNotNull(entry.resTableMapEntry) {
-                    "complex ARSC entry 0x${id.toUInt().toString(16)} has no map entry"
-                }
+                val complex = entry.resTableMapEntry ?: return@forEach
                 MonetResourceValue.Complex(
                     parentId = complex.parentId,
-                    items = complex.iterator().asSequence().map { item ->
-                        MonetComplexValue(item.nameId, item.toMonetValue(fileStructures))
+                    items = complex.iterator().asSequence().mapNotNull { item ->
+                        item.toMonetValue(fileStructures)?.let { MonetComplexValue(item.nameId, it) }
                     }.toList(),
                 )
             } else {
-                requireNotNull(entry.resValue) {
-                    "scalar ARSC entry 0x${id.toUInt().toString(16)} has no value"
-                }.toMonetValue(fileStructures)
+                entry.resValue?.toMonetValue(fileStructures) ?: return@forEach
             }
             val existing = merged.valuesByQualifiers[qualifiers]
-            require(existing == null || existing == value) {
-                "conflicting values for 0x${id.toUInt().toString(16)} ($key) qualifiers '$qualifiers' in $apk"
+            when {
+                existing == null -> merged.valuesByQualifiers[qualifiers] = value
+                // 同一个 id + qualifiers 在不同 APK 里给了不同的值：保留先到的，
+                // 解析继续（判定规则只看「有没有这个值」，不看它被定义了两次）。
+                existing != value -> WeLogger.w(
+                    TAG,
+                    "conflicting values for 0x${id.toUInt().toString(16)} ($key) qualifiers '$qualifiers' in $apk",
+                )
             }
-            if (existing == null) merged.valuesByQualifiers[qualifiers] = value
         }
     }
 
-    private fun ValueItem.toMonetValue(fileStructures: Map<String, MonetFileStructure>): MonetResourceValue {
-        val valueType = requireNotNull(valueType) { "ARSC value has no value type" }
+    /** 返回 null 表示这条 ARSC 值无法解读：调用方跳过它，而不是让整次解析中断。 */
+    private fun ValueItem.toMonetValue(fileStructures: Map<String, MonetFileStructure>): MonetResourceValue? {
+        val valueType = valueType ?: return null
         if (valueType.isReference) return MonetResourceValue.Reference(data, valueType.name)
         if (valueType == ValueType.STRING) {
             val stringValue = valueAsString

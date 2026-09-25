@@ -1702,13 +1702,17 @@ internal object ChatAnalysisUi {
         return blocks
     }
 
-    /** 段位配色分流：核心指标/发言排行 → primary；载体偏好/高频词 → secondary；活跃频次/情绪指纹 → tertiary。 */
+    /**
+     * 段位配色分流：核心指标/发言排行 → primary；载体偏好/高频词/活跃日历 → secondary；
+     * 活跃频次/情绪指纹/互动节奏 → tertiary。（第 13 轮新增的三个段位沿用相邻段位的色调，
+     * 保证一张报告里同族信息不同色、不会出现没有归属的「默认灰」卡片。）
+     */
     @Composable
     private fun sectionAccent(title: String?, fallback: Color): Color = when {
         title == null -> fallback
-        title.contains("载体偏好") || title.contains("高频词") -> ToneAlt
-        title.contains("活跃频次") || title.contains("情绪指纹") -> ToneThird
-        title.contains("核心指标") || title.contains("发言排行") -> ToneAccent
+        title.contains("载体偏好") || title.contains("高频词") || title.contains("活跃日历") -> ToneAlt
+        title.contains("活跃频次") || title.contains("情绪指纹") || title.contains("互动节奏") -> ToneThird
+        title.contains("核心指标") || title.contains("发言排行") || title.contains("昼夜结构") -> ToneAccent
         else -> fallback
     }
 

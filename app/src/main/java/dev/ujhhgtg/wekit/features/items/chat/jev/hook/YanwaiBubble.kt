@@ -23,6 +23,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.IdentityHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -427,7 +428,7 @@ object YanwaiBubble {
     private fun palette(row: View): Palette {
         val dark = row.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
             Configuration.UI_MODE_NIGHT_YES
-        return if (dark) {
+        val base = if (dark) {
             Palette(0xFF23262B.toInt(), 0xFF343A42.toInt(), 0xFFD6DAE1.toInt(), 0xFFC3C8D0.toInt(),
                 0xFF33373D.toInt(), 0xFF8B9099.toInt(), 0xFF5CC08A.toInt(), 0xFFE0A45A.toInt(),
                 0xFFE07A70.toInt(), 0xFFE0A45A.toInt())
@@ -436,6 +437,22 @@ object YanwaiBubble {
                 0xFFEDEFF3.toInt(), 0xFF8A8F98.toInt(), 0xFF2F9E63.toInt(), 0xFFCC8A2E.toInt(),
                 0xFFC0453B.toInt(), 0xFFCC8A2E.toInt())
         }
+        // 莫奈引擎生效时改用引擎色板。这张卡片是 WeKit 自己插进聊天行的，宿主的资源替换覆盖不到它，
+        // 不接过来就会在已经莫奈化的会话里显得突兀（用户反馈「WeKit 添加/修改的组件没美化到位」）。
+        // 语义色（正向/中性/负向/告警）仍用卡片自己的，情绪含义不跟着主题漂移。
+        val tokens = MonetColors.tokens(dark) ?: return base
+        return Palette(
+            card = tokens.surfaceContainer,
+            stroke = tokens.outline,
+            title = tokens.onSurface,
+            body = tokens.onSurfaceVariant,
+            track = tokens.surfaceContainerHigh,
+            muted = tokens.onSurfaceVariant,
+            positive = base.positive,
+            neutral = base.neutral,
+            negative = base.negative,
+            warning = base.warning,
+        )
     }
 
     private fun cardDrawable(pal: Palette, accent: Int, row: View): GradientDrawable = GradientDrawable().apply {

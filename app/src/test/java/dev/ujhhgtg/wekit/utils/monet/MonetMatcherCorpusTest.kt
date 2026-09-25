@@ -120,15 +120,14 @@ class MonetMatcherCorpusTest {
             val extracted = if (sample.extension == "apks") extractApks(sample) else null
             try {
                 val graph = MonetApkResourceGraphLoader.load(extracted?.second ?: listOf(sample), "com.tencent.mm")
-                DexKitBridge.create(dexBytes(sample).toTypedArray()).use { bridge ->
-                    val dexProvider = MonetDexEvidenceProvider { candidates ->
-                        MonetDexEvidenceCollector.collect(bridge, candidates)
-                    }
-                    val audit = MonetStructureMatcher.audit(graph, dexProvider)
+                // Upstream 09-25 deleted the DexKit evidence collector: the matcher now runs on
+                // the resource graph alone, so the corpus is audited without DEX evidence.
+                run {
+                    val audit = MonetStructureMatcher.audit(graph)
                     assertEquals(MonetStructureMatcher.roleIds, audit.keys, sample.name)
                     val expectedAbsent = EXPECTED_ABSENT.getValue(sample.name)
                     assertEquals(expectedAbsent, audit.filterValues { it.isEmpty() }.keys, sample.name)
-                    val resolved = MonetStructureMatcher.resolveAll(graph, dexProvider)
+                    val resolved = MonetStructureMatcher.resolveAll(graph)
                     assertEquals(MonetStructureMatcher.roleIds - expectedAbsent, resolved.keys, sample.name)
                     audit.filter { (role, candidates) -> role !in expectedAbsent && candidates.size != 1 }.forEach { (role, candidates) ->
                         failures += "${sample.name}: $role -> ${candidates.map { it.key }}"
@@ -156,12 +155,8 @@ class MonetMatcherCorpusTest {
         assertTrue(failures.isEmpty(), failures.joinToString("\n"))
     }
 
-    private fun auditResources(apk: File, graph: MonetResourceGraph): Map<String, List<MonetResourceNode>> {
-        System.load(File("../.wekit/dex-test/native/2.2.0/x86_64/cmake/libdexkit.so").canonicalPath)
-        return DexKitBridge.create(dexBytes(apk).toTypedArray()).use { bridge ->
-            MonetStructureMatcher.audit(graph) { candidates -> MonetDexEvidenceCollector.collect(bridge, candidates) }
-        }
-    }
+    private fun auditResources(apk: File, graph: MonetResourceGraph): Map<String, List<MonetResourceNode>> =
+        MonetStructureMatcher.audit(graph)
 
     @Test
     fun `installed Play split subset resolves every role including code-only splits`() {
@@ -175,15 +170,9 @@ class MonetMatcherCorpusTest {
             val installedApks = extracted.second.filter { it.name in installedNames }
             assertEquals(installedNames, installedApks.map { it.name }.toSet())
             val graph = MonetApkResourceGraphLoader.load(installedApks, "com.tencent.mm")
-            System.load(File("../.wekit/dex-test/native/2.2.0/x86_64/cmake/libdexkit.so").canonicalPath)
-            DexKitBridge.create(installedApks.flatMap(::dexBytes).toTypedArray()).use { bridge ->
-                val resolved = MonetStructureMatcher.resolveAll(
-                    graph,
-                    MonetDexEvidenceProvider { candidates -> MonetDexEvidenceCollector.collect(bridge, candidates) },
-                )
-                assertEquals(MonetStructureMatcher.roleIds, resolved.keys)
-                println("MONET_INSTALLED_SPLITS_RESULT version=3085 apks=${installedApks.size} resolved=${resolved.size}")
-            }
+            val resolved = MonetStructureMatcher.resolveAll(graph)
+            assertEquals(MonetStructureMatcher.roleIds, resolved.keys)
+            println("MONET_INSTALLED_SPLITS_RESULT version=3085 apks=${installedApks.size} resolved=${resolved.size}")
         } finally {
             extracted.first.deleteRecursively()
         }

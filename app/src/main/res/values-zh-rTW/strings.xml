@@ -568,14 +568,7 @@
     <string name="feature_hide_other_devices_banner_name">隱藏其他設備橫幅</string>
     <string name="feature_hide_other_devices_banner_description">隱藏主頁頂部其他設備已登錄橫幅</string>
     <string name="feature_monet_engine_name">莫奈引擎</string>
-    <string name="feature_monet_engine_description">根據模塊設置的自定義配色爲微信原生組件上色</string>
-    <string name="feature_monet_module_generator_name">莫奈引擎模組產生器</string>
-    <string name="feature_monet_module_generator_description">產生可透過 Root 管理器安裝、零執行時損耗的微信莫奈 RRO 模組。需要 Android 12+ 與莫奈引擎模組產生器擴充套件。</string>
-    <string name="monet_generator_unsupported">需要 Android 12 或更新版本。</string>
-    <string name="monet_generator_failed">在%1$s階段產生失敗：%2$s</string>
-    <string name="monet_generator_output">模組已產生至：\n%1$s</string>
-    <string name="monet_generator_counts">共覆蓋 %1$d 項資源（保留 %2$d、新增 %3$d、裁剪 %4$d）。</string>
-    <string name="monet_generator_install_hint">請透過 Magisk、KernelSU、APatch 或其衍生 Root 管理器安裝此 ZIP。安裝後，請啟用「莫奈引擎模組產生器」開關並重新啟動。KernelSU/APatch 使用者還需在「超級使用者」中選擇微信，關閉「卸載模組」選項。切勿單獨安裝壓縮包 files 目錄中的載荷檔案：Android 11+ 不允許安裝與目標應用簽章不同的 Overlay，只能由 Root 管理器將其作為系統預置 Overlay 載入。切換底欄樣式請在 KernelSU/APatch 中對本模組點「操作」按鈕，或重新產生模組時選擇另一種樣式。</string>
+    <string name="feature_monet_engine_description">在執行時重新著色微信自身的介面資源，跟隨 WeKit 主題色。無需 Root 或模組，選項修改即時生效。需要 Android 11+。</string>
     <string name="feature_replace_navigation_bar_name">美化首頁底部導航欄</string>
     <string name="feature_replace_navigation_bar_description">將首頁底欄替換爲 Material Design 或 Backdrop 風格</string>
     <string name="feature_themes_name">主題</string>
@@ -3924,19 +3917,11 @@
     <string name="settings_page_transition_animation_miuix">Miuix</string>
     <string name="feature_pet_name">桌面寵物</string>
     <string name="feature_pet_description">Bongo Cat 桌寵: 摸頭/拖拽/長按餵食, 隨 WeAgent 會話狀態變化。需要懸浮窗權限。</string>
-    <string name="monet_options_title">自訂莫奈模組</string>
-    <string name="monet_bubble_style">氣泡樣式</string>
-    <string name="monet_bubble_modern">現代圓角</string>
-    <string name="monet_bubble_classic">經典微信</string>
-    <string name="monet_bubble_pro">Pro 圓角</string>
+    <string name="monet_options_title">莫奈引擎</string>
+    <string name="monet_bubble_modern">現代圓角氣泡</string>
+    <string name="monet_bubble_classic">經典微信氣泡</string>
+    <string name="monet_bubble_pro">Pro 圓角氣泡</string>
     <string name="monet_multi_scene_corners">輸入欄、引用與支付鍵盤圓角</string>
-    <string name="monet_tab_style">底欄樣式</string>
-    <string name="monet_tab_solid">純色莫奈</string>
-    <string name="monet_tab_blur">半透明莫奈</string>
-    <string name="monet_user_scope">使用者範圍</string>
-    <string name="monet_user_current">目前使用者</string>
-    <string name="monet_user_all">全部使用者</string>
-    <string name="monet_generate">產生</string>
 
     <!-- 負一屏：音樂 & 日曆卡片 -->
     <string name="home_side_panel_card_music">音樂</string>
@@ -4145,4 +4130,14 @@
     <string name="yanwai_recent">最近解讀</string>
     <string name="yanwai_recent_empty">本次運行還沒有解讀記錄。</string>
 
+    <string name="monet_error_colors">未讀角標與錯誤色</string>
+    <string name="monet_color_source_summary">跟隨 WeKit 主題（動態壁紙取色或種子顏色），可在 WeKit 設定 → 主題中修改。</string>
+    <string name="monet_resolve_title">正在分析微信資源</string>
+    <string name="monet_resolve_failed">在%1$s階段分析失敗：%2$s</string>
+    <string name="monet_reresolve">重新分析微信資源</string>
+    <string name="monet_status">資源綁定</string>
+    <string name="monet_status_missing">尚未分析</string>
+    <string name="monet_status_running">正在分析…</string>
+    <string name="monet_status_summary">目前微信版本已解析 %1$d/%2$d 個角色</string>
+    <string name="monet_unsupported">需要 Android 11 或更新版本。</string>
 </resources>

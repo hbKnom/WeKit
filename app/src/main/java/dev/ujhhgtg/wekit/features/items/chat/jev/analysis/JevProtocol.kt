@@ -8,7 +8,6 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** Two bounded rounds of native Jev choices. No free-text generation or guessed chat facts. */
@@ -49,7 +48,10 @@ object JevProtocol {
         val answers = JSONObject(body).getJSONObject("answers")
         return ChatProfile(readChoice(answers, "scene", ChatTemplates.scenes),
             readChoice(answers, "emotion", emotions), readChoice(answers, "progress", progress),
-            ChatFacts.questions.mapValues { (key, q) -> readChoice(answers, key, q.options) })
+            ChatFacts.questions.mapNotNull { (key, q) ->
+                // 事实项允许模型漏答：丢掉的只是这一条事实，不该让整条消息分析失败
+                runCatching { readChoice(answers, key, q.options) }.getOrNull()?.let { key to it }
+            }.toMap())
     }
 
     fun detailPayload(input: AnalysisInput, model: String, profile: ChatProfile): JSONObject {
@@ -137,21 +139,25 @@ object JevProtocol {
 
     private fun emotionBars(profile: ChatProfile): List<MoodBar> =
         emotionRows(profile).map { (key, percent) ->
-            MoodBar(emotions.getValue(key), percent, key == profile.emotion.choice)
+            MoodBar(emotions[key] ?: key, percent, key == profile.emotion.choice)
         }
 
     private fun emotionProbabilities(profile: ChatProfile): String =
-        "情绪：" + emotionRows(profile).joinToString(" · ") { "${it.first} ${it.second}%" }
+        "情绪：" + emotionRows(profile).joinToString(" · ") { (key, percent) ->
+            "${emotions[key] ?: key} $percent%"
+        }
 
-    /** 界面上要显示的情绪行：三个主情绪恒显示，其余只在概率非零时显示。 */
+    /**
+     * 界面上要显示的情绪行：三个主情绪恒显示，其余只在概率非零时显示。
+     * 返回 **选项键 → 百分比**（不是中文标签，标签由 [emotionBars] / [emotionProbabilities] 映射）。
+     */
     private fun emotionRows(profile: ChatProfile): List<Pair<String, Int>> {
         val primary = listOf("happy", "calm", "annoyed")
+        val probabilities = profile.emotion.probabilities
         val visible = primary + emotions.keys.filter {
-            it !in primary && (profile.emotion.probabilities.getValue(it) * 100).roundToInt() > 0
+            it !in primary && ((probabilities[it] ?: 0.0) * 100).roundToInt() > 0
         }
-        return visible.map {
-            emotions.getValue(it) to (profile.emotion.probabilities.getValue(it) * 100).roundToInt()
-        }
+        return visible.map { it to ((probabilities[it] ?: 0.0) * 100).roundToInt() }
     }
 
     private fun emotionScore(profile: ChatProfile): Double {
@@ -164,23 +170,66 @@ object JevProtocol {
     private fun focusOptions(candidates: List<ChatTemplate>): Map<String, String> =
         candidates.associate { it.id to "${it.title}；要判断：${it.question}" } + ("none" to "都不贴合或线索不足，暂不解读")
 
+    /**
+     * 读取一个 choice 问题。模型的实际输出经常与协议有出入：回中文标签（「开心」）、
+     * 概率表按标签给键、漏掉某几项、confidence 缺失。旧实现用 require 逐条硬校验，
+     * 任一出入都会让整条消息分析失败（用户实测「选定聊天基本失效」的主因），
+     * 这里统一折算为协议形态，只有「选项键完全无法识别」才向上抛出。
+     */
     private fun readChoice(answers: JSONObject, key: String, options: Map<String, String>): ChatDecision {
-        val answer = answers.getJSONObject(key)
-        require(answer.getString("type") == "choice")
+        val answer = answers.optJSONObject(key) ?: error("模型未回答：$key")
         val confidence = probability(answer, "confidence")
-        val chosen = answer.getString("choice")
-        require(chosen in options)
-        val distribution = answer.getJSONObject("probabilities")
-        require(distribution.length() == options.size)
-        val values = options.keys.associateWith { probability(distribution, it) }
-        require(abs(values.values.sum() - 1.0) <= 0.02)
-        require(values.getValue(chosen) + 0.000001 >= values.values.max())
+        val distribution = normalizeDistribution(answer.optJSONObject("probabilities"), options)
+        val chosen = normalizeChoice(answer.optString("choice"), options)
+            ?: distribution.entries.maxByOrNull { it.value }?.key?.takeIf { it > 0.0 }
+            ?: error("$key 未给出有效选项：${answer.optString("choice")}")
+        val total = distribution.values.sum()
+        val values = if (total > 0.0) {
+            // 归一化：模型常给出百分比或未归一的权重
+            options.keys.associateWith { (distribution[it] ?: 0.0) / total }
+        } else {
+            // 概率表整体缺失时退回「选中项 100%」，保证 UI 横条与 clear 判定自洽
+            options.keys.associateWith { if (it == chosen) 1.0 else 0.0 }
+        }
         return ChatDecision(chosen, values, confidence)
     }
 
-    private fun probability(obj: JSONObject, key: String): Double {
-        val raw = obj.get(key)
-        require(raw is Number)
-        return raw.toDouble().also { require(it.isFinite() && it in 0.0..1.0) }
+    /** 把模型给的选项名折算回选项键：认键、认标签、认大小写与前缀。 */
+    private fun normalizeChoice(raw: String, options: Map<String, String>): String? {
+        val value = raw.trim().trim('"', '\'', '「', '」', '”', '“', '。', '，', ',', '.', ' ')
+        if (value.isEmpty()) return null
+        if (options.containsKey(value)) return value
+        options.entries.firstOrNull { it.value == value }?.let { return it.key }
+        options.entries.firstOrNull { it.value.equals(value, ignoreCase = true) }?.let { return it.key }
+        options.entries.firstOrNull { value.startsWith(it.value) || it.value.startsWith(value) }?.let { return it.key }
+        val lowered = value.lowercase()
+        options.entries.firstOrNull { it.key.lowercase() == lowered }?.let { return it.key }
+        options.entries.firstOrNull { lowered.startsWith(it.key.lowercase()) }?.let { return it.key }
+        return null
     }
+
+    /**
+     * 概率表既可能按选项键给（happy），也可能按标签给（开心），还可能整体缺失或非归一。
+     * 统一折算成「选项键 → 原始权重」，缺项记 0，不抛错。
+     */
+    private fun normalizeDistribution(distribution: JSONObject?, options: Map<String, String>): Map<String, Double> =
+        distribution?.let { table ->
+            options.mapNotNull { (key, label) ->
+                val raw = when {
+                    table.has(key) -> table.optDouble(key, Double.NaN)
+                    table.has(label) -> table.optDouble(label, Double.NaN)
+                    else -> Double.NaN
+                }
+                raw.takeIf { it.isFinite() && it >= 0.0 }?.let { key to it }
+            }.toMap()
+        }.orEmpty()
+
+    private fun probability(obj: JSONObject, key: String): Double =
+        obj.optDouble(key, DEFAULT_CONFIDENCE)
+            .takeIf { it.isFinite() }
+            ?.coerceIn(0.0, 1.0)
+            ?: DEFAULT_CONFIDENCE
+
+    /** 模型漏答 confidence 时的中性值：足以让结果可显示，又不至于越过 clear 的严格判定。 */
+    private const val DEFAULT_CONFIDENCE = 0.7
 }

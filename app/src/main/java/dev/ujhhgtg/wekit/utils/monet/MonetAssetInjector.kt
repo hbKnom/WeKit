@@ -1,29 +1,14 @@
 package dev.ujhhgtg.wekit.utils.monet
 
-import dev.ujhhgtg.wekit.utils.monet.MonetOverlayApkWriter.DrawableTarget
-import dev.ujhhgtg.wekit.utils.monet.MonetOverlayApkWriter.XmlAttribute
-import dev.ujhhgtg.wekit.utils.monet.MonetOverlayApkWriter.XmlNode
-import dev.ujhhgtg.wekit.utils.monet.MonetOverlayApkWriter.XmlValue
-
-object MonetCustomOverlays {
-    data class Palette(
-        val surfaceLight: Int,
-        val surfaceDark: Int,
-        val surfaceContainerLight: Int,
-        val surfaceContainerDark: Int,
-        val surfaceContainerHighLight: Int,
-        val surfaceContainerHighDark: Int,
-        val primaryLight: Int,
-        val primaryDark: Int,
-        val primaryContainerLight: Int,
-        val primaryContainerDark: Int,
-        val accent1_300: Int,
-        val accent1_400: Int,
-        val accent1_500: Int,
-        val accent1_700: Int,
-        val accent2_100: Int,
-        val neutral2_700: Int,
-    )
+/**
+ * Authors the replacement WeChat resources. Every `*Bubbles` / `baseVisuals` / `corners` function
+ * produces a list of [DrawableTarget]s that [MonetRuntimePackageWriter] turns into the runtime
+ * resource package; this object is pure XML authoring and never touches ARSCLib.
+ *
+ * Upstream 09-25 renamed `MonetCustomOverlays` to `MonetAssetInjector` when the RRO module generator
+ * was replaced by runtime injection, but the authored visuals are byte-for-byte the previous ones.
+ */
+object MonetAssetInjector {
 
     fun baseVisuals(
         resolved: Map<String, MonetResourceNode>,
@@ -229,7 +214,7 @@ object MonetCustomOverlays {
         resolved: Map<String, MonetResourceNode>,
         palette: Palette,
     ): List<DrawableTarget> {
-        val targetName = requireNotNull(resolved["launcher.themed.icon"]).key.name
+        val mipmapTarget = requireNotNull(resolved["launcher.themed.icon"]).binding()
         val adaptive = XmlNode(
             "adaptive-icon",
             children = listOf(
@@ -239,10 +224,14 @@ object MonetCustomOverlays {
             ),
         )
         return listOf(
-            DrawableTarget("wekit_icon_bg", solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
-            DrawableTarget("wekit_icon_fg", foregroundIcon()),
-            DrawableTarget("wekit_icon_mono", monochromeIcon()),
-            DrawableTarget(targetName, adaptive, type = "mipmap", lightQualifiers = "-anydpi-v26"),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_bg"), solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_fg"), foregroundIcon()),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_mono"), monochromeIcon()),
+            DrawableTarget(
+                mipmapTarget.copy(qualifiers = listOf("-anydpi-v26")),
+                adaptive,
+                lightQualifiers = "-anydpi-v26",
+            ),
         )
     }
 
@@ -252,8 +241,19 @@ object MonetCustomOverlays {
         light: XmlNode,
         night: XmlNode,
     ) {
-        add(DrawableTarget(requireNotNull(resolved[role]) { role }.key.name, light, night))
+        add(DrawableTarget(requireNotNull(resolved[role]) { role }.binding(), light, night))
     }
+
+    /**
+     * The adaptive-icon layers are authored assets rather than WeChat resources, so they borrow the
+     * launcher icon's package/type and only swap the name.
+     */
+    private fun adaptiveIconBinding(
+        resolved: Map<String, MonetResourceNode>,
+        name: String,
+    ): MonetBinding = requireNotNull(resolved["launcher.themed.icon"])
+        .binding()
+        .copy(id = 0, name = name, type = "drawable")
 
     private fun solid(color: Int): XmlNode = solid(colorValue(color))
     private fun solid(color: XmlValue): XmlNode = XmlNode(
@@ -436,7 +436,6 @@ object MonetCustomOverlays {
 
     private fun android(name: String, id: Int, value: XmlValue) = XmlAttribute(name, id, value)
 
-    private data class Padding(val left: Float, val top: Float, val right: Float, val bottom: Float)
 
     private val ALL_BUBBLE_PADDING = Padding(12f, 8f, 12f, 8f)
     private val INCOMING_LINK_PADDING = Padding(0f, 5f, 5f, 5f)
@@ -477,4 +476,22 @@ object MonetCustomOverlays {
     private const val ATTR_VIEWPORT_HEIGHT = 0x01010403
     private const val ATTR_FILL_COLOR = 0x01010404
     private const val ATTR_PATH_DATA = 0x01010405
+
+    /** Splits the authored visuals by bubble style and folds [multiSceneCorners] in. */
+    fun plan(
+        resolved: Map<String, MonetResourceNode>,
+        palette: Palette,
+        style: MonetBubbleStyle,
+        multiSceneCorners: Boolean,
+        splashIconId: Int,
+    ): MonetOverlayPlan {
+        var drawables = baseVisuals(resolved, palette, splashIconId)
+        drawables = drawables + when (style) {
+            MonetBubbleStyle.MODERN -> modernBubbles(resolved, palette)
+            MonetBubbleStyle.CLASSIC -> classicBubbles(resolved, palette)
+            MonetBubbleStyle.PRO -> proBubbles(resolved, palette)
+        }
+        if (multiSceneCorners) drawables = drawables + corners(resolved, palette)
+        return MonetOverlayPlan(drawables = drawables + themedIcon(resolved, palette))
+    }
 }

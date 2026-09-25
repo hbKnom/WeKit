@@ -19,9 +19,11 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import dev.ujhhgtg.wekit.i18n.LocaleResourceMode
 import dev.ujhhgtg.wekit.i18n.WeKitLocaleProvider
 import dev.ujhhgtg.wekit.ui.content.nuke.NukeModuleTheme
+import dev.ujhhgtg.wekit.ui.utils.theme.InjectedUiTheme
 import dev.ujhhgtg.wekit.ui.utils.theme.ModuleTheme
 import dev.ujhhgtg.wekit.ui.utils.theme.SettingsUiEngine
 import dev.ujhhgtg.wekit.ui.utils.theme.ThemeSettings
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 
 // useful for showing a compose dialog in non-compose context,
 // or when you don't want to manage the state for a dialog inside a composable
@@ -54,14 +56,22 @@ fun showComposeDialog(
             ComposeView(context).apply {
                 setContent {
                     WeKitLocaleProvider(mode = LocaleResourceMode.InjectedHost) {
+                        val dialogContent: @Composable () -> Unit = {
+                            Box(
+                                modifier = Modifier.wrapContentSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                scope.content()
+                            }
+                        }
+                        // 每个 WeKit 弹窗都是「WeKit 自己塞进微信界面」的组件：莫奈覆盖包改的是宿主
+                        // 资源 id，改不到我们的主题，所以引擎生效时这里直接接引擎色板（[MonetColors]，
+                        // 关闭开关即清零）。引擎没开时保持原来的 ModuleTheme，观感不变。
                         val themedContent: @Composable () -> Unit = {
-                            ModuleTheme {
-                                Box(
-                                    modifier = Modifier.wrapContentSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    scope.content()
-                                }
+                            if (MonetColors.isActive) {
+                                InjectedUiTheme(content = dialogContent)
+                            } else {
+                                ModuleTheme(content = dialogContent)
                             }
                         }
                         if (ThemeSettings.uiEngine == SettingsUiEngine.NUKE) {

@@ -118,6 +118,17 @@ object ChatAnalysisEngine {
         var lenLong = 0
         var lenHuge = 0
         var atMe = 0
+        // 第 13 轮扩展的四个维度：按星期分布、消息间隔（互动节奏）、连发长度、最长单条。
+        val weekday = IntArray(7)
+        var gapSum = 0L
+        var gapCount = 0
+        var maxGapMs = 0L
+        var prevCt = 0L
+        var streak = 0
+        var maxStreak = 0
+        var streakKey = ""
+        var longestLen = 0
+        var longestFromKey = ""
 
         val textSenders = mutableListOf<String>()
         val textBodies = mutableListOf<String>()
@@ -147,6 +158,17 @@ object ChatAnalysisEngine {
 
                 hc.timeInMillis = ct
                 hourDist[hc.get(Calendar.HOUR_OF_DAY)]++
+                // Calendar.DAY_OF_WEEK 周日=1，这里折成 ISO 的「周一=0 … 周日=6」
+                weekday[(hc.get(Calendar.DAY_OF_WEEK) + 5) % 7]++
+                if (prevCt > 0L) {
+                    val gap = ct - prevCt
+                    if (gap > 0L) {
+                        gapSum += gap
+                        gapCount++
+                        if (gap > maxGapMs) maxGapMs = gap
+                    }
+                }
+                prevCt = ct
 
                 val sent = (m["isSend"] as? Number)?.toLong() == 1L
                     || m["isSend"]?.toString() == "1"
@@ -199,6 +221,17 @@ object ChatAnalysisEngine {
                         )
                     ) {
                         atMe++
+                    }
+                    if (senderKey == streakKey) {
+                        streak++
+                    } else {
+                        streakKey = senderKey
+                        streak = 1
+                    }
+                    if (streak > maxStreak) maxStreak = streak
+                    if (body.length > longestLen) {
+                        longestLen = body.length
+                        longestFromKey = senderKey
                     }
                     textSenders.add(senderKey)
                     textBodies.add(body)
@@ -279,6 +312,13 @@ object ChatAnalysisEngine {
                 lenLong = lenLong,
                 lenHuge = lenHuge,
                 atMe = atMe,
+                weekday = weekday,
+                gapSum = gapSum,
+                gapCount = gapCount,
+                maxGapMs = maxGapMs,
+                maxStreak = maxStreak,
+                longestLen = longestLen,
+                longestFromKey = longestFromKey,
                 showRank = features.contains(FEATURE_RANK),
             )
         } else {
@@ -338,6 +378,13 @@ object ChatAnalysisEngine {
         lenLong: Int,
         lenHuge: Int,
         atMe: Int,
+        weekday: IntArray,
+        gapSum: Long,
+        gapCount: Int,
+        maxGapMs: Long,
+        maxStreak: Int,
+        longestLen: Int,
+        longestFromKey: String,
         showRank: Boolean,
     ): String {
         val r = StringBuilder()
@@ -382,6 +429,20 @@ object ChatAnalysisEngine {
                 .append(bar(bandSum[b], bMax, 16)).append("\n")
         }
 
+        // 第 13 轮扩展：光看「几点活跃」看不出「哪天活跃」，周末/工作日结构对群聊尤其有信息量。
+        if (weekday.sum() > 0) {
+            r.append("\n【活跃日历】\n")
+            val dayNames = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+            val wMax = weekday.max()
+            for (i in 0 until 7) {
+                r.append(dayNames[i]).append(" ").append(weekday[i]).append(" ")
+                    .append(bar(weekday[i], wMax, 16)).append("\n")
+            }
+            val weekend = weekday[5] + weekday[6]
+            val workday = weekday.sum() - weekend
+            r.append("工作日 / 周末：").append(workday).append(" / ").append(weekend).append(" 条\n")
+        }
+
         if (showRank) {
             r.append("\n").append(if (isGroup) "【发言排行 Top10】" else "【发言对比】").append("\n")
             val rk = topKeys(rank, 10)
@@ -420,6 +481,42 @@ object ChatAnalysisEngine {
             pct(lenShort, textN) >= 60 -> r.append("鉴定：全员惜字如金\n")
             pct(lenHuge, textN) >= 15 -> r.append("鉴定：小作文大户实锤\n")
             else -> r.append("鉴定：正常人类浓度\n")
+        }
+
+        // 第 13 轮扩展：节奏类指标（不依赖任何文本内容，只看时间轴与长度）
+        r.append("\n【互动节奏】\n")
+        if (gapCount > 0) {
+            r.append("平均间隔：").append(humanDuration(gapSum / gapCount)).append("\n")
+            r.append("最长冷场：").append(humanDuration(maxGapMs)).append("\n")
+        }
+        r.append("最长连发：").append(maxStreak).append(" 条\n")
+        if (longestLen > 0) {
+            r.append("最长一条：").append(longestLen).append(" 字")
+            if (longestFromKey.isNotBlank()) {
+                r.append("（").append(speakerDisplayName(longestFromKey, talker, isGroup, nickCache)).append("）")
+            }
+            r.append("\n")
+        }
+
+        // 第 13 轮扩展：昼夜结构（把「全天活跃频次」压成一个可比较的结论）
+        var deepNight = 0
+        var daytime = 0
+        var evening = 0
+        for (h in 0 until 24) {
+            when (h) {
+                in 0..5 -> deepNight += hourDist[h]
+                in 6..17 -> daytime += hourDist[h]
+                else -> evening += hourDist[h]
+            }
+        }
+        r.append("\n【昼夜结构】\n")
+        r.append("深夜 0-5 点：").append(pct(deepNight, totalAll)).append("%\n")
+        r.append("白天 6-17 点：").append(pct(daytime, totalAll)).append("%\n")
+        r.append("夜晚 18-23 点：").append(pct(evening, totalAll)).append("%\n")
+        when {
+            pct(deepNight, totalAll) >= 25 -> r.append("鉴定：夜猫子局，深夜最容易聊出真话\n")
+            pct(daytime, totalAll) >= 60 -> r.append("鉴定：白天型作息，聊的都是正事\n")
+            else -> r.append("鉴定：分布在正常人类时段\n")
         }
 
         return r.toString()
@@ -472,6 +569,15 @@ object ChatAnalysisEngine {
     }
 
     fun pct(part: Int, total: Int): Int = if (total <= 0) 0 else (part.toDouble() / total.toDouble() * 100.0).roundToInt()
+
+    /** 毫秒 → 人话时长（用于「平均间隔 / 最长冷场」这类节奏指标）。 */
+    fun humanDuration(millis: Long): String = when {
+        millis <= 0L -> "0 秒"
+        millis < 60_000L -> "${millis / 1000} 秒"
+        millis < 3_600_000L -> "${millis / 60_000} 分 ${millis % 60_000 / 1000} 秒"
+        millis < 86_400_000L -> "${millis / 3_600_000} 小时 ${millis % 3_600_000 / 60_000} 分"
+        else -> "${millis / 86_400_000} 天 ${millis % 86_400_000 / 3_600_000} 小时"
+    }
 
     /** 词频：中文按 2-4 字窗口切分，跳过纯数字（脚本语义） */
     private fun countWords(text: String, out: MutableMap<String, Int>) {

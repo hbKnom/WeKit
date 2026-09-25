@@ -1,7 +1,12 @@
 package dev.ujhhgtg.wekit.utils.monet
 
+import dev.ujhhgtg.wekit.utils.WeLogger
+
 
 object MonetStructureMatcher {
+
+    private const val TAG = "MonetStructureMatcher"
+
     val roleIds: Set<String> = MONET_RULES.mapTo(linkedSetOf(), MonetSemanticRule::id)
 
     fun resolveAll(
@@ -11,20 +16,31 @@ object MonetStructureMatcher {
     ): Map<String, MonetResourceNode> {
         val audited = resolveCandidateIds(graph, dexProvider, onProgress)
         onProgress(null, null, "校验语义角色解析结果")
-        val resolved = MONET_RULES.mapNotNull { rule ->
-            val candidates = audited.getValue(rule).mapNotNull(graph::node)
+        // 每个角色独立降级：某个角色「0 个或 2 个以上候选」只让那个角色缺席，
+        // 绝不把整次解析打断。旧实现在这里 require(single) 抛错，
+        // 微信某次版本变化就会让用户看到「解析失败」（用户反馈的解析问题主因之一）。
+        val resolved = linkedMapOf<String, MonetResourceNode>()
+        var skipped = 0
+        MONET_RULES.forEach { rule ->
+            val candidates = audited[rule].orEmpty().mapNotNull(graph::node)
             val optional = rule.optional || rule.optionalWhenResourceAbsent?.let { graph.node(it) == null } == true
-            if (optional && candidates.isEmpty()) null else {
-                require(candidates.size == 1) { "${rule.id}: ${candidates.map { it.key }}" }
-                rule.id to candidates.single()
+            when {
+                candidates.size == 1 -> resolved[rule.id] = candidates.single()
+                optional && candidates.isEmpty() -> Unit
+                else -> {
+                    skipped++
+                    WeLogger.w(
+                        TAG,
+                        "角色 ${rule.id} 无法唯一解析（${candidates.size} 个候选：${candidates.map { it.key }}），跳过该角色",
+                    )
+                }
             }
-        }.toMap()
-        val duplicateRoles = resolved.entries.groupBy { it.value.id }
-            .filterValues { it.size > 1 }
-            .values
-            .flatMap { roles -> listOf(roles.map { it.key }, roles.map { it.value.key }) }
-        require(duplicateRoles.isEmpty()) {
-            "multiple Monet roles resolved to the same resource: $duplicateRoles"
+        }
+        if (skipped > 0) WeLogger.i(TAG, "$skipped/${MONET_RULES.size} 个角色未解析，其余照常应用")
+        // 多个角色指向同一资源只是命名重叠，不冲突：下游按角色取用，各自照常生效。
+        val duplicateRoles = resolved.entries.groupBy { it.value.id }.filterValues { it.size > 1 }
+        if (duplicateRoles.isNotEmpty()) {
+            WeLogger.w(TAG, "多个角色解析到同一资源：${duplicateRoles.values.map { it.map { e -> e.key } }}")
         }
         onProgress(MONET_RULES.size, MONET_RULES.size, "语义角色解析完成")
         return resolved
@@ -48,9 +64,17 @@ object MonetStructureMatcher {
         val structural = structuralResolution(graph, onProgress)
         val candidates = structural.candidates
         val anchored = candidates.filter { (rule, ids) -> rule.requiredDexEvidence.isNotEmpty() && ids.size > 1 }
-        val dexFiltered = if (anchored.isEmpty()) emptyMap() else {
+        val dexFiltered = if (anchored.isEmpty() || dexProvider == null) {
+            if (anchored.isNotEmpty()) {
+                WeLogger.w(
+                    TAG,
+                    "缺少 DEX 证据提供者，${anchored.size} 个歧义角色改用结构消歧",
+                )
+            }
+            emptyMap()
+        } else {
             onProgress(null, null, "分析代码引用，区分 ${anchored.size} 个歧义角色")
-            val provider = requireNotNull(dexProvider) { "Dex evidence is required for ambiguous Monet roles" }
+            val provider = dexProvider
             val neighborIds = anchored.keys.flatMap { rule ->
                 rule.requiredDexEvidence.mapNotNull { token ->
                     token.removePrefix("neighbor:").takeIf { token.startsWith("neighbor:") }
@@ -61,8 +85,7 @@ object MonetStructureMatcher {
                 val node = requireNotNull(graph.node(id))
                 MonetDexCandidate(id, node.key.type, node.key.name)
             })
-            require(evidence.map { it.resourceId }.distinct().size == evidence.size)
-            val byId = evidence.associateBy { it.resourceId }
+            val byId = evidence.distinctBy { it.resourceId }.associateBy { it.resourceId }
             anchored.mapValues { (rule, ids) ->
                 ids.filterTo(linkedSetOf()) { id ->
                     byId[id]?.methods.orEmpty().any { method ->
