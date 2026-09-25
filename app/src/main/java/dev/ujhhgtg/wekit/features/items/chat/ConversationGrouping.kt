@@ -459,6 +459,18 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
     private val adapterItemFields = ConcurrentHashMap<Class<*>, AdapterItemFields>()
     private val snapshotFailuresLogged = ConcurrentHashMap.newKeySet<Class<*>>()
     private val bindingAdapter = ThreadLocal<Any?>()
+
+    /**
+     * 正在构建 adapter 快照的线程标记。
+     *
+     * ADAPTER_FILTER 会把 `getItem` 的入参从「显示下标」映射成「原始下标」（见
+     * [hookConversationListAdapter] 里的 getItem hook），而快照构建本身就是用原始下标
+     * 直接读 item 的 —— 必须屏蔽掉这层映射，否则会把数据读串。
+     *
+     * 用 [ThreadLocal]（而不是普通 Boolean）：宿主的 getCount / getItem 不一定只在主线程调用，
+     * 标记跨线程共享会让另一条线程的下标映射被误跳过。
+     */
+    private val buildingAdapterCache = ThreadLocal<Boolean>()
     private val recyclerLists = Collections.synchronizedSet(
         Collections.newSetFromMap(WeakHashMap<Any, Boolean>()),
     )
@@ -649,6 +661,31 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
             methods.getView.hookAfter(priority = 100) {
                 if (bindingAdapter.get() === thisObject) bindingAdapter.remove()
             }
+            /*
+             * 过滤只改了 getCount/getView，没改 getItem 的话，列表的「显示下标」与
+             * adapter 的「原始下标」就会错位：微信点会话是 `ConversationClickListener` →
+             * `MvvmConversationAdapter.onClickItem(position)` 按下标反查会话的（用户日志里
+             * 就是 `[onItemClick] position:5 [x@chatroom,x@chatroom]`），于是**点任意一行
+             * 都会打开另一个会话** —— 用户反馈的「打开任意一个会话都是某个会话」。
+             *
+             * 所以显示下标必须在这里也映射成原始下标：
+             *  - getView 内部（bindRows）自己会再调 getItem，那时参数已经是原始下标
+             *    （bindingAdapter 标记），不能再映射；
+             *  - 构建快照时用的是原始下标（buildingAdapterCache 标记），同样不能映射。
+             */
+            methods.getItem.hookBefore(priority = 100) {
+                if (groupingBackend != GroupingBackend.ADAPTER_FILTER) return@hookBefore
+                if (isAllTab(activeAdapterGroup.id)) return@hookBefore
+                val adapter = thisObject!!
+                if (!methods.getView.declaringClass.isInstance(adapter)) return@hookBefore
+                if (bindingAdapter.get() === adapter) return@hookBefore
+                if (buildingAdapterCache.get() == true) return@hookBefore
+                val cache = synchronized(adapterCaches) { adapterCaches[adapter] } ?: return@hookBefore
+                val position = args[0] as Int
+                if (position in cache.visiblePositions.indices) {
+                    args[0] = cache.visiblePositions[position]
+                }
+            }
         }
 
         if (!WeConversationListViewApi.classConversationRecyclerAdapter.isPlaceholder) {
@@ -717,11 +754,11 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
             val items: List<Any?>? = runCatching {
                 when (methods.storage) {
                     AdapterStorage.MVVM_LIST -> adapterSnapshotReader.read(adapter, rawCount) { index ->
-                        methods.getItem.invoke(adapter, index)
+                        readRawItem(adapter, methods, index)
                     }
                     AdapterStorage.LEGACY_CURSOR -> object : AbstractList<Any?>() {
                         override val size: Int get() = rawCount
-                        override fun get(index: Int): Any? = methods.getItem.invoke(adapter, index)
+                        override fun get(index: Int): Any? = readRawItem(adapter, methods, index)
                     }
                 }
             }.getOrElse { error ->
@@ -756,6 +793,16 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                 if (rawPosition in rawToVisible.indices) rawToVisible[rawPosition] = visiblePosition
             }
             return AdapterCache(visible, rawToVisible).also { adapterCaches[adapter] = it }
+        }
+    }
+
+    private fun readRawItem(adapter: Any, methods: AdapterMethods, index: Int): Any? {
+        val previous = buildingAdapterCache.get()
+        buildingAdapterCache.set(true)
+        return try {
+            methods.getItem.invoke(adapter, index)
+        } finally {
+            buildingAdapterCache.set(previous)
         }
     }
 

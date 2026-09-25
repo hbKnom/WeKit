@@ -1,5 +1,6 @@
 package dev.ujhhgtg.wekit.features.core
 
+import android.os.SystemClock
 import com.tencent.mm.ui.LauncherUI
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.constants.Preferences
@@ -28,6 +29,9 @@ import kotlin.time.measureTime
 object FeaturesLoader {
 
     private const val TAG = "FeaturesLoader"
+
+    /** 单个功能 startup() 超过这个耗时就在日志里单独点名（排查「启动特别卡」用）。 */
+    private const val SLOW_STARTUP_MS = 200L
 
     fun loadFeatures() {
         val allFeatures = FeaturesProvider.ALL_FEATURES
@@ -89,7 +93,14 @@ object FeaturesLoader {
                     return@forEach
                 }
 
+                // 逐个功能计时：用户反馈「特别卡」时，日志里只有一条总的
+                // "loading all features took N s"，定位不到是哪个功能拖慢启动 —— 慢的单独打出来。
+                val startedAt = SystemClock.uptimeMillis()
                 feature.startup()
+                val cost = SystemClock.uptimeMillis() - startedAt
+                if (cost >= SLOW_STARTUP_MS) {
+                    WeLogger.w(TAG, "slow startup: ${feature.technicalId} took ${cost}ms")
+                }
             }
         }
         WeLogger.i(TAG, "loading all features took $elapsed")
