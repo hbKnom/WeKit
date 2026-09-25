@@ -43,6 +43,46 @@ object ChatAnalysisEngine {
      */
     const val TRANSCRIPT_MAX_CHARS_DEFAULT = 480_000
 
+    /**
+     * 话题 / 沉默的判定阈值：30 分钟。
+     *
+     * 一个阈值同时干两件事（口径自洽）：
+     *  - 间隔 ≥ 30 分钟 → 记一次「沉默」（用于【沉默与主动性】）；
+     *  - 同时切开一个「话题段」（用于【话题切换】），于是「话题段数 = 沉默次数 + 1」。
+     *
+     * 只做整数比较，不产生任何分配，放在主扫描里是 O(1)。
+     */
+    private const val TOPIC_BREAK_MS = 30L * 60L * 1000L
+
+    /** 消息长度画像里保留的最长摘录条数（定长插入，零额外内存） */
+    private const val EXCERPT_N = 3
+
+    /** 摘录正文的最大展示字数（超长只留开头，避免报告里塞进一篇长文） */
+    private const val EXCERPT_MAX = 46
+
+    /** 口头禅只扫这个长度以内的正文：长文（转发长帖）会把语气词分布整个拉偏 */
+    private const val CLICHE_BODY_MAX = 300
+
+    /**
+     * 口头禅词表（**消息级**判定：一条消息命中一次，和【高频词】的 n-gram 词频是两套口径）。
+     *
+     * 为什么用固定词表而不是再跑一遍分词：单字语气词（嗯/啊/哦）根本进不了 n-gram
+     * （[countWords] 最少切 2 字），而这恰恰是口头禅最典型的形态；固定词表还能保证
+     * 词表大小恒定，不会为大群多占一个字节的内存。
+     */
+    private val CLICHES = listOf(
+        "哈哈", "嘿嘿", "嘻嘻", "呵呵", "笑死", "救命", "离谱", "绝了", "无语", "好家伙",
+        "真的", "就是", "然后", "其实", "感觉", "可能", "不是", "好吧", "emmm", "emm",
+        "嗯", "啊", "哦", "唉", "哎", "呀",
+    )
+
+    /**
+     * 颜文字提示串（同样是消息级判定）。
+     * 只做 contains：真正的面孔表达式五花八门，正则匹配既慢又容易漏，
+     * 这里取的是"常见的几种打字习惯"，报告里也只声称口径为"常见颜文字"。
+     */
+    private val KAOMOJI = listOf("^_^", "T_T", "t_t", "Orz", "orz", "OTL", "-_-", ">_<", "QAQ", "￣▽￣")
+
     /** 数据库未就绪时的提示，由调用方展示 */
     val dbReady: Boolean get() = runCatching { WeDatabaseApi.isReady }.getOrDefault(false)
 
@@ -130,6 +170,10 @@ object ChatAnalysisEngine {
         var longestLen = 0
         var longestFromKey = ""
 
+        // 第 14 轮扩展的六个维度：全部在下面那次分页扫描里就地累计（不再回扫、不再多查一次库）
+        val ex = ExtraStats()
+        var waitingInitiator = false
+
         val textSenders = mutableListOf<String>()
         val textBodies = mutableListOf<String>()
 
@@ -166,7 +210,30 @@ object ChatAnalysisEngine {
                         gapSum += gap
                         gapCount++
                         if (gap > maxGapMs) maxGapMs = gap
+                        // ---- 第 14 轮：回复间隔 / 沉默 / 话题分段（全是整数比较，无分配）----
+                        if (gap <= TOPIC_BREAK_MS) {
+                            // 真正意义上的「回复」：30 分钟内的你来我往
+                            ex.replyGapSum += gap
+                            ex.replyGapCount++
+                        } else {
+                            // 沉默 ≥30 分钟：记一次沉默、切开一个话题段，并把下一条消息的作者
+                            // 记为这一段的「发起人」（pending 标记在下面 rank 统计处消费）
+                            ex.silentBreaks++
+                            ex.silentSum += gap
+                            if (gap > ex.maxGapMs) {
+                                ex.maxGapMs = gap
+                                ex.maxGapStart = prevCt
+                                ex.maxGapEnd = ct
+                            }
+                            closeTopic(ex, prevCt)
+                            ex.topicStart = ct
+                            waitingInitiator = true
+                        }
                     }
+                } else {
+                    // 时段内第一条消息 = 第一个话题段的起点（它本身不算「发起」：
+                    // 时间范围是我们截出来的，它前面的沉默长度未知，计入会失真）
+                    ex.topicStart = ct
                 }
                 prevCt = ct
 
@@ -181,6 +248,11 @@ object ChatAnalysisEngine {
                         else -> "对方"
                     }
                     rank[rankKey] = (rank[rankKey] ?: 0) + 1
+                    // 沉默 ≥30 分钟后的第一条 = 这一段话题的「发起人」（系统消息不参与）
+                    if (waitingInitiator) {
+                        ex.initiator[rankKey] = (ex.initiator[rankKey] ?: 0) + 1
+                        waitingInitiator = false
+                    }
                 }
 
                 if (content.contains("哈") || content.contains("笑")) laugh++
@@ -233,6 +305,12 @@ object ChatAnalysisEngine {
                         longestLen = body.length
                         longestFromKey = senderKey
                     }
+                    // ---- 第 14 轮：长度 / 标点 / 口头禅 / 摘录（同一次扫描内增量）----
+                    ex.lenSum += body.length
+                    ex.rankChars[senderKey] = (ex.rankChars[senderKey] ?: 0) + body.length
+                    scanPunctuation(body, ex)
+                    if (body.length <= CLICHE_BODY_MAX) scanCliches(body, ex)
+                    rememberExcerpt(ex, senderKey, body)
                     textSenders.add(senderKey)
                     textBodies.add(body)
                 }
@@ -243,6 +321,8 @@ object ChatAnalysisEngine {
             // 读满上限 或 最后一页不满一页（已读完）
             if ((maxCount > 0 && offset >= maxCount) || page.size < PAGE_SIZE) break
         }
+        // 收尾最后一个话题段（段时长 = 段内最后一条 - 段内第一条）
+        closeTopic(ex, prevCt)
 
         val textN = textSenders.size
         if (textN == 0) {
@@ -319,6 +399,7 @@ object ChatAnalysisEngine {
                 maxStreak = maxStreak,
                 longestLen = longestLen,
                 longestFromKey = longestFromKey,
+                extra = ex,
                 showRank = features.contains(FEATURE_RANK),
             )
         } else {
@@ -356,6 +437,71 @@ object ChatAnalysisEngine {
         }.getOrDefault(emptyList())
     }
 
+    // ---------------- 第 14 轮扩展维度的累计器（同一次扫描内增量） ----------------
+
+    /**
+     * 六个新维度所需的原始量。
+     *
+     * 为什么收成一个类而不是再散十几个局部变量：`analyze` 的主循环已经有十几个计数器，
+     * 这里再加十几行 `var` 会让人分不清「哪些是旧口径、哪些是新口径」；收进一个持有器后，
+     * 新维度的所有状态集中在 **同一处**，也便于逐条核对「有没有多做一次遍历」。
+     *
+     * 内存：全部是定长标量 + 三个「以参与者为键」的小 map（键最多是参会人数，
+     * 私聊只有 我/对方 两个键），**不随消息条数增长**；[topBodies] 恒定 ≤ [EXCERPT_N] 条，
+     * 且只存已有字符串的引用（[analyze] 里的 textBodies 本来就持有它们）。
+     */
+    private class ExtraStats {
+        /** 纯文本字数总和（平均字数的分子） */
+        var lenSum = 0L
+
+        /** 纯文本字符总数（各类「/百字」密度的分母） */
+        var charTotal = 0
+
+        // ---- 标点与语气（按字符计数）----
+        var qMark = 0
+        var eMark = 0
+        var ellipsis = 0
+        var tilde = 0
+        var letterChars = 0
+
+        /** 命中表情符号 / 常见颜文字的消息条数 */
+        var emojiMsgs = 0
+        var kaoMsgs = 0
+
+        // ---- 口头禅 ----
+        var clicheMsgs = 0
+        val cliche = mutableMapOf<String, Int>()
+
+        // ---- 沉默与主动性 ----
+        /** ≤[TOPIC_BREAK_MS] 的回复间隔之和 / 条数（真正的「回复」间隔，不含长中断） */
+        var replyGapSum = 0L
+        var replyGapCount = 0
+
+        /** ≥[TOPIC_BREAK_MS] 的沉默次数与累计时长 */
+        var silentBreaks = 0
+        var silentSum = 0L
+
+        /** 最长沉默的起止时间点（上一条 / 下一条消息的时间） */
+        var maxGapMs = 0L
+        var maxGapStart = 0L
+        var maxGapEnd = 0L
+
+        /** 沉默后第一条消息的发送者计数（谁更常先开口） */
+        val initiator = mutableMapOf<String, Int>()
+
+        /** 每个参与者的纯文本字数（互动平衡的「字数比」） */
+        val rankChars = mutableMapOf<String, Int>()
+
+        // ---- 话题切换 ----
+        var topicStart = 0L
+        var maxTopicMs = 0L
+        var maxTopicStart = 0L
+        var maxTopicEnd = 0L
+
+        /** 最长 [EXCERPT_N] 条摘录（senderKey to body），定长插入 */
+        val topBodies = mutableListOf<Pair<String, String>>()
+    }
+
     // ---------------- 本地统计报告（口径与脚本一致） ----------------
 
     private fun buildLocalReport(
@@ -385,6 +531,7 @@ object ChatAnalysisEngine {
         maxStreak: Int,
         longestLen: Int,
         longestFromKey: String,
+        extra: ExtraStats,
         showRank: Boolean,
     ): String {
         val r = StringBuilder()
@@ -519,7 +666,352 @@ object ChatAnalysisEngine {
             else -> r.append("鉴定：分布在正常人类时段\n")
         }
 
+        // 第 14 轮扩展的六个新维度。全部**追加在既有段落之后**：
+        // 老段的顺序、每一行文本都不动，因此老报告的解析结果逐字不变（只多出新卡片）。
+        appendExtraSections(
+            r = r,
+            ex = extra,
+            talker = talker,
+            isGroup = isGroup,
+            textN = textN,
+            totalAll = totalAll,
+            rank = rank,
+            lenShort = lenShort,
+            lenMid = lenMid,
+            lenLong = lenLong,
+            lenHuge = lenHuge,
+            nickCache = nickCache,
+        )
+
         return r.toString()
+    }
+
+    // ---------------- 第 14 轮新增：六个维度的报告段 ----------------
+
+    /**
+     * 追加六个新维度（消息长度画像 / 标点与语气 / 口头禅 / 互动平衡 / 沉默与主动性 / 话题切换）。
+     *
+     * 排版铁律（弹窗 UI 与 PNG 导出各有一个**通用**的「【段】」解析器，两边的判据必须同时满足）：
+     *  - 「键：值」一行一个指标，键 ≤ 20 字、值 ≤ 18 字 → 进 KPI 网格（大数字卡片）；
+     *  - 要画成环形图的分布：`标签 数值 ████`，数值全为正、标签里不含数字；
+     *  - 词频行**整行只允许** `词×次数` 这种 token → 标签云；
+     *  - 其余整句一律不带全角冒号，避免被误判成指标行（所以比值句用半角 `:`）。
+     */
+    private fun appendExtraSections(
+        r: StringBuilder,
+        ex: ExtraStats,
+        talker: String,
+        isGroup: Boolean,
+        textN: Int,
+        totalAll: Int,
+        rank: Map<String, Int>,
+        lenShort: Int,
+        lenMid: Int,
+        lenLong: Int,
+        lenHuge: Int,
+        nickCache: MutableMap<String, String>,
+    ) {
+        // ── 1) 消息长度画像 ──────────────────────────────────────────
+        r.append("\n【消息长度画像】\n")
+        r.append("平均字数：").append(if (textN > 0) (ex.lenSum.toDouble() / textN).roundToInt() else 0).append(" 字\n")
+        r.append("短句占比：").append(pct(lenShort, textN)).append("%\n")
+        r.append("中句占比：").append(pct(lenMid, textN)).append("%\n")
+        r.append("长句占比：").append(pct(lenLong + lenHuge, textN)).append("%\n")
+        if (ex.topBodies.isEmpty()) {
+            r.append("最长摘录：无\n")
+        } else {
+            for ((i, tp) in ex.topBodies.withIndex()) {
+                r.append("最长摘录 ").append(i + 1).append("：").append(tp.second.length).append(" 字")
+                val who = textSafe(speakerDisplayName(tp.first, talker, isGroup, nickCache))
+                if (who.isNotBlank()) r.append(" · ").append(who)
+                r.append("\n")
+                r.append(excerpt(tp.second)).append("\n")
+            }
+        }
+
+        // ── 2) 标点与语气（按字符密度口径，与【情绪指纹】的消息级口径互补）──
+        r.append("\n【标点与语气】\n")
+        if (ex.charTotal > 0) {
+            val qD = density(ex.qMark, ex.charTotal)
+            val eD = density(ex.eMark, ex.charTotal)
+            val lD = density(ex.ellipsis, ex.charTotal)
+            val wD = density(ex.tilde, ex.charTotal)
+            r.append("问号密度：").append(oneDecimal(qD)).append(" /百字\n")
+            r.append("感叹密度：").append(oneDecimal(eD)).append(" /百字\n")
+            r.append("省略号密度：").append(oneDecimal(lD)).append(" /百字\n")
+            r.append("波浪号密度：").append(oneDecimal(wD)).append(" /百字\n")
+            r.append("字母占比：").append(pct(ex.letterChars, ex.charTotal)).append("%\n")
+            r.append("表情符号率：").append(pct(ex.emojiMsgs, textN)).append("%\n")
+            r.append("颜文字率：").append(pct(ex.kaoMsgs, textN)).append("%\n")
+            r.append("语气倾向：").append(toneTrend(qD, eD, lD, wD, ex, textN)).append("\n")
+        } else {
+            r.append("标点统计：无可用正文\n")
+        }
+
+        // ── 3) 口头禅（消息级命中，与【高频词】的 n-gram 词频是两套口径）──────
+        r.append("\n【口头禅】\n")
+        r.append("口头禅浓度：").append(pct(ex.clicheMsgs, textN)).append("%\n")
+        r.append("统计口径：含该词的消息条数\n")
+        val ck = topKeys(ex.cliche, 12)
+        if (ck.isEmpty()) {
+            r.append("最常挂嘴边：无\n")
+        } else {
+            val top = ck[0]
+            r.append("最常挂嘴边：").append(top).append("（").append(ex.cliche[top] ?: 0).append(" 次）\n")
+            for ((i, k) in ck.withIndex()) {
+                r.append(k).append("×").append(ex.cliche[k] ?: 0)
+                if (i < ck.size - 1) r.append("  ")
+            }
+            r.append("\n")
+        }
+
+        // ── 4) 互动平衡（只给占比与比值，不复述【发言排行】的条数）──────────
+        r.append("\n【互动平衡】\n")
+        val rankTotal = rank.values.sum()
+        val mine = rank["我"] ?: 0
+        val mineChars = ex.rankChars["我"] ?: 0
+        val allChars = ex.rankChars.values.sum()
+        val others = (rankTotal - mine).coerceAtLeast(0)
+        val otherChars = (allChars - mineChars).coerceAtLeast(0)
+        r.append("我的条数占比：").append(pct(mine, rankTotal)).append("%\n")
+        r.append("我的字数占比：").append(pct(mineChars, allChars)).append("%\n")
+        if (isGroup) {
+            val othersMap = rank.filterKeys { it != "我" }
+            val ok = topKeys(othersMap, 3)
+            for ((i, k) in ok.withIndex()) {
+                val dn = textSafe(speakerDisplayName(k, talker, isGroup, nickCache))
+                r.append("TOP").append(i + 1).append(" ").append(dn).append(" 占比：")
+                    .append(pct(rank[k] ?: 0, rankTotal)).append("%\n")
+            }
+            r.append("条数比 ").append(ratioText(mine, others)).append("（我 vs 其余人）\n")
+            val top1Pct = if (ok.isEmpty()) 0 else pct(rank[ok[0]] ?: 0, rankTotal)
+            r.append("平衡度：").append(groupBalanceText(top1Pct)).append("\n")
+        } else {
+            r.append("条数比 ").append(ratioText(mine, others)).append("（我 vs 对方）\n")
+            r.append("字数比 ").append(ratioText(mineChars, otherChars)).append("（我 vs 对方）\n")
+            r.append("平衡度：").append(balanceText(mine, others)).append("\n")
+        }
+
+        // ── 5) 沉默与主动性 ─────────────────────────────────────────
+        r.append("\n【沉默与主动性】\n")
+        r.append("最长沉默：").append(humanDuration(ex.maxGapMs)).append("\n")
+        r.append("沉默次数：").append(ex.silentBreaks).append(" 次\n")
+        if (ex.silentBreaks > 0) {
+            r.append("平均每次沉默：").append(humanDuration(ex.silentSum / ex.silentBreaks)).append("\n")
+        }
+        if (ex.maxGapEnd > ex.maxGapStart && ex.maxGapStart > 0L) {
+            r.append("最长沉默区间 ").append(clockText(ex.maxGapStart)).append(" → ")
+                .append(clockText(ex.maxGapEnd)).append("\n")
+        }
+        if (ex.replyGapCount > 0) {
+            r.append("平均回复间隔：").append(humanDuration(ex.replyGapSum / ex.replyGapCount)).append("\n")
+        } else {
+            r.append("平均回复间隔：无（30 分钟内无连续对话）\n")
+        }
+        if (ex.initiator.isEmpty()) {
+            r.append("谁更常先开口：没有跨越 30 分钟的中断\n")
+        } else {
+            r.append("谁更常先开口\n")
+            val ik = topKeys(ex.initiator, 4)
+            val iMax = (ex.initiator[ik[0]] ?: 1).coerceAtLeast(1)
+            var firstKey = ik[0]
+            for (k in ik) {
+                val v = ex.initiator[k] ?: 0
+                if (v <= 0) continue
+                if (v > (ex.initiator[firstKey] ?: 0)) firstKey = k
+                val dn = textSafe(speakerDisplayName(k, talker, isGroup, nickCache))
+                r.append(dn).append(" ").append(v).append(" ").append(bar(v, iMax, 16)).append("\n")
+            }
+            r.append("先开口最多：")
+                .append(textSafe(speakerDisplayName(firstKey, talker, isGroup, nickCache)))
+                .append("（").append(ex.initiator[firstKey] ?: 0).append(" 次）\n")
+        }
+
+        // ── 6) 话题切换 ─────────────────────────────────────────────
+        r.append("\n【话题切换】\n")
+        val topicCount = ex.silentBreaks + 1
+        r.append("话题段数：").append(topicCount).append(" 段\n")
+        r.append("平均每段：").append((totalAll.toDouble() / topicCount).roundToInt()).append(" 条\n")
+        if (ex.maxTopicMs > 0L) {
+            r.append("最长话题：").append(humanDuration(ex.maxTopicMs)).append("\n")
+        }
+        if (ex.maxTopicEnd > ex.maxTopicStart && ex.maxTopicStart > 0L) {
+            r.append("最长话题段 ").append(clockText(ex.maxTopicStart)).append(" → ")
+                .append(clockText(ex.maxTopicEnd)).append("\n")
+        }
+        if (ex.silentBreaks > 0) {
+            r.append("切换间隔：").append(humanDuration(ex.silentSum / ex.silentBreaks)).append("/次\n")
+        } else {
+            r.append("切换节奏：全程连贯，没有跨越 30 分钟的中断\n")
+        }
+    }
+
+    // ---------------- 第 14 轮新增：扫描期的增量统计 ----------------
+
+    /**
+     * 收尾一个话题段：段时长 = 段内最后一条消息 - 段内第一条消息。
+     *
+     * 只在「沉默 ≥30 分钟」和扫描结束时各调一次，纯整数比较，无分配。
+     */
+    private fun closeTopic(ex: ExtraStats, endCt: Long) {
+        if (ex.topicStart <= 0L || endCt <= ex.topicStart) return
+        val dur = endCt - ex.topicStart
+        if (dur > ex.maxTopicMs) {
+            ex.maxTopicMs = dur
+            ex.maxTopicStart = ex.topicStart
+            ex.maxTopicEnd = endCt
+        }
+    }
+
+    /**
+     * 标点 / 字母 / 表情的**一次**字符扫描。
+     *
+     * 为什么要单独走一遍字符：这些量要的是「每百字几个」的密度口径，
+     * 上面那批 `contains` 只能回答「有没有」，给不出密度；而字符循环是纯算术、
+     * 零对象分配，同一条正文多扫一遍的代价远小于再查一次数据库。
+     */
+    private fun scanPunctuation(body: String, ex: ExtraStats) {
+        if (body.isEmpty()) return
+        ex.charTotal += body.length
+        var emoji = false
+        var i = 0
+        while (i < body.length) {
+            val c = body[i]
+            when {
+                c == '?' || c == '？' -> ex.qMark++
+                c == '!' || c == '！' -> ex.eMark++
+                c == '…' -> ex.ellipsis++
+                c == '~' || c == '～' -> ex.tilde++
+                c in 'a'..'z' || c in 'A'..'Z' -> ex.letterChars++
+            }
+            // 表情符号在 UTF-16 里是代理对，必须按码点判断（只看一个 char 永远判不出来）
+            if (Character.isHighSurrogate(c) && i + 1 < body.length && Character.isLowSurrogate(body[i + 1])) {
+                val cp = Character.toCodePoint(c, body[i + 1])
+                if (cp in 0x1F300..0x1FAFF || cp in 0x2600..0x27BF) emoji = true
+                i++
+            }
+            i++
+        }
+        if (emoji) ex.emojiMsgs++
+        if (KAOMOJI.any { body.contains(it) }) ex.kaoMsgs++
+    }
+
+    /** 口头禅：固定词表逐个 `contains`，一条消息对同一个词只记一次（消息级口径） */
+    private fun scanCliches(body: String, ex: ExtraStats) {
+        var hit = false
+        for (w in CLICHES) {
+            if (body.contains(w)) {
+                ex.cliche[w] = (ex.cliche[w] ?: 0) + 1
+                hit = true
+            }
+        }
+        if (hit) ex.clicheMsgs++
+    }
+
+    /**
+     * 最长摘录：[EXCERPT_N] 条定长插入。
+     *
+     * 不排序、不收集全部消息（内存恒定），只保留已有字符串的引用；
+     * 长度为 0 的正文直接跳过，避免"空摘录"占位。
+     */
+    private fun rememberExcerpt(ex: ExtraStats, senderKey: String, body: String) {
+        if (body.isEmpty()) return
+        var at = -1
+        for (i in ex.topBodies.indices) {
+            if (body.length > ex.topBodies[i].second.length) {
+                at = i
+                break
+            }
+        }
+        if (at < 0 && ex.topBodies.size < EXCERPT_N) at = ex.topBodies.size
+        if (at < 0) return
+        ex.topBodies.add(at, senderKey to body)
+        while (ex.topBodies.size > EXCERPT_N) ex.topBodies.removeAt(ex.topBodies.size - 1)
+    }
+
+    /**
+     * 摘录正文的安全化：去掉换行、全/半角冒号与条形块。
+     *
+     * 为什么必须做：摘录是**任意用户文本**，里面一旦出现 `：`，弹窗和 PNG 的通用解析器
+     * 就会把这一行当成「指标：值」，排版会错位；换成逗号后它永远是普通正文行。
+     */
+    private fun excerpt(body: String): String {
+        val cleaned = textSafe(body).trim()
+        val cut = if (cleaned.length > EXCERPT_MAX) cleaned.substring(0, EXCERPT_MAX) + "…" else cleaned
+        return "「" + cut + "」"
+    }
+
+    /** 展示名 / 正文里会被段解析器误判的字符一律替换掉（不删除信息，只换字形） */
+    private fun textSafe(s: String): String = s
+        .replace('\n', ' ')
+        .replace('\r', ' ')
+        .replace('：', '，')
+        .replace(':', ',')
+        .replace('█', ' ')
+
+    /** 每百字出现次数（密度口径）；分母为 0 时返回 0，绝不产生 NaN */
+    private fun density(count: Int, total: Int): Double =
+        if (total <= 0) 0.0 else count.toDouble() * 100.0 / total.toDouble()
+
+    /** 保留一位小数。用整数运算而不是 String.format，省掉一处 Locale import */
+    private fun oneDecimal(v: Double): String {
+        if (v <= 0.0) return "0.0"
+        val t = (v * 10.0).roundToInt()
+        return (t / 10).toString() + "." + (t % 10)
+    }
+
+    /** 比值文本：以较小的一方为 1；任一方为 0 时直接给整数比 */
+    private fun ratioText(a: Int, b: Int): String {
+        if (a <= 0 && b <= 0) return "0 : 0"
+        if (a <= 0 || b <= 0) return if (a > b) "$a : 0" else "0 : $b"
+        return if (a >= b) oneDecimal(a.toDouble() / b.toDouble()) + " : 1"
+        else "1 : " + oneDecimal(b.toDouble() / a.toDouble())
+    }
+
+    /** 一句「语气倾向」结论（只判档位不含数字，避免被 KPI 卡片当数值渲染） */
+    private fun toneTrend(qD: Double, eD: Double, lD: Double, wD: Double, ex: ExtraStats, textN: Int): String = when {
+        qD >= 1.0 && qD >= eD -> "探询型（总想再确认一句）"
+        eD >= 0.8 -> "外放型（感叹号比句号还多）"
+        lD >= 0.3 -> "留白型（省略号里都是没说出口的）"
+        wD >= 0.3 -> "拖音型（波浪号把语气拉长）"
+        textN > 0 && ex.emojiMsgs * 2 >= textN -> "活泼型（表情符号撑起半句话）"
+        else -> "平铺直叙型（标点很克制）"
+    }
+
+    /** 私聊平衡度结论 */
+    private fun balanceText(mine: Int, others: Int): String {
+        if (others <= 0) return "一边倒（对方一句没说）"
+        if (mine <= 0) return "全程潜水（我一句没说）"
+        val hi = maxOf(mine, others)
+        val lo = minOf(mine, others)
+        val ratio = hi.toDouble() / lo.toDouble()
+        return when {
+            ratio < 1.2 -> "势均力敌，你来我往"
+            ratio < 1.8 && mine > others -> "我稍主动，对方接得住"
+            ratio < 1.8 -> "对方稍主动，我接得住"
+            mine > others -> "我在输出，对方以听为主"
+            else -> "对方在输出，我以听为主"
+        }
+    }
+
+    /** 群聊平衡度结论：看头名的条数占比 */
+    private fun groupBalanceText(top1Pct: Int): String = when {
+        top1Pct >= 50 -> "一个人带全场，其余人负责围观"
+        top1Pct >= 30 -> "少数人撑起大部分发言"
+        top1Pct > 0 -> "发言比较分散，没有绝对主角"
+        else -> "暂无可比数据"
+    }
+
+    /** 毫秒 → "MM-dd HH:mm"（本地时区）：沉默区间 / 话题段起止点用 */
+    private fun clockText(ms: Long): String {
+        if (ms <= 0L) return ""
+        val c = Calendar.getInstance()
+        c.timeInMillis = ms
+        val mo = ((c.get(Calendar.MONTH) + 1).toString()).padStart(2, '0')
+        val day = (c.get(Calendar.DAY_OF_MONTH).toString()).padStart(2, '0')
+        val hh = (c.get(Calendar.HOUR_OF_DAY).toString()).padStart(2, '0')
+        val mi = (c.get(Calendar.MINUTE).toString()).padStart(2, '0')
+        return "$mo-$day $hh:$mi"
     }
 
     // ---------------- 工具函数 ----------------

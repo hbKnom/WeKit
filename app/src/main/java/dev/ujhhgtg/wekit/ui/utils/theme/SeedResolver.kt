@@ -62,9 +62,8 @@ object SeedResolver {
             } else {
                 lightScheme
             }
-        if (wallpaperSupported) {
-            return if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
+        // 引擎生效时用**引擎自己的色板**当种子，而不是另取一份系统动态色：引擎把微信资源换成的就是
+        // 这组值，注入界面再从系统另取一份会出现「同一个界面两种莫奈色」（用户实机反馈的割裂感）。
         return materialScheme(if (dark) palette.primaryDark else palette.primaryLight, dark)
     }
 

@@ -15,7 +15,14 @@ data class AnalysisInput(
 }
 
 object MessagePolicy {
-    const val MAX_CHARACTERS = 1000
+    /**
+     * 单条消息的字符上限。
+     *
+     * 第 14 轮从 1000 抬到 2000：超过上限的消息以前既不分析、也不画卡 ——
+     * 用户看到的就是「这一条什么都没有」，被当成功能漏掉了。现在上限放宽，
+     * 真正超限的极少，而且会明确显示「本条内容过长，未分析」。
+     */
+    const val MAX_CHARACTERS = 2000
     const val MAX_CONTEXT_MESSAGES = 10
 
     fun textOrNull(text: String): String? {

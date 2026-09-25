@@ -32,6 +32,7 @@ import dev.ujhhgtg.wekit.ui.utils.dpToPx
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.isDarkMode
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
@@ -268,6 +269,9 @@ object BeautifyConversationList : ClickableFeature() {
         groupPosition: GroupPosition,
     ): Drawable {
         val isDark = context.isDarkMode
+        // 会话列表卡片是 WeKit 自己画的 Drawable（微信侧视图，拿不到 Compose 主题），
+        // 所以直接取引擎色板；莫奈未生效时完全保持原来的配色（trailing default）。
+        val tokens = MonetColors.tokens(isDark)
         val card = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             if (preset == ConversationListPreset.PINNED_GROUPED_CARD ||
@@ -279,10 +283,10 @@ object BeautifyConversationList : ClickableFeature() {
             }
             setColor(
                 when {
-                    unread && isDark -> 0xFF253E37.toInt()
-                    unread -> 0xFFEAF8F2.toInt()
-                    isDark -> preset.darkBackgroundColor
-                    else -> preset.lightBackgroundColor
+                    unread && isDark -> tokens?.primaryContainer ?: 0xFF253E37.toInt()
+                    unread -> tokens?.primaryContainer ?: 0xFFEAF8F2.toInt()
+                    isDark -> tokens?.surfaceContainerHigh ?: preset.darkBackgroundColor
+                    else -> tokens?.surfaceContainerHigh ?: preset.lightBackgroundColor
                 },
             )
             setStroke(1.dpToPx(context).coerceAtLeast(1), if (isDark) 0x22FFFFFF else 0x16161D1C)

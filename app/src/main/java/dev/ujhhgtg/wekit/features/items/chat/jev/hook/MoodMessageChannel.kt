@@ -7,6 +7,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.dominantName
 import dev.ujhhgtg.wekit.features.items.system.servers.WeChatService
 
 /**
@@ -47,13 +48,34 @@ object MoodMessageChannel {
         SignalAnalyzer.onAnalyzed = null
     }
 
-    /** 会话里能看到的那段文本；与气泡卡同一份结论，只是多一个标题。 */
+    /**
+     * 会话里能看到的那段文本；与气泡卡同一份结论。
+     *
+     * 第 14 轮改成**照着结构化字段拼**（情绪横条 / 建议），不再直接把模型那段多行正文
+     * 原样贴进来 —— 原来会出现「【潜语解读 · 情绪概率】」「【潜语解读 · 下一步动作】」
+     * 这种把「段落名当成情绪」的标题，以及同一份情绪百分比在两行里重复。
+     * 现在的固定形状：
+     *
+     * ```
+     * 【潜语 · 平静】
+     * 情绪：平静 59% · 不确定 32% · 开心 9%
+     * 建议：接住对方那句话，回应自己的感受。
+     * ```
+     */
     fun format(mood: Mood): String {
-        val body = mood.detail.lines()
-            .dropWhile { it.startsWith(JevProtocol.header) }
+        val bars = mood.bars.takeIf { it.isNotEmpty() }
+            ?.joinToString(" · ") { "${it.name} ${it.percent}%" }
+            ?.let { "情绪：$it" }
+        // 卡片正文里的「事件 / 判读」等补充信息（去掉与上面重复的情绪行与建议行）
+        val extra = mood.detail.lines()
+            .filterNot {
+                it.startsWith(JevProtocol.header) || it.startsWith("情绪：") || it.startsWith("建议：")
+            }
             .joinToString("\n")
             .trim()
-        return "【潜语解读 · ${mood.label}】\n" + body.ifBlank { mood.label }
+            .takeIf { it.isNotBlank() }
+        val advice = mood.advice?.takeIf { it.isNotBlank() }?.let { "建议：$it" }
+        return listOfNotNull("【潜语 · ${mood.dominantName()}】", bars, extra, advice).joinToString("\n")
     }
 
     private fun onAnalyzed(input: AnalysisInput, mood: Mood) {

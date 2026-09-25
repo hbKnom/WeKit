@@ -31,6 +31,9 @@ class MonetResourceGraph(
     fun node(id: Int): MonetResourceNode? = byId[id]
     fun node(key: MonetResourceKey): MonetResourceNode? = byKey[key]
     fun nodes(type: String): List<MonetResourceNode> = byId.values.filter { it.key.type == type }
+
+    /** 全部宿主资源节点。合成资源借槽位、类型统计都要用（只按角色取子集不够）。 */
+    fun allNodes(): Collection<MonetResourceNode> = byId.values
     fun xmlTrees(ownerId: Int): List<MonetXmlElement> = xmlByOwner[ownerId].orEmpty()
 
     fun withXmlTree(ownerId: Int, tree: MonetXmlElement): MonetResourceGraph =

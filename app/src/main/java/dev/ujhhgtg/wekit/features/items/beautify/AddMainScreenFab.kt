@@ -118,6 +118,7 @@ import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.killHost
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.restartHost
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -456,7 +457,15 @@ object AddMainScreenFab : ClickableFeature() {
                                 }
                                 FabMenuEntry(localizedName(localizedContext, item), icon, onClick = action)
                             }
-                            val backgroundColor = if (isSystemInDarkTheme()) Color(0xFF191919) else Color(0xFFF7F7F7)
+                            // 莫奈生效时跟随注入主题（与微信原生底栏同源），否则保持原来的固定灰/黑。
+                            val monetActive = MonetColors.isActive
+                            val backgroundColor = if (monetActive) {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            } else if (isSystemInDarkTheme()) {
+                                Color(0xFF191919)
+                            } else {
+                                Color(0xFFF7F7F7)
+                            }
                             val activeColor = MaterialTheme.colorScheme.primary
                             val errorColor = MaterialTheme.colorScheme.error
                             val layoutDirection = LocalLayoutDirection.current

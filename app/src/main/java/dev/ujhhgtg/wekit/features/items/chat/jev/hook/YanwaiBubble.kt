@@ -23,6 +23,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.dominantName
 import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -67,7 +68,7 @@ object YanwaiBubble {
     private val cards = IdentityHashMap<View, Card>()
     private val unsupported = mutableSetOf<String>()
 
-    fun show(row: View, message: AnalysisInput?): Boolean {
+    fun show(row: View, message: AnalysisInput?, note: String? = null): Boolean {
         if (message == null || !ModulePrefs.enabled || !ModulePrefs.displayBubble ||
             !ModulePrefs.inScope(message.talker)
         ) {
@@ -84,13 +85,13 @@ object YanwaiBubble {
             state = attach(row, key) ?: return false
             cards[row] = state
         }
-        render(row, state, message)
+        render(row, state, message, note)
         return true
     }
 
     // ------------------------------------------------------------------ 内容
 
-    private fun render(row: View, card: Card, input: AnalysisInput) {
+    private fun render(row: View, card: Card, input: AnalysisInput, note: String? = null) {
         val key = input.key
         val mood = MoodStore.get(key)
         val failure = SignalAnalyzer.failure(key)
@@ -102,7 +103,8 @@ object YanwaiBubble {
                 mood.bars.joinToString(",") { "${it.name}${it.percent}${if (it.highlight) "*" else ""}" } +
                 ":" + mood.advice.orEmpty() + ":" + mood.detail
             !ModulePrefs.canAnalyze -> "unconfigured"
-            else -> "pending"
+            note != null -> "skip:$note"
+            else -> "pending:${MoodStore.pendingCount()}"
         }
         if (phrase == card.fingerprint) return
         card.fingerprint = phrase
@@ -136,7 +138,7 @@ object YanwaiBubble {
                         else -> "· 较前几句 ↓$points"
                     }
                 }.orEmpty()
-                card.header.text = listOf("潜语 · ${mood.label}", arrow)
+                card.header.text = listOf("潜语 · ${mood.dominantName()}", arrow)
                     .filter { it.isNotEmpty() }.joinToString("  ")
                 card.header.setTextColor(accent)
                 card.bars.setBars(mood.bars, accent, pal)
@@ -156,10 +158,16 @@ object YanwaiBubble {
             }
 
             else -> {
-                card.header.text = "潜语 · 正在分析"
+                val queued = if (note == null) MoodStore.pendingCount() else 0
+                card.header.text = if (note != null) "潜语 · 已跳过" else "潜语 · 正在分析"
                 card.header.setTextColor(pal.muted)
                 card.bars.visibility = View.GONE
-                card.body.text = "已送出发送给模型，结论会回填到这张卡上。"
+                card.body.text = note ?: if (queued > 1) {
+                    // 一屏多条同时提交时给个排队交代：卡片看起来「卡住了」多数只是还没轮到
+                    "已提交给模型，正在排队分析（本屏共 $queued 条）。结论会回填到这张卡上。"
+                } else {
+                    "已提交给模型，正在分析。结论会回填到这张卡上。"
+                }
                 card.advice.visibility = View.GONE
             }
         }

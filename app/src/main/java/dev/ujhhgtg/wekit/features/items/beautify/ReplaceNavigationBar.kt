@@ -116,6 +116,7 @@ import dev.ujhhgtg.wekit.ui.utils.ReorderableList
 import dev.ujhhgtg.wekit.ui.utils.setLifecycleOwner
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.ui.utils.theme.InjectedUiTheme
+import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.reflection.bool
 import dev.ujhhgtg.wekit.utils.reflection.int
 import kotlin.math.abs
@@ -582,9 +583,24 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                         val showFinderDot by showFinderDotState
                         val contactUnreadCount by contactUnreadCountState
 
-                        val backgroundColor = if (isSystemInDarkTheme()) Color(0xFF191919) else Color(0xFFF7F7F7)
+                        // 底栏是 WeKit 自己接管的 UI：莫奈生效时跟随注入主题（与微信原生同源），
+                        // 未生效时保持原来的固定灰/黑，避免改变既有外观。
+                        val monetActive = MonetColors.isActive
+                        val backgroundColor = if (monetActive) {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        } else if (isSystemInDarkTheme()) {
+                            Color(0xFF191919)
+                        } else {
+                            Color(0xFFF7F7F7)
+                        }
                         val activeColor = MaterialTheme.colorScheme.primary
-                        val inactiveColor = if (isSystemInDarkTheme()) Color(0xFF999999) else Color(0xFF181818)
+                        val inactiveColor = if (monetActive) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else if (isSystemInDarkTheme()) {
+                            Color(0xFF999999)
+                        } else {
+                            Color(0xFF181818)
+                        }
 
                         // Scale the bar by overriding the density rather than wrapping it in a
                         // graphicsLayer: every dp/sp inside (height, icons, pill, blur radius,

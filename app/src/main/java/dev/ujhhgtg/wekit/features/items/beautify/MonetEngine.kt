@@ -11,6 +11,8 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.view.View
@@ -66,6 +68,7 @@ import dev.ujhhgtg.wekit.utils.monet.MonetResolveProgress
 import dev.ujhhgtg.wekit.utils.monet.MonetResolveResult
 import dev.ujhhgtg.wekit.utils.monet.MonetResolveStage
 import dev.ujhhgtg.wekit.utils.monet.MonetRuntimePackageWriter
+import dev.ujhhgtg.wekit.utils.monet.MonetRuntimeState
 import dev.ujhhgtg.wekit.utils.monet.MonetStructureMatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,6 +114,15 @@ object MonetEngine : ClickableFeature() {
     /** 把品牌绿编译进 Java 字段/绘制调用的宿主组件。 */
     private const val SWITCH_BTN_CLASS = "com.tencent.mm.ui.widget.MMSwitchBtn"
 
+    /** 注入后多久算「活过来了」（没活到这一刻就重启 = 疑似被注入的包搞崩）。 */
+    private const val CONFIRM_DELAY_MS = 30_000L
+
+    /** 应用后多少毫秒内又重启才算「疑似崩溃」：正常手动重开微信不会这么快。 */
+    private const val RESTART_WINDOW_MS = 90_000L
+
+    /** 连续这么多次疑似崩溃就自动停用注入（等用户重新解析再放行）。 */
+    private const val MAX_FAIL_STREAK = 2
+
     const val KEY_BUBBLE_STYLE = "monet_bubble_style"
     const val KEY_MULTI_SCENE_CORNERS = "monet_multi_scene_corners"
     const val KEY_ERROR_COLORS = "monet_error_colors"
@@ -134,6 +146,18 @@ object MonetEngine : ClickableFeature() {
 
     private val bindingsFile: File by lazy { (KnownPaths.moduleData / "monet_bindings.json").toFile() }
     private val runtimeDir: File by lazy { (KnownPaths.moduleCache / "monet").toFile() }
+
+    /**
+     * 绑定缓存的第二份副本，和运行时包放在同一个目录。
+     *
+     * 实机日志（2026-09-25）里 `moduleData/monet_bindings.json` 每次启动都读不回来，导致**每次冷启动
+     * 都全量重解析**（单次 100 秒以上，期间主线程被拖到 2.6 秒延迟，用户看到的就是卡顿）。
+     * 运行时包写在 `runtimeDir` 里是能被写成功的，所以缓存也放这里，两边都写、任一份都能读。
+     */
+    private val bindingsCacheFile: File by lazy { File(runtimeDir, "monet_bindings.json") }
+
+    /** 注入自保状态：见 [MonetRuntimeState]。 */
+    private val runtimeStateFile: File by lazy { File(runtimeDir, "monet_runtime_state.json") }
 
     private val _progress = MutableStateFlow<MonetResolveProgress?>(null)
     val progress: StateFlow<MonetResolveProgress?> = _progress.asStateFlow()
@@ -250,6 +274,7 @@ object MonetEngine : ClickableFeature() {
             // 不能跟微信启动抢 CPU（用户明确要求「不影响微信的流畅运行」）。
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
             try {
+                val startedAt = System.nanoTime()
                 val fingerprint = MonetResourceResolver.fingerprint(
                     paths,
                     HostInfo.versionCode,
@@ -257,16 +282,26 @@ object MonetEngine : ClickableFeature() {
                 )
                 val cached = cachedBindings()?.takeIf { !force && it.fingerprint == fingerprint }
                 val packageFile = runtimeFile(fingerprint)
+                if (!guardRuntimeInjection(force, packageFile)) return@thread
                 if (cached != null && packageFile.isFile) {
                     WeLogger.i(
                         TAG,
                         "reusing cached bindings ${cached.roles.size} roles (unresolved ${cached.unresolved.size})",
                     )
                     applyRuntimePackage(packageFile)
+                    recordRuntimeApplied(packageFile)
                     publishPalette()
                     _result.value = MonetResolveResult.Success(cached, packageFile)
+                    WeLogger.i(
+                        TAG,
+                        "缓存命中，本次启动未做资源解析，用时 ${(System.nanoTime() - startedAt) / 1_000_000} ms",
+                    )
                     return@thread
                 }
+                WeLogger.i(
+                    TAG,
+                    "缓存未命中（bindings=${cached?.fingerprint ?: "无"} 期望=$fingerprint，包存在=${packageFile.isFile}），开始解析",
+                )
 
                 _progress.value = MonetResolveProgress(
                     MonetResolveStage.LOADING_APKS,
@@ -320,12 +355,23 @@ object MonetEngine : ClickableFeature() {
                             "（可在设置里重新解析）",
                     )
                 }
-                MonetRuntimePackageWriter.write(packageFile, info.packageName, resolution.plan)
+                if (!MonetRuntimePackageWriter.write(packageFile, info.packageName, resolution.plan)) {
+                    // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
+                    error(
+                        "运行时资源包构建失败（资源 id 校验未通过），已中止本次注入以免影响微信运行" +
+                            "（可在设置里重新解析）",
+                    )
+                }
                 persistBindings(resolution.bindings)
                 applyRuntimePackage(packageFile)
+                recordRuntimeApplied(packageFile)
                 publishPalette()
                 _progress.value = null
                 _result.value = MonetResolveResult.Success(resolution.bindings, packageFile)
+                WeLogger.i(
+                    TAG,
+                    "解析并注入完成，用时 ${(System.nanoTime() - startedAt) / 1_000_000} ms",
+                )
             } catch (error: Throwable) {
                 val stage = _progress.value?.stage ?: MonetResolveStage.LOADING_APKS
                 WeLogger.e(TAG, "resource analysis failed during $stage", error)
@@ -378,20 +424,103 @@ object MonetEngine : ClickableFeature() {
     }
 
     private fun cachedBindings(): MonetBindings? {
-        if (!bindingsFile.isFile) return null
-        return runCatching {
-            DefaultJson.decodeFromString(
-                MonetBindings.serializer(),
-                bindingsFile.readText(),
+        val candidates = listOf(bindingsCacheFile, bindingsFile).filter { it.isFile }
+        if (candidates.isEmpty()) {
+            WeLogger.d(
+                TAG,
+                "no cached bindings at ${bindingsCacheFile.absolutePath} / ${bindingsFile.absolutePath}",
             )
-        }.onFailure { WeLogger.w(TAG, "cannot read cached bindings", it) }.getOrNull()
+            return null
+        }
+        candidates.forEach { file ->
+            runCatching {
+                return DefaultJson.decodeFromString(MonetBindings.serializer(), file.readText())
+            }.onFailure { WeLogger.w(TAG, "cannot read cached bindings ${file.absolutePath}", it) }
+        }
+        return null
     }
 
     private fun persistBindings(bindings: MonetBindings) {
+        val json = runCatching {
+            DefaultJson.encodeToString(MonetBindings.serializer(), bindings)
+        }.onFailure { WeLogger.w(TAG, "cannot encode bindings", it) }.getOrNull() ?: return
+        listOf(bindingsCacheFile, bindingsFile).forEach { file ->
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.writeText(json)
+            }.onFailure { WeLogger.w(TAG, "cannot persist bindings to ${file.absolutePath}", it) }
+        }
+    }
+
+    /**
+     * 注入前的自保闸门：**绝不允许出现「一启动就闪退、重启又应用同一个坏包」的死循环**。
+     *
+     * 判断依据见 [MonetRuntimeState]：上一个包应用后没等到确认就重启（窗口 [RESTART_WINDOW_MS]）
+     * 记为一次疑似；连续 [MAX_FAIL_STREAK] 次就直接不注入，并如实告诉用户，等用户在设置里点
+     * 「重新解析」（force=true）再放行。任何异常都当作「没有疑似」，绝不因为自保逻辑本身挡住功能。
+     */
+    private fun guardRuntimeInjection(force: Boolean, packageFile: File): Boolean {
+        if (force) {
+            writeRuntimeState(MonetRuntimeState())
+            return true
+        }
+        val state = readRuntimeState()
+        if (!state.suspiciousRestart(System.currentTimeMillis(), RESTART_WINDOW_MS, packageFile.name)) {
+            return true
+        }
+        val streak = state.failStreak + 1
+        writeRuntimeState(state.copy(failStreak = streak))
+        if (streak < MAX_FAIL_STREAK) {
+            WeLogger.w(TAG, "上次注入后微信很快就退出了（疑似 $streak 次），本次仍注入但会更谨慎")
+            return true
+        }
+        WeLogger.e(TAG, "莫奈运行时包连续 $streak 次疑似导致微信异常退出，已自动停用注入")
+        _progress.value = null
+        _result.value = MonetResolveResult.Failure(
+            MonetResolveProgress(MonetResolveStage.BUILDING_PACKAGE, "runtime injection suspended"),
+            "莫奈取色已在本次启动停用：运行时资源包连续 $streak 次疑似导致微信异常退出。" +
+                "请在设置里点「重新解析」重试；若仍然闪退，请先关闭莫奈引擎。",
+        )
+        return false
+    }
+
+    /** 记录「刚应用了哪个包」，作为下次启动判断是否疑似崩溃的依据。 */
+    private fun recordRuntimeApplied(packageFile: File) {
+        writeRuntimeState(
+            MonetRuntimeState(
+                packageName = packageFile.name,
+                appliedAt = System.currentTimeMillis(),
+                failStreak = readRuntimeState().failStreak,
+            ),
+        )
         runCatching {
-            bindingsFile.parentFile?.mkdirs()
-            bindingsFile.writeText(DefaultJson.encodeToString(MonetBindings.serializer(), bindings))
-        }.onFailure { WeLogger.w(TAG, "cannot persist bindings", it) }
+            Handler(Looper.getMainLooper()).postDelayed({
+                runCatching {
+                    thread(name = "MonetConfirm") {
+                        writeRuntimeState(
+                            readRuntimeState().copy(confirmedAt = System.currentTimeMillis()),
+                        )
+                    }
+                }
+            }, CONFIRM_DELAY_MS)
+        }.onFailure { WeLogger.w(TAG, "cannot schedule runtime confirm", it) }
+    }
+
+    private fun readRuntimeState(): MonetRuntimeState = runCatching {
+        if (runtimeStateFile.isFile) {
+            DefaultJson.decodeFromString(MonetRuntimeState.serializer(), runtimeStateFile.readText())
+        } else {
+            MonetRuntimeState()
+        }
+    }.getOrElse { MonetRuntimeState() }
+
+    private fun writeRuntimeState(state: MonetRuntimeState) {
+        runCatching {
+            runtimeDir.mkdirs()
+            runtimeStateFile.writeText(
+                DefaultJson.encodeToString(MonetRuntimeState.serializer(), state),
+            )
+        }.onFailure { WeLogger.w(TAG, "cannot persist runtime state", it) }
     }
 
     // ------------------------------------------------------------------------------------------

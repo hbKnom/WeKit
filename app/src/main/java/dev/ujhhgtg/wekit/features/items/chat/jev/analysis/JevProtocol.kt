@@ -120,6 +120,8 @@ object JevProtocol {
             // 结构化情绪概率：卡片照它画横条，不再解析自己拼的文本行
             bars = emotionBars(profile),
             advice = selectedAction?.text,
+            // 主情绪与「结论段位」分开：标题要显示的是情绪，不是 section 名
+            dominant = dominantEmotion(profile),
         )
     }
 
@@ -134,7 +136,20 @@ object JevProtocol {
             append(header).append('\n').append(emotionProbabilities(profile))
             if (!note.isNullOrBlank()) append('\n').append("（").append(note).append("）")
         }
-        return Mood("情绪概率", emotionScore(profile), 0, "", text, bars = emotionBars(profile))
+        return Mood("情绪概率", emotionScore(profile), 0, "", text, bars = emotionBars(profile),
+            dominant = dominantEmotion(profile))
+    }
+
+    /**
+     * 主情绪中文名：优先模型选中的那一项，其次概率最高的一项。
+     * 全部概率为 0（无法确定）时返回 null，交给界面退回 [Mood.label]。
+     */
+    private fun dominantEmotion(profile: ChatProfile): String? {
+        val rows = emotionRows(profile).toMap()
+        val chosen = profile.emotion.choice
+        if (profile.emotion.clear && (rows[chosen] ?: 0) > 0) return emotions[chosen] ?: chosen
+        val best = rows.entries.maxByOrNull { it.value } ?: return null
+        return if (best.value > 0) emotions[best.key] ?: best.key else null
     }
 
     private fun emotionBars(profile: ChatProfile): List<MoodBar> =

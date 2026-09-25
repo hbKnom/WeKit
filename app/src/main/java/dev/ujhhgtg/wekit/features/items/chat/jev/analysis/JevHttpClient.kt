@@ -106,8 +106,15 @@ class JevHttpClient {
     }
 
     private companion object {
-        /** 请求之间的最小间隔：把「一屏多条同时分析」的突发摊平到额度允许的速率。 */
-        const val MIN_INTERVAL_MS = 1_200L
+        /**
+         * 请求之间的最小间隔：把「一屏多条同时分析」的突发摊平到额度允许的速率。
+         *
+         * 第 14 轮从 1200ms 收到 700ms：每条消息要两轮请求（[JevProtocol.payload] +
+         * [JevProtocol.detailPayload]），1.2s 的间隔让一屏 12 条消息要等两分钟，
+         * 用户看到的就是「有的行半天不出结果」。700ms 仍能把突发摊平，
+         * 真被限流时 [exchange] 还有退避重试兜着。
+         */
+        const val MIN_INTERVAL_MS = 700L
 
         /** 可重试失败的最大重试次数。 */
         const val MAX_RETRIES = 2

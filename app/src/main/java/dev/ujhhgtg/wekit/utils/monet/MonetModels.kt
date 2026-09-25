@@ -47,6 +47,30 @@ data class MonetBindings(
     val unresolved: List<String> = emptyList(),
 )
 
+/**
+ * 莫奈运行时包的「应用状态」：用于**自保**。
+ *
+ * 背景：运行时包一旦出错（覆盖到宿主的非同类资源，见 `MonetRuntimePackageWriter`），表现是
+ * 微信在启动阶段直接闪退（页面切换动画取插值器就抛 `Resources$NotFoundException`），
+ * 而每次重启又会重新应用同一个坏包 —— 用户看到的是「一直闪退、根本进不去」。
+ * 实机 2026-09-25 就是这个循环。这里记住「上一个包 / 什么时候应用的 / 有没有活过观察窗口」，
+ * 连续两次「应用后很快重启」就自动停用，等用户在设置页点「重新解析」（force）再放行。
+ */
+@Serializable
+data class MonetRuntimeState(
+    val packageName: String = "",
+    val appliedAt: Long = 0L,
+    val confirmedAt: Long = 0L,
+    val failStreak: Int = 0,
+) {
+    /** 应用后没等到确认就重启 = 疑似是被这个包搞崩的。 */
+    fun suspiciousRestart(now: Long, restartWindowMs: Long, expectedPackage: String): Boolean =
+        expectedPackage == packageName &&
+            appliedAt > 0 &&
+            confirmedAt < appliedAt &&
+            (now - appliedAt) in 0..restartWindowMs
+}
+
 /** Stage of a WeChat resource analysis run, surfaced by the progress dialog. */
 enum class MonetResolveStage(val label: String) {
     LOADING_APKS("loading APKs"),
@@ -188,6 +212,51 @@ data class MonetOverlayPlan(
 
 /** Bubble geometry preset authored by [MonetAssetInjector]. */
 enum class MonetBubbleStyle { MODERN, CLASSIC, PRO }
+
+/**
+ * 宿主资源表里每个**类型名**对应的 typeId 与最大 entryId。
+ *
+ * 只有[MonetBinding.id]（宿主真实 id）还不够：WeKit 自己合成的资源（自适应图标的
+ * `wekit_icon_bg/fg/mono`，宿主里根本没有对应条目）拿不到宿主 id，但如果随便分一个
+ * entryId，就可能正好压在宿主同类型的某个条目上 —— 那等于把别人的资源盖掉。
+ * 所以合成资源一律借「宿主同类型最大 entryId 之后」的槽位：那个 id 一定是空的。
+ */
+data class MonetHostTypeSlots(
+    private val typeIds: Map<String, Int>,
+    private val highestEntryIds: Map<String, Int>,
+) {
+    fun typeId(type: String, fallback: Int = 0): Int = typeIds[type] ?: fallback
+
+    fun highestEntryId(type: String): Int = highestEntryIds[type] ?: 0
+
+    /** 借一个宿主同类型里不存在的 id；[sequence] 区分同一类型的多个合成资源。 */
+    fun syntheticId(type: String, sequence: Int, fallbackTypeId: Int = 0): Int =
+        MonetRuntimePackageWriter.syntheticId(
+            typeId = typeId(type, fallbackTypeId),
+            hostHighestEntryId = highestEntryId(type),
+            sequence = sequence,
+        )
+
+    companion object {
+        val EMPTY = MonetHostTypeSlots(emptyMap(), emptyMap())
+
+        fun of(nodes: Collection<MonetResourceNode>): MonetHostTypeSlots {
+            val grouped = nodes.groupBy { it.key.type }
+            val typeIds = linkedMapOf<String, Int>()
+            val highest = linkedMapOf<String, Int>()
+            grouped.forEach { (type, list) ->
+                val ids = list.map { (it.id ushr 16) and 0xff }
+                // 多 APK 合并时同一类型名可能出现多个 typeId：以出现最多的为准。
+                // 真正写包时会按 typeId 定位，撞车会被 [MonetRuntimePackageWriter] 的
+                // 冲突校验拦下，所以这里只需给出一个稳定答案。
+                typeIds[type] = ids.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+                highest[type] = list.maxOf { it.id and 0xffff }
+            }
+            return MonetHostTypeSlots(typeIds, highest)
+        }
+    }
+}
+
 
 /**
  * DEX-derived evidence models. Upstream 09-25 deleted the DexKit collector that produced these

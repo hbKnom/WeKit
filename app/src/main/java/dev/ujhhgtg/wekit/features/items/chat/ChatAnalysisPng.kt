@@ -155,9 +155,19 @@ object ChatAnalysisPng {
     private const val GROUP_PILL_DOT_GAP = 22
     private const val GROUP_PILL_PAD_R = 32
 
-    /** 页脚高度 / 内部节奏（上留白 / 文字行高 / 文字与品牌条间距 / 品牌条厚度） */
-    private const val FOOTER_H = 96
+    /**
+     * 页脚高度 / 内部节奏。
+     *
+     * 第 14 轮在「文字行」之上加了一行**元信息**（会话名 · 时间范围 · 生成时间 · 数据来源脚注），
+     * 所以高度按 [FOOTER_META_H] + [FOOTER_META_GAP] 加高，`init` 里的排版断言同步收紧 ——
+     * 页脚高度、分页几何、单页最大高度都由常量推导，改这里一处即可，不会出现"页脚压住最后一张卡片"。
+     */
+    private const val FOOTER_H = 152
     private const val FOOTER_TOP_GAP = 12
+
+    /** 元信息行高 / 元信息与品牌页码行的间距 */
+    private const val FOOTER_META_H = 44
+    private const val FOOTER_META_GAP = 12
     private const val FOOTER_TEXT_H = 54
     private const val FOOTER_STRIP_GAP = 12
     private const val FOOTER_STRIP_H = 7f
@@ -488,9 +498,11 @@ object ChatAnalysisPng {
         // ---- 标签云：单个标签的左右内边距不能超过内容区一半 ----
         require(CHIP_PAD_H * 2 < CONTENT_W / 2) { "PNG 标签云内边距过大" }
 
-        // ---- 页脚：上留白 + 文字行 + 间距 + 品牌条 必须装得进页脚高度 ----
-        require((FOOTER_TOP_GAP + FOOTER_TEXT_H + FOOTER_STRIP_GAP).toFloat() + FOOTER_STRIP_H <=
-            FOOTER_H.toFloat()) { "PNG 页脚内部排版超出页脚高度" }
+        // ---- 页脚：上留白 + 元信息行 + 间距 + 文字行 + 间距 + 品牌条 必须装得进页脚高度 ----
+        require((FOOTER_TOP_GAP + FOOTER_META_H + FOOTER_META_GAP + FOOTER_TEXT_H + FOOTER_STRIP_GAP).toFloat() +
+            FOOTER_STRIP_H <= FOOTER_H.toFloat()) { "PNG 页脚内部排版超出页脚高度" }
+        // 元信息行的字号必须小于行高，否则文字会被自己的行高裁掉
+        require(FOOTER_META_H > FS_SMALL) { "PNG 页脚元信息行高小于字号" }
     }
 
     // ==================================================================
@@ -1142,6 +1154,18 @@ object ChatAnalysisPng {
         baseName: String,
     ): List<String> {
         val generated = "分析生成于 ${reportDateText()}"
+        // 页脚元信息：会话名 · 时间范围 · 生成时间 · 数据来源。
+        // 每一页都印一遍 —— 分页导出后，单张图脱离弹窗也能自证"是哪次分析、什么时段、数据从哪来"。
+        val footerMeta = buildString {
+            if (sessionName.isNotBlank()) append(sessionName)
+            if (period.isNotBlank()) {
+                if (isNotEmpty()) append(" · ")
+                append(period)
+            }
+            if (isNotEmpty()) append(" · ")
+            append(generated)
+            append(" · 数据来源：本地消息数据库（仅统计纯文本消息）")
+        }
         val bodyP = paint(FS_BODY, COLOR_BODY)
 
         // ---- 第一遍：纯几何（先把所有高度算准，再决定分页）----
@@ -1214,7 +1238,7 @@ object ChatAnalysisPng {
                 }
 
                 // 页脚画在「内容末 + CARD_GAP」，与旧版单张图的位置逐像素一致
-                drawFooter(cv, page.contentBottom + CARD_GAP, label)
+                drawFooter(cv, page.contentBottom + CARD_GAP, label, footerMeta)
                 writePng(bmp, path)
             } finally {
                 if (!bmp.isRecycled) bmp.recycle()
@@ -2058,18 +2082,35 @@ object ChatAnalysisPng {
             }
         }
 
-        // ---- 峰值数值：标在峰柱正上方（顶部留白就是给它准备的）----
-        val peakBar = bars[peakIndex]
-        val peakH = areaH * (peakBar.count.toFloat() / maxV.toFloat())
-        val peakCx = plotLeft + slot * peakIndex + slot / 2f
+        // ---- 数值标签（第 14 轮加强）----
+        // 旧版只标峰柱；现在**每根能放下标签的柱子都标数值**（峰柱仍是强调色加粗），
+        // 一眼就能读出每段的量级，不用再靠眼睛比高度。
+        // 两个硬约束：标签夹在本柱的槽宽内（相邻标签不会互相压字），
+        // 且整段夹在绘图区内（越不出画布）；槽太窄时只有峰柱保留标签（沿用旧版行为）。
         val peakP = paint(FS_SMALL, accent, bold = true)
-        val peakText = truncateToWidth(peakBar.value, plotRight - plotLeft, peakP)
-        val peakTop = baseY - peakH - 12f - FS_SMALL
-        drawClipped(
-            cv, peakText, peakCx - peakP.measureText(peakText) / 2f,
-            fitBaseline(peakTop, FS_SMALL + 12f, peakP, minOf(baseY - 4f, limitBottom)),
-            RectF(plotLeft, rowTop, plotRight, baseY), peakP,
-        )
+        val sideP = paint(FS_SMALL, COLOR_META)
+        bars.forEachIndexed { i, b ->
+            if (b.count <= 0L) return@forEachIndexed
+            val isPeak = i == peakIndex
+            val p = if (isPeak) peakP else sideP
+            val cx = plotLeft + slot * i + slot / 2f
+            val fits = p.measureText(b.value) <= slot - 8f
+            if (!fits && !isPeak) return@forEachIndexed
+            val label = truncateToWidth(b.value, if (fits) slot - 8f else plotRight - plotLeft, p)
+            if (label.isEmpty()) return@forEachIndexed
+            val h = areaH * (b.count.toFloat() / maxV.toFloat())
+            val labelTop = baseY - h - 12f - FS_SMALL
+            drawClipped(
+                cv, label, cx - p.measureText(label) / 2f,
+                fitBaseline(labelTop, FS_SMALL + 12f, p, minOf(baseY - 4f, limitBottom)),
+                if (fits) {
+                    RectF(cx - slot / 2f + 2f, rowTop, cx + slot / 2f - 2f, baseY)
+                } else {
+                    RectF(plotLeft, rowTop, plotRight, baseY)
+                },
+                p,
+            )
+        }
 
         // ---- 均值虚线（手绘短划，不引入 DashPathEffect）----
         val avg = bars.sumOf { it.count }.toDouble() / n.toDouble()
@@ -2140,8 +2181,14 @@ object ChatAnalysisPng {
         }
     }
 
-    /** 页脚：顶部渐变细线 + 左品牌 + 右页码，底部再加一条品牌渐变条当水印 */
-    private fun drawFooter(cv: Canvas, top: Int, pageLabel: String = FOOTER_PAGE_TEXT) {
+    /**
+     * 页脚：顶部渐变细线 + 元信息行（会话名 · 时间范围 · 生成时间 · 数据来源）+ 左品牌 + 右页码，
+     * 底部一条品牌渐变条当水印。
+     *
+     * 第 14 轮新增的 [meta] 行：分页导出成多张图后，单张图脱离弹窗就"不知道自己是谁、什么时候生成的"，
+     * 所以每页都带上归属信息；空串时整行不画（排版位置仍按常量预留，不会影响任何既有坐标）。
+     */
+    private fun drawFooter(cv: Canvas, top: Int, pageLabel: String = FOOTER_PAGE_TEXT, meta: String = "") {
         cv.drawRect(
             RectF(CARD_LEFT.toFloat(), top.toFloat(), CARD_RIGHT.toFloat(), top + 3f),
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -2158,9 +2205,23 @@ object ChatAnalysisPng {
             },
         )
 
-        // 页脚内部节奏全部来自常量：上留白 → 文字行 → 间距 → 品牌条，
+        // 元信息行：左对齐的说明文字，超过一行宽就省略（绝不越出版心）
+        var textTop = (top + FOOTER_TOP_GAP).toFloat()
+        if (meta.isNotEmpty()) {
+            val metaP = paint(FS_SMALL, COLOR_META)
+            val metaH = FOOTER_META_H.toFloat()
+            val metaClip = RectF(CARD_LEFT.toFloat(), textTop, CARD_RIGHT.toFloat(), textTop + metaH)
+            val metaText = truncateToWidth(meta, metaClip.width(), metaP)
+            drawClipped(
+                cv, metaText, metaClip.left,
+                fitBaseline(textTop, metaH, metaP, metaClip.bottom),
+                metaClip, metaP,
+            )
+            textTop += metaH + FOOTER_META_GAP
+        }
+
+        // 页脚内部节奏全部来自常量：上留白 → 元信息行 → 间距 → 文字行 → 间距 → 品牌条，
         // 文字行与品牌条严格分离（避免文字下缘与渐变条压在一起）
-        val textTop = (top + FOOTER_TOP_GAP).toFloat()
         val textH = FOOTER_TEXT_H.toFloat()
         val limitBottom = textTop + textH
         val pageP = paint(FS_SMALL, COLOR_ACCENT, bold = true)

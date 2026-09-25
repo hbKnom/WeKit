@@ -9,6 +9,7 @@ import com.reandroid.arsc.chunk.xml.ResXmlDocument
 import com.reandroid.arsc.chunk.xml.ResXmlElement
 import com.reandroid.arsc.coder.ComplexUtil
 import com.reandroid.arsc.coder.UnitDimension
+import com.reandroid.arsc.value.Entry
 import com.reandroid.arsc.value.ValueType
 import dev.ujhhgtg.wekit.utils.WeLogger
 import java.io.File
@@ -28,6 +29,24 @@ import java.util.zip.ZipEntry
  *    provider cannot bind the overriding entries to the base package.
  *  - Publish atomically through a sibling temp file: scoped storage refuses `unlink + create` on an
  *    inode owned by the storage holder, but `rename()` over it works.
+ *
+ * **铁律：覆盖条目必须写在宿主原来的资源 id 上。**
+ *
+ * `ResourcesProvider` 是**按 id** 合并的：包名（`com.tencent.mm`）对齐只决定「能不能绑上」，
+ * 真正决定「替换哪一个资源」的是 `(packageId, typeId, entryId)` 三元组。早期实现用
+ * `PackageBlock.getOrCreate(qualifiers, type, name)` 按**名字**建表，ARSCLib 会给这个全新表
+ * 自己分配 typeId / entryId（从 1 开始连续分配），于是：
+ *
+ *  - 颜色写到了宿主 `typeId=1` 的条目上 —— 那通常是 `anim`/别的类型，颜色没落到该改的地方
+ *    （用户看到的「莫奈不生效」），
+ *  - 更糟的是把宿主的 `anim` 条目覆盖成 `COLOR_RGB8`，微信一取页面切换动画插值器就抛
+ *    `Resources$NotFoundException: Resource ID #0x7f010092 type #0x1d is not valid`，
+ *    直接闪退（2026-09-25 实机日志 `MonetResourceResolver: resolved 231 roles` 之后必崩）。
+ *
+ * 所以这里只走 [AlignedEntryWriter]：用 [MonetBinding.id]（解析阶段从宿主资源表读到的真实 id）
+ * 拆出 typeId / entryId，在**同一个 typeId 与 entryId** 上建条目，并交叉校验同一个 typeId 不会
+ * 对应两个不同的类型名（多 APK 合并时 id 撞车的情况）。名字为合成资源（id==0，例如自适应图标
+ * 的三个图层）时按 [syntheticId] 分配宿主未占用的高 entryId。
  */
 object MonetRuntimePackageWriter {
 
@@ -54,7 +73,10 @@ object MonetRuntimePackageWriter {
             ".${output.name}.tmp-${Thread.currentThread().id}-${System.nanoTime()}",
         )
         try {
-            writeTo(tmp, packageName, plan)
+            if (!writeTo(tmp, packageName, plan)) {
+                tmp.delete()
+                return false
+            }
             if (!tmp.renameTo(output)) {
                 // rename rejected (some FUSE/MediaProvider layers do not permit it); a byte copy is
                 // idempotent for our own file, so fall back to it.
@@ -68,11 +90,22 @@ object MonetRuntimePackageWriter {
         return true
     }
 
+    /**
+     * 为 WeKit 合成资源（自适应图标的背景/前景/单色图层）借一个宿主不可能占用的槽位。
+     *
+     * 槽位 = 宿主同类型里最高的 entryId 之后，所以宿主同类型不存在这个 entryId，
+     * 覆盖它不可能碰到别人的资源（这是 [AlignedEntryWriter] 拒绝 id==0 之后唯一的合法来源）。
+     */
+    fun syntheticId(typeId: Int, hostHighestEntryId: Int, sequence: Int): Int {
+        val entryId = (hostHighestEntryId + 1 + sequence).coerceIn(1, 0xfffe)
+        return (HOST_PACKAGE_ID shl 24) or ((typeId and 0xff) shl 16) or (entryId and 0xffff)
+    }
+
     private fun writeTo(
         output: File,
         packageName: String,
         plan: MonetOverlayPlan,
-    ) {
+    ): Boolean {
         val apk = ApkModule()
         val table = TableBlock()
         apk.setTableBlock(table)
@@ -84,60 +117,78 @@ object MonetRuntimePackageWriter {
             specFlags[key] = specFlags.getOrDefault(key, 0) or qualifierFlags(qualifiers)
         }
 
+        val aligned = AlignedEntryWriter(pkg)
+
         plan.colors.forEach { color ->
-            val name = color.binding.name
-            color.light?.let {
-                pkg.getOrCreate("", "color", name)!!.setColorValue(it)
-                record("color", name, "")
+            val binding = color.binding
+            color.light?.let { value ->
+                aligned.entry(binding, "")?.let { entry ->
+                    entry.setColorValue(value)
+                    record(binding.type, binding.name, "")
+                }
             }
-            color.night?.let {
-                pkg.getOrCreate("-night", "color", name)!!.setColorValue(it)
-                record("color", name, "-night")
+            color.night?.let { value ->
+                aligned.entry(binding, NIGHT_QUALIFIERS)?.let { entry ->
+                    entry.setColorValue(value)
+                    record(binding.type, binding.name, NIGHT_QUALIFIERS)
+                }
             }
         }
         plan.literalColors.forEach { color ->
-            val name = color.binding.name
-            pkg.getOrCreate("", "color", name)!!
-                .setValueAsRaw(ValueType.COLOR_ARGB8, color.lightArgb)
-            color.nightArgb?.let {
-                pkg.getOrCreate("-night", "color", name)!!
-                    .setValueAsRaw(ValueType.COLOR_ARGB8, it)
-                record("color", name, "-night")
+            val binding = color.binding
+            aligned.entry(binding, "")?.let { entry ->
+                entry.setValueAsRaw(ValueType.COLOR_ARGB8, color.lightArgb)
+                record(binding.type, binding.name, "")
             }
-            record("color", name, "")
+            color.nightArgb?.let { argb ->
+                aligned.entry(binding, NIGHT_QUALIFIERS)?.let { entry ->
+                    entry.setValueAsRaw(ValueType.COLOR_ARGB8, argb)
+                    record(binding.type, binding.name, NIGHT_QUALIFIERS)
+                }
+            }
         }
         plan.strings.forEach { string ->
-            val name = string.binding.name
-            pkg.getOrCreate(string.qualifiers, "string", name)!!
-                .setValueAsString(string.value)
-            record("string", name, string.qualifiers)
-        }
-        plan.drawables.forEach { drawable ->
-            val name = drawable.binding.name
-            val type = drawable.binding.type
-            pkg.getOrCreate(drawable.lightQualifiers, type, name)
-            record(type, name, drawable.lightQualifiers)
-            drawable.night?.let {
-                pkg.getOrCreate(drawable.nightQualifiers, type, name)
-                record(type, name, drawable.nightQualifiers)
+            val binding = string.binding
+            aligned.entry(binding, string.qualifiers)?.let { entry ->
+                entry.setValueAsString(string.value)
+                record(binding.type, binding.name, string.qualifiers)
             }
         }
+        // drawable 条目的值必须是「我们刚写进去的那个 XML 的路径」：宿主按 id 取 drawable 时
+        // 走的是 value=字符串路径 -> 文件，类型名保持不变，所以既能替换又不改变宿主的取用方式。
         plan.drawables.forEach { drawable ->
-            val name = drawable.binding.name
-            val type = drawable.binding.type
-            addXmlResource(apk, pkg, type, drawable.lightQualifiers, name, drawable.light)
-            drawable.night?.let {
-                addXmlResource(apk, pkg, type, drawable.nightQualifiers, name, it)
+            val binding = drawable.binding
+            aligned.entry(binding, drawable.lightQualifiers)?.let { entry ->
+                val path = xmlPath(binding.type, drawable.lightQualifiers, binding.name)
+                entry.setValueAsString(path)
+                addXmlResource(apk, pkg, path, drawable.light)
+                record(binding.type, binding.name, drawable.lightQualifiers)
+            }
+            drawable.night?.let { node ->
+                aligned.entry(binding, drawable.nightQualifiers)?.let { entry ->
+                    val path = xmlPath(binding.type, drawable.nightQualifiers, binding.name)
+                    entry.setValueAsString(path)
+                    addXmlResource(apk, pkg, path, node)
+                    record(binding.type, binding.name, drawable.nightQualifiers)
+                }
             }
         }
 
         table.refreshFull()
         specFlags.forEach { (key, flags) -> markSpecFlags(pkg, key.first, key.second, flags) }
         apk.refreshTable()
+        val mismatch = aligned.verify()
+        if (mismatch != null) {
+            // id 被 ARSCLib 重新分配过 = 覆盖会落到别的资源上（正是闪退的成因），宁可整包不写。
+            WeLogger.e(TAG, "runtime package rejected: $mismatch")
+            return false
+        }
         freezeCanonicalTable(apk, table)
         output.parentFile?.mkdirs()
         apk.writeApk(output)
         apk.close()
+        WeLogger.i(TAG, "runtime package written: ${aligned.summary()}")
+        return true
     }
 
     private fun com.reandroid.arsc.value.Entry.setColorValue(value: ColorValue) {
@@ -212,18 +263,110 @@ object MonetRuntimePackageWriter {
     private fun addXmlResource(
         apk: ApkModule,
         pkg: PackageBlock,
-        type: String,
-        qualifiers: String,
-        name: String,
+        path: String,
         node: XmlNode,
     ) {
-        val path = "res/$type$qualifiers/$name.xml"
-        pkg.getOrCreate(qualifiers, type, name)!!.setValueAsString(path)
         val document = ResXmlDocument().apply { packageBlock = pkg }
         document.newElement(node.name).write(node, pkg)
         document.refreshFull()
         apk.add(BlockInputSource(path, document))
     }
+
+    private fun xmlPath(type: String, qualifiers: String, name: String) = "res/$type$qualifiers/$name.xml"
+
+    /**
+     * 按**宿主 id** 建表的写入口。
+     *
+     * * `binding.id != 0`：宿主真实资源 id，直接拆 typeId/entryId 写入同一个槽位。
+     * * `binding.id == 0`：WeKit 自己合成的资源（自适应图标图层等）。这类条目宿主没有，
+     *   但也不能随便挑一个 entryId —— 挑中宿主已有的 entryId 就等于覆盖了别人的资源。
+     *   调用方（[MonetAssetInjector]）必须先用 [syntheticId] 从「宿主同类型最高 entryId 之上」
+     *   借一个槽位；这里兜底拒绝 id==0，绝不回退到「顺序分配」。
+     *
+     * 失败的条目一律**跳过并计数**：少替换几个资源只是观感问题，写到错的地方是闪退。
+     */
+    private class AlignedEntryWriter(private val pkg: PackageBlock) {
+
+        private val typeNames = linkedMapOf<Int, String>()
+        private var written = 0
+        private val skipped = linkedMapOf<String, Int>()
+        private val created = mutableListOf<Pair<Entry, Int>>()
+
+        fun entry(binding: MonetBinding, qualifiers: String): Entry? {
+            val id = binding.id
+            if (id == 0) return skip(binding, "id==0（合成资源必须先用 syntheticId 借槽位）")
+            if ((id ushr 24) and 0xff != HOST_PACKAGE_ID) {
+                return skip(binding, "packageId 不是宿主 0x${HOST_PACKAGE_ID.toString(16)}")
+            }
+            val typeId = (id ushr 16) and 0xff
+            val entryId = id and 0xffff
+            if (typeId == 0 || entryId == 0) return skip(binding, "id 退化 (0x${id.toUInt().toString(16)})")
+            val known = typeNames[typeId]
+            if (known != null && !known.equals(binding.type, ignoreCase = true)) {
+                // 同一个 typeId 出现在两个类型名下 = 多 APK 合并时 id 撞车，写下去就是乱盖。
+                return skip(binding, "typeId $typeId 同时被 $known 与 ${binding.type} 使用")
+            }
+            typeNames[typeId] = binding.type
+            pkg.getOrCreateSpecTypePair(typeId, binding.type)
+            val entry = pkg.getOrCreateEntry(typeId.toByte(), entryId.toShort(), qualifiers)
+                ?: return skip(binding, "ARSCLib 未能创建条目")
+            if (entry.name != binding.name) entry.setName(binding.name)
+            written++
+            created += entry to id
+            return entry
+        }
+
+        private fun skip(binding: MonetBinding, reason: String): Entry? {
+            val key = reason.substringBefore('（')
+            skipped[key] = skipped.getOrDefault(key, 0) + 1
+            if (skipped[key] == 1) {
+                WeLogger.w(
+                    TAG,
+                    "skip overlay 0x${binding.id.toUInt().toString(16)} ${binding.type}/${binding.name}: $reason",
+                )
+            }
+            return null
+        }
+
+        /** 校验每个条目真的落在它该在的 id 上；返回非 null 表示必须放弃这个包。 */
+        fun verify(): String? {
+            created.forEach { (entry, expected) ->
+                val id = entry.resourceId
+                if ((id ushr 24) != HOST_PACKAGE_ID || id == 0) {
+                    return "entry ${entry.name} landed on 0x${id.toUInt().toString(16)}"
+                }
+                if (id != expected) {
+                    // 条目被挪了位置 = 覆盖会落到别的资源上（宿主动画被写成颜色就是这么来的），
+                    // 这种情况必须整包放弃，绝不放行。
+                    return "entry ${entry.name} expected 0x${expected.toUInt().toString(16)} " +
+                        "but landed on 0x${id.toUInt().toString(16)}"
+                }
+                val entryTypeId = (id ushr 16) and 0xff
+                val expectedType = typeNames[entryTypeId]
+                if (expectedType != null && !entry.name.isNullOrBlank()) {
+                    // 名字与 id 都不许被改写：宿主按 id 取值、按名做 overlay 校验，两者都要对齐。
+                    val nameEntry = pkg.getResource(expectedType, entry.name)
+                    if (nameEntry == null) {
+                        return "entry ${entry.name} is not reachable by name in type $expectedType"
+                    }
+                }
+            }
+            return null
+        }
+
+        fun summary(): String = buildString {
+            append("aligned $written entries")
+            append(", types ")
+            append(typeNames.entries.sortedBy { it.key }.joinToString { "${it.key}=${it.value}" })
+            if (skipped.isNotEmpty()) {
+                append(", skipped ")
+                append(skipped.entries.joinToString { "${it.key}×${it.value}" })
+            }
+        }
+    }
+
+    private const val HOST_PACKAGE_ID = 0x7f
+    private const val NIGHT_QUALIFIERS = "-night"
 
     private fun ResXmlElement.write(node: XmlNode, pkg: PackageBlock) {
         node.attributes.forEach { attribute ->

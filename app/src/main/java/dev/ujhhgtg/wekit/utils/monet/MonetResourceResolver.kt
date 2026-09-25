@@ -68,10 +68,19 @@ object MonetResourceResolver {
             onProgress(completed, total, detail)
         }
         val palette = overlayPalette(resources, fallbackPalette)
+        // 合成资源（自适应图标图层）要借宿主同类型里空的槽位，需要全量节点的类型统计。
+        val slots = MonetHostTypeSlots.of(graph.allNodes())
+        val skippedIdentity = mutableListOf<String>()
         val colors = MONET_RULES
             .filter { it.type == "color" && it.id != MAIN_TAB_ROLE }
             .mapNotNull { rule ->
                 val node = resolved[rule.id] ?: return@mapNotNull null
+                if (!node.acceptsColorValue()) {
+                    // 类型身份撞车：这个 id 的默认值不是颜色（文件/文本），把颜色写进去就是改坏
+                    // 宿主的别的资源 —— 2026-09-25 实机闪退正是这一类（anim 被写成 COLOR_RGB8）。
+                    skippedIdentity.add(rule.id)
+                    return@mapNotNull null
+                }
                 val (light, night) = paletteFor(rule.id, resources)
                 ColorTarget(node.binding(), light, night)
             }
@@ -84,6 +93,7 @@ object MonetResourceResolver {
             style = bubbleStyle,
             multiSceneCorners = multiSceneCorners,
             splashIconId = splashIconId,
+            slots = slots,
         )
         val plan = authored.copy(colors = colors)
         val unresolved = MonetStructureMatcher.roleIds - resolved.keys
@@ -100,7 +110,36 @@ object MonetResourceResolver {
             "resolved ${resolved.size} roles (${plan.drawables.size} drawables, ${colors.size} colors, " +
                 "${unresolved.size} unresolved)",
         )
+        if (skippedIdentity.isNotEmpty()) {
+            WeLogger.w(
+                TAG,
+                "颜色规则命中非颜色资源，已跳过（id 身份撞车）：${skippedIdentity.joinToString()}",
+            )
+        }
         return Resolution(fingerprint, bindings, resolved, palette, plan)
+    }
+
+    /**
+     * 颜色规则只能落在「原本就是颜色」的条目上。
+     *
+     * 不变量：解析出来的 id 必须真的属于 `color` 类型的那一条资源。多 APK 合并时 id 可能撞车
+     * （同一个 `0x7f…` 在两个 APK 里指向不同资源），于是规则会锚到一个值类型完全不同的条目上。
+     * 此时把颜色写进去的直接后果是宿主的别的资源被改坏 —— 2026-09-25 实机日志里
+     * `Resource ID #0x7f010092 type #0x1d is not valid`（动画插值器被写成 COLOR_RGB8）就是
+     * 这一类，微信启动即闪退。宁可少替换一个颜色，也不能写到错的地方。
+     */
+    private fun MonetResourceNode.acceptsColorValue(): Boolean {
+        val value = values.firstOrNull { it.qualifiers.isEmpty() }?.value ?: return true
+        return when (value) {
+            is MonetResourceValue.Literal -> {
+                // aapt2 写 COLOR_*，个别旧包写 INT_DEC/INT_HEX；两者都还算颜色。
+                val type = value.valueType
+                type.startsWith("COLOR") || type.startsWith("INT")
+            }
+            is MonetResourceValue.Reference -> true
+            is MonetResourceValue.Complex -> true
+            is MonetResourceValue.File, is MonetResourceValue.Text -> false
+        }
     }
 
     private const val MAIN_TAB_ROLE = "main.tab.background"

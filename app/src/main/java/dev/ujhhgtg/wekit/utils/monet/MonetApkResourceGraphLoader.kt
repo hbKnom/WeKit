@@ -33,17 +33,28 @@ object MonetApkResourceGraphLoader {
                     return@use
                 }
                 val resFiles = module.listResFiles().toList()
-                val fileStructures = resFiles.associate { it.filePath to it.fileStructure() }
+                // 全量预计算 fileStructure() 等于把整个 res 目录读一遍（PNG 还要解 IDAT 算统计），
+                // 实机日志里单次解析 100 秒以上、启动期主线程卡到 2.6 秒，绝大部分耗在这里，
+                // 而且会在解析线程上制造大量垃圾对象引发 GC 风暴。改成按需 + 记忆化：
+                // 只有资源值真的引用到的文件才会被读。见 SKILL「莫奈解析：文件结构按需计算」。
+                val structures = LazyFileStructures(resFiles)
+                val tableStart = System.nanoTime()
                 onProgress("解析 ${apk.name} 的资源表", index, apkPaths.size)
                 module.tableBlock.listPackages()
                     .filter { it.name == targetPackage }
                     .forEach { packageBlock ->
                         packageBlock.getResources().asSequence().forEach { resource ->
-                            resources.merge(resource, apk, fileStructures)
+                            resources.merge(resource, apk, structures)
                         }
                     }
+                WeLogger.i(
+                    TAG,
+                    "${apk.name}: ${resources.size} 个资源条目，表遍历 ${(System.nanoTime() - tableStart) / 1_000_000} ms",
+                )
 
-                onProgress("解析 ${apk.name} 的 ${resFiles.count { it.isBinaryXml }} 个二进制 XML", index, apkPaths.size)
+                val xmlStart = System.nanoTime()
+                val binaryXmlCount = resFiles.count { it.isBinaryXml }
+                onProgress("解析 ${apk.name} 的 $binaryXmlCount 个二进制 XML", index, apkPaths.size)
                 resFiles.asSequence()
                     .forEach { resFile ->
                         val owners = resFile.asSequence()
@@ -62,6 +73,11 @@ object MonetApkResourceGraphLoader {
                             owners.forEach { identity -> xmlDocuments += OwnedXml(identity, xml) }
                         }
                     }
+                WeLogger.i(
+                    TAG,
+                    "${apk.name}: $binaryXmlCount 个二进制 XML，读取 ${(System.nanoTime() - xmlStart) / 1_000_000} ms" +
+                        "，文件结构按需读了 ${structures.readCount} 个",
+                )
             }
             onProgress("完成 ${apk.name}", index + 1, apkPaths.size)
         }
@@ -90,7 +106,7 @@ object MonetApkResourceGraphLoader {
     private fun MutableMap<Int, MutableResource>.merge(
         resource: ResourceEntry,
         apk: File,
-        fileStructures: Map<String, MonetFileStructure>,
+        structures: LazyFileStructures,
     ) {
         if (resource.isEmpty) return
         val id = resource.resourceId
@@ -112,11 +128,11 @@ object MonetApkResourceGraphLoader {
                 MonetResourceValue.Complex(
                     parentId = complex.parentId,
                     items = complex.iterator().asSequence().mapNotNull { item ->
-                        item.toMonetValue(fileStructures)?.let { MonetComplexValue(item.nameId, it) }
+                        item.toMonetValue(structures)?.let { MonetComplexValue(item.nameId, it) }
                     }.toList(),
                 )
             } else {
-                entry.resValue?.toMonetValue(fileStructures) ?: return@forEach
+                entry.resValue?.toMonetValue(structures) ?: return@forEach
             }
             val existing = merged.valuesByQualifiers[qualifiers]
             when {
@@ -132,13 +148,13 @@ object MonetApkResourceGraphLoader {
     }
 
     /** 返回 null 表示这条 ARSC 值无法解读：调用方跳过它，而不是让整次解析中断。 */
-    private fun ValueItem.toMonetValue(fileStructures: Map<String, MonetFileStructure>): MonetResourceValue? {
+    private fun ValueItem.toMonetValue(structures: LazyFileStructures): MonetResourceValue? {
         val valueType = valueType ?: return null
         if (valueType.isReference) return MonetResourceValue.Reference(data, valueType.name)
         if (valueType == ValueType.STRING) {
             val stringValue = valueAsString
-            if (stringValue != null && (stringValue in fileStructures || stringValue.startsWith("res/"))) {
-                return MonetResourceValue.File(stringValue, fileStructures[stringValue])
+            if (stringValue != null && (structures.contains(stringValue) || stringValue.startsWith("res/"))) {
+                return MonetResourceValue.File(stringValue, structures[stringValue])
             }
             if (stringValue != null) return MonetResourceValue.Text(stringValue)
         }
@@ -146,6 +162,33 @@ object MonetApkResourceGraphLoader {
             valueType = valueType.name,
             data = Integer.toUnsignedLong(data),
         )
+    }
+
+    /**
+     * 按需、记忆化的 `res` 文件结构查询。
+     *
+     * [com.reandroid.apk.ResFile.fileStructure] 对 PNG 要读 4096 字节文件头、必要时还要解 IDAT 算
+     * 像素统计；旧实现用 `resFiles.associate { it.filePath to it.fileStructure() }` 对所有文件预计算
+     * （`associate` 是急切的），一次解析因此要多读上千个文件、并在解析线程上产生大量临时对象。
+     * 解析阶段真正需要的只是「值引用到的那些文件」的结构，所以这里延后到第一次访问。
+     */
+    private class LazyFileStructures(resFiles: List<com.reandroid.apk.ResFile>) {
+
+        private val byPath = resFiles.associateBy { it.filePath }
+        private val cache = HashMap<String, MonetFileStructure?>()
+
+        var readCount = 0
+            private set
+
+        fun contains(path: String): Boolean = byPath.containsKey(path)
+
+        operator fun get(path: String): MonetFileStructure? {
+            if (cache.containsKey(path)) return cache[path]
+            readCount++
+            val structure = byPath[path]?.fileStructure()
+            cache[path] = structure
+            return structure
+        }
     }
 
     private fun com.reandroid.apk.ResFile.fileStructure(): MonetFileStructure {

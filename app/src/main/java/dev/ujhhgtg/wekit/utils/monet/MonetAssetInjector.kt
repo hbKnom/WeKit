@@ -213,6 +213,7 @@ object MonetAssetInjector {
     fun themedIcon(
         resolved: Map<String, MonetResourceNode>,
         palette: Palette,
+        slots: MonetHostTypeSlots = MonetHostTypeSlots.EMPTY,
     ): List<DrawableTarget> {
         val mipmapTarget = requireNotNull(resolved["launcher.themed.icon"]).binding()
         val adaptive = XmlNode(
@@ -224,9 +225,9 @@ object MonetAssetInjector {
             ),
         )
         return listOf(
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_bg"), solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_fg"), foregroundIcon()),
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_mono"), monochromeIcon()),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_bg", 0, slots), solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_fg", 1, slots), foregroundIcon()),
+            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_mono", 2, slots), monochromeIcon()),
             DrawableTarget(
                 mipmapTarget.copy(qualifiers = listOf("-anydpi-v26")),
                 adaptive,
@@ -247,13 +248,25 @@ object MonetAssetInjector {
     /**
      * The adaptive-icon layers are authored assets rather than WeChat resources, so they borrow the
      * launcher icon's package/type and only swap the name.
+     *
+     * 它们的 id 必须是**宿主同类型里没被占用的槽位**（[MonetHostTypeSlots.syntheticId]）：
+     * 旧实现给的是 `id = 0`，写包时由 ARSCLib 顺序分配 —— 那等于把颜色/路径盖到宿主某个真实
+     * 条目上（实机崩溃就是这么来的）。名字仍要写成 `wekit_icon_*`，因为自适应图标 XML 里用
+     * `@drawable/wekit_icon_bg` 按名引用，写包时按名解析成 id。
      */
     private fun adaptiveIconBinding(
         resolved: Map<String, MonetResourceNode>,
         name: String,
-    ): MonetBinding = requireNotNull(resolved["launcher.themed.icon"])
-        .binding()
-        .copy(id = 0, name = name, type = "drawable")
+        sequence: Int,
+        slots: MonetHostTypeSlots,
+    ): MonetBinding {
+        val anchor = requireNotNull(resolved["launcher.themed.icon"]).binding()
+        return anchor.copy(
+            id = slots.syntheticId("drawable", sequence, fallbackTypeId = (anchor.id ushr 16) and 0xff),
+            name = name,
+            type = "drawable",
+        )
+    }
 
     private fun solid(color: Int): XmlNode = solid(colorValue(color))
     private fun solid(color: XmlValue): XmlNode = XmlNode(
@@ -484,6 +497,7 @@ object MonetAssetInjector {
         style: MonetBubbleStyle,
         multiSceneCorners: Boolean,
         splashIconId: Int,
+        slots: MonetHostTypeSlots = MonetHostTypeSlots.EMPTY,
     ): MonetOverlayPlan {
         var drawables = baseVisuals(resolved, palette, splashIconId)
         drawables = drawables + when (style) {
@@ -492,6 +506,6 @@ object MonetAssetInjector {
             MonetBubbleStyle.PRO -> proBubbles(resolved, palette)
         }
         if (multiSceneCorners) drawables = drawables + corners(resolved, palette)
-        return MonetOverlayPlan(drawables = drawables + themedIcon(resolved, palette))
+        return MonetOverlayPlan(drawables = drawables + themedIcon(resolved, palette, slots))
     }
 }

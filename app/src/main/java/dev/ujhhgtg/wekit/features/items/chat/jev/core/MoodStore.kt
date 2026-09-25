@@ -28,6 +28,12 @@ data class Mood(
     val bars: List<MoodBar> = emptyList(),
     /** 建议的下一步动作（没有推荐时为空）。 */
     val advice: String? = null,
+    /**
+     * 主情绪标签（比如「平静」）。[label] 在协议里表示**结论段位**
+     * （场景名 / 下一步动作 / 情绪概率），不是情绪本身；界面上要显示的
+     * 「这条话是什么情绪」用这个字段，取不到时退回 [label]。
+     */
+    val dominant: String? = null,
 )
 
 /**
@@ -104,6 +110,9 @@ object MoodStore {
 
     fun size(): Int = cache.size
 
+    /** 还在等结果的条数。气泡卡用它告诉用户「确实在排队」，而不是让卡片看起来卡住了。 */
+    fun pendingCount(): Int = pending.size
+
     // ------------------------------------------------------------------ 流水
 
     /** 记一条流水。同一个 key 只保留最新一条：重试成功后不该还留着旧的失败记录。 */
@@ -175,3 +184,13 @@ object MoodStore {
         pending.clear()
     }
 }
+
+/**
+ * 界面上该显示的情绪名。
+ *
+ * [Mood.label] 是**结论段位**（场景名 / 下一步动作 / 情绪概率），拿它当标题会出现
+ * 「潜语 · 情绪概率」这种读不出情绪的名字。这里优先用模型选中的主情绪，
+ * 其次取概率最高的一条，最后才退回 [Mood.label]。
+ */
+fun Mood.dominantName(): String =
+    dominant ?: bars.firstOrNull { it.highlight }?.name ?: bars.maxByOrNull { it.percent }?.name ?: label

@@ -1,6 +1,7 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -45,9 +47,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -216,6 +222,18 @@ internal object ChatAnalysisUi {
 
     /** 分节标题字距（加一点字距，中文标题更像"标题"） */
     private val LsHeader = 0.5.sp
+
+    // ---- 第 14 轮：图表几何（弹窗里的环形图 / 柱状图）----
+    /** 环形图直径；[DonutStroke] 是环宽，两者都按系统字号缩放后再用 */
+    private val DonutSide = 92.dp
+    private val DonutStroke = 14.dp
+
+    /** 环形图扇区之间的缝隙（度）。放在这里而不是写死在画布里：扇形数量的变化只影响这里 */
+    private const val DonutGapDeg = 2f
+
+    /** 柱状图：画布高度 / 最高柱的高度（必须留出「数值标签 + 间距」的位置，否则文字会被压出画布） */
+    private val ColumnChartH = 132.dp
+    private val ColumnChartBarMaxH = 92.dp
 
     // ---- 语义色映射（唯一颜色来源，全部取自 MaterialTheme）----
     /** 强调：主行动、当前项、主要数据 */
@@ -1706,6 +1724,10 @@ internal object ChatAnalysisUi {
      * 段位配色分流：核心指标/发言排行 → primary；载体偏好/高频词/活跃日历 → secondary；
      * 活跃频次/情绪指纹/互动节奏 → tertiary。（第 13 轮新增的三个段位沿用相邻段位的色调，
      * 保证一张报告里同族信息不同色、不会出现没有归属的「默认灰」卡片。）
+     *
+     * 第 14 轮新增的六个段位按主题挑色：同样是"同族信息不同色"，
+     * 并且刻意与相邻章节错开（老报告里排在最后的是【昼夜结构】= primary，
+     * 紧跟其后的【消息长度画像】就必须是 secondary 或 tertiary）。
      */
     @Composable
     private fun sectionAccent(title: String?, fallback: Color): Color = when {
@@ -1713,6 +1735,10 @@ internal object ChatAnalysisUi {
         title.contains("载体偏好") || title.contains("高频词") || title.contains("活跃日历") -> ToneAlt
         title.contains("活跃频次") || title.contains("情绪指纹") || title.contains("互动节奏") -> ToneThird
         title.contains("核心指标") || title.contains("发言排行") || title.contains("昼夜结构") -> ToneAccent
+        // 第 14 轮新增
+        title.contains("消息长度") || title.contains("口头禅") -> ToneAlt
+        title.contains("标点与语气") || title.contains("沉默与主动性") -> ToneThird
+        title.contains("互动平衡") || title.contains("话题切换") -> ToneAccent
         else -> fallback
     }
 
@@ -1840,7 +1866,8 @@ internal object ChatAnalysisUi {
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 140.dp, max = maxHeight),
+                .heightIn(min = 140.dp, max = maxHeight)
+                .fadeTopWhenScrolled(listState, ToneSurface),
             contentPadding = PaddingValues(bottom = Space4),
             verticalArrangement = Arrangement.spacedBy(SectionGap),
         ) {
@@ -1871,26 +1898,78 @@ internal object ChatAnalysisUi {
                     index = no,
                     badge = sectionBadge(block),
                 ) {
-                    // 「核心指标」这类纯 key/value 段改用 KPI 网格（大数字卡片）渲染：
-                    // 一行行"指标 … 数值"读起来像表格，网格卡片才像数据看板。
+                    // 「核心指标」这类**整段都是键值行**的段落，保持原来的整块 KPI 网格（与改动前逐像素一致）；
+                    // 其余段落（尤其是第 14 轮新增的「指标 + 结论 + 分布」混合段）按「同类连续行」分段渲染。
+                    // 判据与 PNG 导出（groupKpis / shapeBody）逐条对齐：弹窗里看到的图形，
+                    // 保存出来的图片里就是同一张。
                     if (block.isKpiLike) {
                         KpiGrid(block.units.filterIsInstance<ReportUnit.KeyValue>(), blockAccent)
                     } else {
-                        block.units.forEachIndexed { i, unit ->
-                            // 连续的两行"键：值"之间补一条细线，把散行收成一张表；
-                            // 其它类型（条形行自带进度条）之间不加线，避免视觉噪音。
-                            if (i > 0 && unit is ReportUnit.KeyValue &&
-                                block.units[i - 1] is ReportUnit.KeyValue
-                            ) {
-                                ThinDivider(Modifier.padding(vertical = Space2))
+                        val runs = reportRuns(block.units)
+                        runs.forEachIndexed { runIndex, run ->
+                            val prevWasKv = runIndex > 0 && runs[runIndex - 1].lastOrNull() is ReportUnit.KeyValue
+                            when {
+                                // 连续的可量化指标行 → KPI 网格（大数字 + 单位 + 说明）
+                                run.size >= 2 && run.all { it is ReportUnit.KeyValue } -> {
+                                    KpiGrid(run.filterIsInstance<ReportUnit.KeyValue>(), blockAccent)
+                                }
+                                // 连续的分布行 → 环形图 / 柱状图；形状不成立就退回条形行（宁可不画，不画错）
+                                run.size >= 2 && run.all { it is ReportUnit.BarRow } -> {
+                                    val rows = run.filterIsInstance<ReportUnit.BarRow>()
+                                    when {
+                                        isDonutRun(rows) -> DonutView(rows, blockAccent)
+                                        isColumnRun(rows) -> ColumnChartView(rows, blockAccent)
+                                        else -> rows.forEach { ReportUnitView(it, blockAccent) }
+                                    }
+                                }
+                                else -> {
+                                    // 连续的两行"键：值"之间补一条细线，把散行收成一张表；
+                                    // 其它类型（条形行自带进度条）之间不加线，避免视觉噪音。
+                                    if (prevWasKv && run.first() is ReportUnit.KeyValue) {
+                                        ThinDivider(Modifier.padding(vertical = Space2))
+                                    }
+                                    run.forEachIndexed { i, unit ->
+                                        if (i > 0 && unit is ReportUnit.KeyValue &&
+                                            run[i - 1] is ReportUnit.KeyValue
+                                        ) {
+                                            ThinDivider(Modifier.padding(vertical = Space2))
+                                        }
+                                        ReportUnitView(unit, blockAccent)
+                                    }
+                                }
                             }
-                            ReportUnitView(unit, blockAccent)
                         }
                     }
                 }
             }
         }
     }
+
+    /**
+     * 长列表顶部的渐隐边界：列表上滚后，顶边压一条极淡的渐变，提示「上面还有内容」。
+     *
+     * 为什么用 drawWithContent 而不是再套一个 Box 叠一层：
+     *  - 读 [LazyListState] 发生在**绘制阶段**，滚动时只触发重绘，不会让整份报告重组
+     *    （这一点直接关系到「不能变卡」的硬约束）；
+     *  - 不新增布局节点、不接触摸事件，列表的测量与滚动行为与改动前逐字节一致。
+     *
+     * @param fade 渐变的起始色（由调用方在组合期取好，绘制期不能再读主题色）。
+     */
+    private fun Modifier.fadeTopWhenScrolled(state: LazyListState, fade: Color): Modifier =
+        this.drawWithContent {
+            drawContent()
+            val scrolled = state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 0
+            if (!scrolled) return@drawWithContent
+            val band = (1.2f * density).coerceAtLeast(8f)
+            drawRect(
+                brush = Brush.verticalGradient(
+                    listOf(fade.copy(alpha = 0.9f), Color.Transparent),
+                    startY = 0f,
+                    endY = band,
+                ),
+                size = Size(size.width, band),
+            )
+        }
 
     /** 概览条：报告级 KPI 三格（分节数 / 数据行数 / AI 正文字数），像看板抬头一样先给全局量级 */
     @Composable
@@ -2076,7 +2155,47 @@ internal object ChatAnalysisUi {
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                // 百分比类指标补一根细占比条：让「38%」不只是一个数字，而能一眼看出量级。
+                // 与 PNG 导出里的 share bar 同款，弹窗和图片的读法一致。
+                val share = remember(item.value) { shareFractionOf(item.value) }
+                if (share != null) {
+                    Spacer(Modifier.height(Space6))
+                    ShareBar(share, accent)
+                }
             }
+        }
+    }
+
+    /**
+     * 百分比类的占比条取值：值以 `%` 结尾且能解析成 0~100 时给出占比，否则返回 null。
+     *
+     * 只做「额外的视觉」：解析不出来就什么都不画，绝不改动、也不吞掉原来的数字文本。
+     */
+    private fun shareFractionOf(value: String): Float? {
+        val t = value.trim()
+        if (!t.endsWith("%")) return null
+        val n = t.dropLast(1).trim().replace(",", "").toFloatOrNull() ?: return null
+        if (n < 0f || n > 100f) return null
+        return n / 100f
+    }
+
+    /** 一根极细的占比条（轨道 + 前景），用于 KPI 卡片内与分布行的百分比可视化 */
+    @Composable
+    private fun ShareBar(fraction: Float, accent: Color, thickness: Dp = 4.dp, modifier: Modifier = Modifier) {
+        Box(
+            modifier
+                .fillMaxWidth()
+                .height(thickness)
+                .clip(RoundedCornerShape(thickness / 2))
+                .background(ToneTrack)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(thickness / 2))
+                    .background(accent.copy(alpha = 0.85f))
+            )
         }
     }
 
@@ -2091,6 +2210,280 @@ internal object ChatAnalysisUi {
         val number = m.groupValues[1].trim()
         val unit = m.groupValues[2].trim()
         return if (number.isEmpty()) t to "" else number to unit
+    }
+
+    // ---- 第 14 轮：报告行的「分段渲染」与两种图表 ----
+    // 下面这批判据全部照抄 PNG 导出侧（groupKpis / shapeBody / asDonut / asColumnChart）。
+    // 照抄不是偷懒：弹窗与导出各有自己的解析器，只有判据逐条一致，
+    // 用户在弹窗里看到的图形，才会和保存出来的图片是同一张。
+
+    /** 「可量化」= 值里含数字（PNG 侧 isMeasurable 的同款判据）；不含数字的值是一句话结论 */
+    private fun isMeasurableValue(v: String): Boolean = v.any { it.isDigit() }
+
+    /** 条形行的数值（只取数字字符，兼容 "1,234"）；取不出来给 -1，表示「不是分布数据」 */
+    private fun countOf(r: ReportUnit.BarRow): Long = r.value.filter { it.isDigit() }.toLongOrNull() ?: -1L
+
+    /**
+     * 把一段正文切成「同类连续行」。
+     *
+     * 为什么需要：老代码是"整块要么全 KPI 网格、要么逐行渲染"二选一，
+     * 而新增的段落是「几项指标 + 一句结论 + 一条分布」的混合体，整块二选一会把 KPI 网格整个丢掉。
+     * 按连续同类行切段后，每种形状各自用最合适的渲染方式（行为与 PNG 的 groupKpis 对齐）。
+     */
+    private fun reportRuns(units: List<ReportUnit>): List<List<ReportUnit>> {
+        val runs = ArrayList<List<ReportUnit>>(units.size)
+        var i = 0
+        while (i < units.size) {
+            var j = i + 1
+            when (val head = units[i]) {
+                is ReportUnit.KeyValue -> if (isMeasurableValue(head.value)) {
+                    while (j < units.size && (units[j] as? ReportUnit.KeyValue)?.let { isMeasurableValue(it.value) } == true) j++
+                }
+                is ReportUnit.BarRow -> while (j < units.size && units[j] is ReportUnit.BarRow) j++
+                else -> Unit
+            }
+            runs.add(units.subList(i, j))
+            i = j
+        }
+        return runs
+    }
+
+    /** 环形图判据（= PNG asDonut）：2~8 项、标签不含数字、数值全为正 */
+    private fun isDonutRun(rows: List<ReportUnit.BarRow>): Boolean {
+        if (rows.size !in 2..8) return false
+        if (rows.any { r -> r.label.any { it.isDigit() } }) return false
+        return rows.all { countOf(it) > 0L }
+    }
+
+    /** 柱状图判据（= PNG asColumnChart）：2~24 项、至少一个标签含数字、数值可解析且不全为 0 */
+    private fun isColumnRun(rows: List<ReportUnit.BarRow>): Boolean {
+        if (rows.size !in 2..24) return false
+        if (rows.none { r -> r.label.any { it.isDigit() } }) return false
+        val counts = rows.map { countOf(it) }
+        if (counts.any { it < 0L }) return false
+        return counts.any { it > 0L }
+    }
+
+    /** 百分比文本（一位小数），与 PNG 导出的百分比口径一致 */
+    private fun sharePercentText(part: Long, total: Long): String =
+        if (total <= 0L) "0%" else String.format(Locale.US, "%.1f%%", part.toDouble() * 100.0 / total.toDouble())
+
+    /**
+     * 环形图（弹窗版）：左边环、右边图例，环心给合计，图例给 名称 / 占比 / 原值。
+     *
+     * 与 PNG 导出共用同一套判据（[isDonutRun]）与同一套配色顺序，
+     * 所以「谁占多少」在弹窗和图片里是同一个答案；图例仍带原值，信息一点不少。
+     */
+    @Composable
+    private fun DonutView(rows: List<ReportUnit.BarRow>, accent: Color) {
+        val fs = LocalDensity.current.fontScale
+        val counts = rows.map { countOf(it).coerceAtLeast(0L) }
+        val total = counts.sum().coerceAtLeast(1L)
+        // 颜色在组合期取好：Canvas 的绘制 lambda 不是 @Composable，里面读不了主题色
+        val palette = listOf(
+            ToneAccent, ToneAlt, ToneThird,
+            accent.copy(alpha = 0.72f),
+            ToneAccent.copy(alpha = 0.55f),
+            ToneAlt.copy(alpha = 0.55f),
+            ToneThird.copy(alpha = 0.55f),
+            accent.copy(alpha = 0.4f),
+        )
+        val track = ToneTrack
+        val side = DonutSide * fs
+        val stroke = DonutStroke * fs
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = (3 * fs).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(side), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.size(side)) {
+                    val ring = stroke.toPx()
+                    val inset = ring / 2f
+                    val arcSize = Size(size.width - ring, size.height - ring)
+                    // 轨道：先铺满整圈，扇区不足时也能看出"这是一个环"
+                    drawArc(
+                        color = track,
+                        startAngle = 0f,
+                        sweepAngle = 360f,
+                        useCenter = false,
+                        topLeft = Offset(inset, inset),
+                        size = arcSize,
+                        style = Stroke(width = ring),
+                    )
+                    var start = -90f
+                    counts.forEachIndexed { index, c ->
+                        val sweep = 360f * (c.toFloat() / total.toFloat())
+                        if (sweep > 0f) {
+                            val gap = if (counts.size > 1) DonutGapDeg else 0f
+                            drawArc(
+                                color = palette[index % palette.size],
+                                startAngle = start + gap / 2f,
+                                sweepAngle = (sweep - gap).coerceAtLeast(1f),
+                                useCenter = false,
+                                topLeft = Offset(inset, inset),
+                                size = arcSize,
+                                style = Stroke(width = ring),
+                            )
+                        }
+                        start += sweep
+                    }
+                }
+                // 环心：合计。环本身会给人"这是一份占比"的直觉，中心给绝对值才不空
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        total.toString(),
+                        style = if (isNumericValue(total.toString())) {
+                            numericStyle(MaterialTheme.typography.titleMedium, total.toString())
+                        } else {
+                            MaterialTheme.typography.titleMedium
+                        },
+                        fontWeight = FontWeight.Bold,
+                        color = ToneText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "合计",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ToneTextDim,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Spacer(Modifier.width(Space12))
+            Column(Modifier.weight(1f)) {
+                rows.forEachIndexed { index, row ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = (1 * fs).dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(palette[index % palette.size])
+                        )
+                        Spacer(Modifier.width(Space6))
+                        Text(
+                            row.label,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ToneText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(Space6))
+                        Text(
+                            sharePercentText(counts[index], total),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ToneTextDim,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(Space6))
+                        Text(
+                            row.value,
+                            style = if (isNumericValue(row.value)) {
+                                numericStyle(MaterialTheme.typography.bodySmall, row.value)
+                            } else {
+                                MaterialTheme.typography.bodySmall
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                            color = accent,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 柱状图（弹窗版）：横排竖柱 + 0 轴基线 + 每根柱子的数值标签 + 底部标签。
+     *
+     * 为什么不是"横向条形行的堆叠"：带数字标签的分布（如「凌晨0-5点」）本质是**连续时间段**，
+     * 竖柱的相邻关系能直接读出"哪一段最活跃"；横向条形行读不出这种相邻性。
+     * 柱高按该段最大值归一化，与 PNG 的柱状图保持同一比例，绝不按绝对像素放大失真。
+     */
+    @Composable
+    private fun ColumnChartView(rows: List<ReportUnit.BarRow>, accent: Color) {
+        val fs = LocalDensity.current.fontScale
+        val counts = rows.map { countOf(it).coerceAtLeast(0L) }
+        val maxV = (counts.maxOrNull() ?: 1L).coerceAtLeast(1L)
+        val barShape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = (3 * fs).dp)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(ColumnChartH * fs),
+                horizontalArrangement = Arrangement.spacedBy(Space4),
+            ) {
+                rows.forEachIndexed { index, row ->
+                    val ratio = (counts[index].toFloat() / maxV.toFloat()).coerceIn(0f, 1f)
+                    val isPeak = counts[index] == maxV
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        // 柱底对齐：不同柱高都落在同一条 0 轴上，比例才可读
+                        verticalArrangement = Arrangement.Bottom,
+                    ) {
+                        Text(
+                            row.value,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isPeak) accent else ToneTextDim,
+                            fontWeight = if (isPeak) FontWeight.Bold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(Space2))
+                        Box(
+                            Modifier
+                                .fillMaxWidth(0.62f)
+                                .height(ColumnChartBarMaxH * fs * ratio)
+                                .clip(barShape)
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(accent.copy(alpha = 0.7f), accent)
+                                    )
+                                )
+                        )
+                    }
+                }
+            }
+            // 0 轴基线：柱状图没有基线就只剩一团色块，量级无从比较
+            Spacer(Modifier.height(Space4))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(RowDivider)
+            )
+            Spacer(Modifier.height(Space4))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space4)) {
+                rows.forEach { row ->
+                    Text(
+                        row.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ToneTextDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
     }
 
     @Composable
@@ -2261,27 +2654,44 @@ internal object ChatAnalysisUi {
             verticalArrangement = Arrangement.spacedBy(ChipGap),
         ) {
             words.take(20).forEachIndexed { index, (word, count) ->
-                // 按热度分档：Top1-3 / 4-8 / 9-20
-                val container = when (index) {
-                    in 0..2 -> MaterialTheme.colorScheme.primaryContainer
-                    in 3..7 -> MaterialTheme.colorScheme.secondaryContainer
+                // 按热度分档：Top1-3 / 4-8 / 9-20。
+                // 第 14 轮加强：除了底色，字号、内边距、文字浓度也随档位递降 ——
+                // 一眼扫过去"最大的词就是最热的词"，不用逐个读数字。
+                val tier = when (index) {
+                    in 0..2 -> 0
+                    in 3..7 -> 1
+                    else -> 2
+                }
+                val container = when (tier) {
+                    0 -> MaterialTheme.colorScheme.primaryContainer
+                    1 -> MaterialTheme.colorScheme.secondaryContainer
                     else -> MaterialTheme.colorScheme.tertiaryContainer
                 }
-                val onContainer = when (index) {
-                    in 0..2 -> MaterialTheme.colorScheme.onPrimaryContainer
-                    in 3..7 -> MaterialTheme.colorScheme.onSecondaryContainer
+                val onContainer = when (tier) {
+                    0 -> MaterialTheme.colorScheme.onPrimaryContainer
+                    1 -> MaterialTheme.colorScheme.onSecondaryContainer
                     else -> MaterialTheme.colorScheme.onTertiaryContainer
                 }
+                val chipTextStyle = when (tier) {
+                    0 -> MaterialTheme.typography.titleSmall
+                    1 -> MaterialTheme.typography.labelMedium
+                    else -> MaterialTheme.typography.labelSmall
+                }
+                // 文字浓度递降（只降第三档，避免尾部的词淡到看不清）
+                val textAlpha = if (tier == 2) 0.82f else 1f
                 Box(
                     Modifier
                         .clip(chipShape)
                         .background(container)
-                        .padding(horizontal = Space8, vertical = Space4)
+                        .padding(
+                            horizontal = if (tier == 0) Space10 else Space8,
+                            vertical = if (tier == 0) Space6 else Space4,
+                        )
                 ) {
                     Text(
                         "$word ×$count",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = onContainer,
+                        style = chipTextStyle,
+                        color = onContainer.copy(alpha = textAlpha),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

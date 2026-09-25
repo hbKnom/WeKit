@@ -14,6 +14,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessageMetadata
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessagePolicy
 
 /**
  * 潜语扫描器（合并「言外潜台词」+「Jev 聊天决策」后的唯一入口）。
@@ -36,19 +37,32 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
     private const val TAG = "YanwaiScanner"
 
     /** 结果回填节拍：只在仍有「已挂卡片但尚无结论」时继续跑。 */
-    private const val TICK_MS = 400L
+    private const val TICK_MS = 600L
 
     /**
      * 看门狗阈值：超过这个时间仍没有结果/失败，就强制结清成一条可重试的失败。
      * 比 [SignalAnalyzer] 的请求超时略大，正常超时由分析侧先报，这里只是最后的兜底。
      */
-    private const val WATCHDOG_MS = 90_000L
+    private const val WATCHDOG_MS = 60_000L
 
     private val main = Handler(Looper.getMainLooper())
     private var installed = false
 
     /** 正在等待结果的行，避免对同一行重复 show。 */
     private val awaiting = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /**
+     * 每行**算好一次**的分析输入 + 跳过原因，节拍里直接复用。
+     *
+     * 这是「开启潜语后滑动明显变卡」的主要来源：原来每 400ms 会对屏幕里每一行重新算一遍
+     * 输入 —— 反射取文本 + 收集前文（要遍历并排序本屏所有已绑定的行）。20 行的屏幕就是
+     * 每拍 20 次反射 + 几百次比较，节拍一直跑着的时候主线程持续被占。
+     * 现在只在绑定/重绑时算一次（[handle]），节拍只读缓存。
+     */
+    private val inputs = java.util.Collections.synchronizedMap(java.util.WeakHashMap<View, Row>())
+
+    /** 一行消息的分析输入与「不分析的原因」（过长/非文本时为非空）。 */
+    private class Row(val input: AnalysisInput, val note: String?)
 
     /** key -> 提交时刻（elapsedRealtime）。用于看门狗判定，与系统时间跳变无关。 */
     private val submittedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -59,7 +73,8 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
             var pending = false
             val now = SystemClock.elapsedRealtime()
             for ((view, message) in WeChatMessageViewApi.findBoundViews { true }) {
-                val input = bindingOf(view, message) ?: continue
+                val row = rowOf(view, message) ?: continue
+                val input = row.input
                 val key = input.key
                 val done = MoodStore.get(key) != null || SignalAnalyzer.failure(key) != null
                 if (!done) {
@@ -70,12 +85,16 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
                         SignalAnalyzer.clearStuck(key)
                     }
                     // 只有「真的提交过、还在等」的行才继续快跑；没提交过的（未配置 Key、
-                    // 不在作用域）绝不能把 400ms 节拍一直挂着空转。
+                    // 不在作用域、内容过长）绝不能把节拍一直挂着空转。
                     if (submitted != null || MoodStore.isPending(key)) pending = true
+                    if (row.note == null && pending) {
+                        // 排队中的卡片要跟着队列缩短更新一次「本屏还有 N 条」
+                        runCatching { YanwaiBubble.show(view, input) }
+                    }
                     continue
                 }
                 submittedAt.remove(key)
-                runCatching { YanwaiBubble.show(view, input) }
+                runCatching { YanwaiBubble.show(view, input, row.note) }
                     .onFailure { MoodLog.w("气泡回填失败：${it.javaClass.simpleName}") }
             }
             YanwaiBubble.prune()
@@ -96,6 +115,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         main.removeCallbacks(tick)
         awaiting.clear()
         submittedAt.clear()
+        inputs.clear()
         runCatching {
             WeChatMessageViewApi.removeLifecycleListener(this)
             WeChatMessageViewApi.removeListener(this)
@@ -124,23 +144,30 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         // 重绑只是换了消息：卡片由紧接着的 show() 按新 key 覆写，这里不要清（清了会闪一下）。
         if (rebound) return
         awaiting.remove(view)
+        inputs.remove(view)
         YanwaiBubble.clear(view)
     }
 
     override fun onMessageViewRecycled(view: View, message: MessageInfo) {
         awaiting.remove(view)
+        inputs.remove(view)
         YanwaiBubble.clear(view)
     }
 
     private fun handle(view: View, message: MessageInfo, immediate: Boolean) {
         if (!ModulePrefs.enabled) {
+            inputs.remove(view)
             YanwaiBubble.clear(view)
             return
         }
-        val input = bindingOf(view, message) ?: run {
+        val row = buildRow(view, message)
+        if (row == null) {
+            inputs.remove(view)
             YanwaiBubble.clear(view)
             return
         }
+        val input = row.input
+        inputs[view] = row
         // 不在作用域的聊天：一张卡都不要留（否则会永远显示「正在分析…」——
         // SignalAnalyzer.submit 会拒收，却没人告诉卡片「这次不会分析」）。
         if (!ModulePrefs.inScope(input.talker)) {
@@ -149,11 +176,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         }
         val key = input.key
         // 提交一次即可（claim 去重）：气泡通道与「回插会话」通道共用这一份请求与结果。
-        val submitted = ModulePrefs.canAnalyze && SignalAnalyzer.submit(input) != null
+        val submitted = row.note == null && ModulePrefs.canAnalyze && SignalAnalyzer.submit(input) != null
         if (submitted) submittedAt.putIfAbsent(key, SystemClock.elapsedRealtime())
         val settled = MoodStore.get(key) != null || SignalAnalyzer.failure(key) != null
         if (ModulePrefs.displayBubble) {
-            runCatching { YanwaiBubble.show(view, input) }
+            runCatching { YanwaiBubble.show(view, input, row.note) }
                 .onFailure { MoodLog.w("气泡绘制失败：${it.javaClass.simpleName}") }
         }
         if (!settled && (submitted || MoodStore.isPending(key))) {
@@ -162,13 +189,38 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         }
     }
 
-    /** View -> 分析输入。文本消息才产出，其余返回 null。 */
-    private fun bindingOf(view: View, message: MessageInfo): AnalysisInput? {
+    /**
+     * 取这一行的分析输入（带缓存）。
+     *
+     * 缓存命中条件是「同一个 View 仍然绑着同一条消息」—— 重绑（滚出滚入）后
+     * [WeChatMessageViewApi] 会重新走一次 handle()，所以这里只需要防御性地校验一次。
+     */
+    private fun rowOf(view: View, message: MessageInfo): Row? {
+        val cached = inputs[view]
+        if (cached != null && cached.input.messageId == message.id && cached.input.talker == message.talker) {
+            return cached
+        }
+        val fresh = buildRow(view, message) ?: run {
+            inputs.remove(view)
+            return null
+        }
+        inputs[view] = fresh
+        return fresh
+    }
+
+    /**
+     * View + MessageInfo -> 分析输入。
+     *
+     * 非文本消息返回 null（不画卡）；文本过长时返回带 [Row.note] 的行 ——
+     * 以前这种消息既不提交也不画卡，用户看到的是「这一条什么都没有」，
+     * 现在明确写清「本条内容过长，未分析」，不会让人以为是功能漏掉了一条。
+     */
+    private fun buildRow(view: View, message: MessageInfo): Row? {
         // 「也分析我发的消息」为开时才把我方消息纳入（默认只分析对方，与上游一致）。
         val text = MessageMetadata.analyzeText(message, ModulePrefs.analyzeSelf) ?: return null
         val talker = message.talker
         if (talker.isBlank()) return null
-        return AnalysisInput(
+        val input = AnalysisInput(
             text = text,
             talker = talker,
             context = collectContext(view, message),
@@ -176,6 +228,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
             speaker = MessageMetadata.speaker(message),
             createdAt = runCatching { message.createTime }.getOrDefault(0L),
         )
+        val note = if (MessagePolicy.textOrNull(text) == null) {
+            "本条内容超过 ${MessagePolicy.MAX_CHARACTERS} 字，为避免把长文整段发给模型，本条不分析。"
+        } else {
+            null
+        }
+        return Row(input, note)
     }
 
     /**
@@ -209,10 +267,13 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         if (!installed) return
         main.post {
             val message = WeChatMessageViewApi.getBoundMessage(view) ?: return@post
-            val input = bindingOf(view, message) ?: return@post
+            val row = rowOf(view, message) ?: return@post
+            if (row.note != null) return@post
+            val input = row.input
             SignalAnalyzer.retryFailure(input.key)
             MoodStore.release(input.key)
             submittedAt.remove(input.key)
+            // 失败/超时的行重新真的提交一次：结果要么回填，要么再给一条可见失败。
             handle(view, message, immediate = true)
         }
     }
@@ -226,11 +287,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
         main.post {
             submittedAt.clear()
             awaiting.clear()
+            inputs.clear()
             SignalAnalyzer.clearResults()
             YanwaiBubble.clearAll()
             var count = 0
             for ((view, message) in WeChatMessageViewApi.findBoundViews { true }) {
-                if (bindingOf(view, message) == null) continue
+                if (rowOf(view, message) == null) continue
                 count++
                 handle(view, message, immediate = true)
             }
@@ -245,10 +307,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
             SignalAnalyzer.retryAllFailures()
             var count = 0
             for ((view, message) in WeChatMessageViewApi.findBoundViews { true }) {
-                val input = bindingOf(view, message) ?: continue
-                if (MoodStore.get(input.key) != null) continue
-                submittedAt.remove(input.key)
-                MoodStore.release(input.key)
+                val row = rowOf(view, message) ?: continue
+                if (row.note != null) continue
+                if (MoodStore.get(row.input.key) != null) continue
+                submittedAt.remove(row.input.key)
+                MoodStore.release(row.input.key)
                 count++
                 handle(view, message, immediate = true)
             }
@@ -259,5 +322,6 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener, WeCha
     /** 供设置页/看门狗使用：清空计时器（例如用户手动关闭功能后重新打开）。 */
     fun forgetProgress() {
         submittedAt.clear()
+        inputs.clear()
     }
 }
