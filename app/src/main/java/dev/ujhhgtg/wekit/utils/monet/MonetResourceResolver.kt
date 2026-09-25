@@ -202,13 +202,20 @@ object MonetResourceResolver {
         neutral2_700 = argb(resources, palette.neutral2_700),
     )
 
+    /**
+     * 色板里可能是**字面 ARGB**（主题种子色板 / 基线色板，alpha 恒为 `0xFF`），也可能是
+     * `android.R.color.system_*` 的**资源 id**。
+     *
+     * 判据只能看 alpha 字节：framework 资源 id 是 `0x01xxxxxx`（**不是** `0x00xxxxxx`），
+     * 旧实现用 `value and 0xFF000000 == 0` 判断，于是安卓 12+ 的常规路径把资源 id 原样
+     * 当成颜色发给了注入组件 —— 注入 UI 拿到「看着像颜色、其实是 id」的垃圾值，
+     * 这正是用户反馈「微信原生已莫奈化、WeKit 组件还是旧配色」的直接原因之一。
+     */
     @SuppressLint("DiscouragedApi")
-    private fun argb(resources: Resources, value: Int): Int =
-        if (value and 0xFF000000.toInt() == 0) {
-            runCatching { resources.getColor(value, null) }.getOrDefault(value)
-        } else {
-            value
-        }
+    private fun argb(resources: Resources, value: Int): Int {
+        if (value ushr 24 == 0xFF) return value
+        return runCatching { resources.getColor(value, null) }.getOrDefault(value)
+    }
 
     /** 最后兜底：Material You 基线色板（AOSP 默认紫）。 */
     private val BASELINE_PALETTE = Palette(
