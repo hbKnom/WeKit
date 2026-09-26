@@ -13,6 +13,7 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.utils.WeLogger
+import java.lang.reflect.Method
 
 /**
  * 相册发送图片时自动勾选「原图」。
@@ -120,11 +121,34 @@ object AutoEnableSendOriginalMedia : SwitchFeature() {
         }.onFailure { WeLogger.w(TAG, "half-screen picker arguments hook failed", it) }
 
         runCatching {
-            MEDIA_TAB_ALBUM_UI.toClassOrNull()?.hookBeforeOnCreate {
-                val activity = thisObject as? Activity ?: return@hookBeforeOnCreate
-                activity.intent.putExtra("send_raw_img", true)
-                activity.intent.putExtra("key_send_raw_image", true)
-                WeLogger.i(TAG, "MediaTabAlbumUI raw flags set")
+            val albumClass = MEDIA_TAB_ALBUM_UI.toClassOrNull()
+            if (albumClass == null) {
+                WeLogger.w(TAG, "MediaTabAlbumUI 不存在，跳过该 hook")
+            } else {
+                // MediaTabAlbumUI **自身不一定声明 onCreate**（多数版本继承自相册基类），
+                // 直接 hookBeforeOnCreate 会抛 NoSuchElementException —— 实机日志里每次都报
+                // `MediaTabAlbumUI hook failed / No method matching conditions in
+                // com.tencent.mm.plugin.gallery.ui.MediaTabAlbumUI`，于是半屏相册这条覆盖
+                // 一直是「静默失效」。改为沿父类链找到**最近一个真正声明 onCreate 的类**再挂钩，
+                // 并在回调里用 javaClass 精确过滤，只有 MediaTabAlbumUI 本身才写入 raw extras。
+                var declaring: Class<*>? = albumClass
+                var method: Method? = null
+                while (declaring != null && method == null) {
+                    method = declaring.declaredMethods
+                        .firstOrNull { it.name == "onCreate" && it.parameterCount == 1 }
+                    declaring = declaring.superclass
+                }
+                if (method == null) {
+                    WeLogger.w(TAG, "MediaTabAlbumUI 及其父类都没有声明 onCreate，跳过该 hook")
+                } else {
+                    method.hookBefore {
+                        val activity = thisObject as? Activity ?: return@hookBefore
+                        if (activity.javaClass != albumClass) return@hookBefore
+                        activity.intent.putExtra("send_raw_img", true)
+                        activity.intent.putExtra("key_send_raw_image", true)
+                        WeLogger.i(TAG, "MediaTabAlbumUI raw flags set")
+                    }
+                }
             }
         }.onFailure { WeLogger.w(TAG, "MediaTabAlbumUI hook failed", it) }
     }

@@ -14,7 +14,17 @@ object MonetStructureMatcher {
         dexProvider: MonetDexEvidenceProvider? = null,
         onProgress: (completed: Int?, total: Int?, detail: String) -> Unit = { _, _, _ -> },
     ): Map<String, MonetResourceNode> {
-        val audited = resolveCandidateIds(graph, dexProvider, onProgress)
+        // 角色候选解析里任何一环抛异常都不能作废整次解析：实机日志中出现过
+        // `resource analysis failed during RESOLVING_ROLES / java.util.NoSuchElementException:
+        // List is empty.` —— 只要它从这里冒出去，用户看到的就是「莫奈完全不生效」。
+        // 现在退回**纯结构消歧**的结果：能解析出来的角色照常生效，最坏只是少数歧义角色缺席。
+        val audited = runCatching { resolveCandidateIds(graph, dexProvider, onProgress) }
+            .onFailure { WeLogger.w(TAG, "角色候选解析异常，退回纯结构消歧（其余角色照常）", it) }
+            .getOrElse {
+                runCatching { structuralResolution(graph, onProgress).candidates }
+                    .onFailure { WeLogger.e(TAG, "结构消歧同样失败，本次没有可解析的角色", it) }
+                    .getOrDefault(emptyMap())
+            }
         onProgress(null, null, "校验语义角色解析结果")
         // 每个角色独立降级：某个角色「0 个或 2 个以上候选」只让那个角色缺席，
         // 绝不把整次解析打断。旧实现在这里 require(single) 抛错，

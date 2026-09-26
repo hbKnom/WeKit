@@ -71,21 +71,31 @@ object MonetResourceResolver {
         val matchMs = (System.nanoTime() - matchStart) / 1_000_000
         val palette = overlayPalette(resources, fallbackPalette)
         // 合成资源（自适应图标图层）要借宿主同类型里空的槽位，需要全量节点的类型统计。
-        val slots = MonetHostTypeSlots.of(graph.allNodes())
+        val slots = runCatching { MonetHostTypeSlots.of(graph.allNodes()) }
+            .onFailure { WeLogger.w(TAG, "宿主类型槽位统计失败，合成资源本次跳过", it) }
+            .getOrDefault(MonetHostTypeSlots.EMPTY)
         val skippedIdentity = mutableListOf<String>()
-        val colors = MONET_RULES
-            .filter { it.type == "color" && it.id != MAIN_TAB_ROLE }
-            .mapNotNull { rule ->
-                val node = resolved[rule.id] ?: return@mapNotNull null
-                if (!node.acceptsColorValue()) {
-                    // 类型身份撞车：这个 id 的默认值不是颜色（文件/文本），把颜色写进去就是改坏
-                    // 宿主的别的资源 —— 2026-09-25 实机闪退正是这一类（anim 被写成 COLOR_RGB8）。
-                    skippedIdentity.add(rule.id)
-                    return@mapNotNull null
+        // 颜色收集是逐规则的启发式（平台 token 缺失、id 身份撞车、图里查不到引用都可能发生）。
+        // 实测日志：`resource analysis failed during RESOLVING_ROLES /
+        // java.util.NoSuchElementException: List is empty.` 就出在这一段，代价是莫奈整体失效。
+        // 现在只丢颜色：可视化资源（气泡/底栏/启动图）照常编排，最坏结果是「一部分颜色没跟上
+        // 主题」而不是「莫奈完全没生效」。
+        val colors = runCatching {
+            MONET_RULES
+                .filter { it.type == "color" && it.id != MAIN_TAB_ROLE }
+                .mapNotNull { rule ->
+                    val node = resolved[rule.id] ?: return@mapNotNull null
+                    if (!node.acceptsColorValue()) {
+                        // 类型身份撞车：这个 id 的默认值不是颜色（文件/文本），把颜色写进去就是改坏
+                        // 宿主的别的资源 —— 2026-09-25 实机闪退正是这一类（anim 被写成 COLOR_RGB8）。
+                        skippedIdentity.add(rule.id)
+                        return@mapNotNull null
+                    }
+                    val (light, night) = paletteFor(rule.id, resources)
+                    ColorTarget(node.binding(), light, night)
                 }
-                val (light, night) = paletteFor(rule.id, resources)
-                ColorTarget(node.binding(), light, night)
-            }
+        }.onFailure { WeLogger.w(TAG, "颜色规则收集失败，本次只注入可视化资源", it) }
+            .getOrDefault(emptyList<ColorTarget>())
         // 启动图标是可选的：旧实现用 requireNotNull，微信某次改动挪走 drawable/icon
         // 就足以让整次解析失败（用户看到的就是「解析出错」）。缺了就跳过这一张图。
         val splashIconId = graph.node(MonetResourceKey("drawable", "icon"))?.id ?: 0
@@ -321,7 +331,9 @@ object MonetResourceResolver {
             val id = frameworkColorId(resources, *fallbacks.toTypedArray()) ?: return null
             return ColorValue.Reference(id)
         }
-        return resolve(parts.first()) to resolve(parts.getOrElse(1) { parts.first() })
+        // 用 firstOrNull 兜住「空列表」这种不可能但一旦发生就整次失败的输入。
+        val primary = parts.firstOrNull() ?: semantic
+        return resolve(primary) to resolve(parts.getOrElse(1) { primary })
     }
 
     /** 平台 token 的**资源 id**（写进替换资源里作为引用），取不到返回 null。 */

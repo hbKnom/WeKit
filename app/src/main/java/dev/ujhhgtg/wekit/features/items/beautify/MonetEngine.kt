@@ -723,15 +723,25 @@ object MonetEngine : ClickableFeature() {
         //  ② TextView.setTextColor —— 文字颜色（每次绑定设一次，不是每帧）；
         //  ③ 上面/下面的 ColorDrawable / GradientDrawable（每次绑定设一次）。
         // 资源里的颜色由覆盖包负责，编译进代码的绿由这三处负责。
+        // 注意：PaintDrawable **并没有声明** setColor(int)，颜色是它的构造函数里
+        // `getPaint().setColor(color)` 写进去的。历史实现按名字 "setColor" 找方法，
+        // 于是每次启动都抛 NoSuchElementException（实机日志：
+        // `hook PaintDrawable.setColor failed / No method matching conditions in
+        // android.graphics.drawable.PaintDrawable`），这条「代码里造的纯色 shape 底」
+        // 覆盖链整条失效 —— 正是「WeKit 改过/替换过的组件没被莫奈取色到位」的一部分。
+        // 改为挂 PaintDrawable(int) 构造函数：构造完成后若画笔仍是默认色则替换成莫奈 accent。
         runCatching {
-            android.graphics.drawable.PaintDrawable::class.java.reflekt().firstMethod {
-                name = "setColor"
-                parameters(Int::class)
-            }.hookBefore {
-                val color = args.getOrNull(0) as? Int ?: return@hookBefore
-                if (color == DEFAULT_COLOR) args[0] = accentColor
-            }
-        }.onFailure { WeLogger.w(TAG, "hook PaintDrawable.setColor failed", it) }
+            android.graphics.drawable.PaintDrawable::class.java.declaredConstructors
+                .firstOrNull { it.parameterCount == 1 && it.parameterTypes[0] == Integer.TYPE }
+                ?.hookAfter {
+                    val drawable = thisObject as? android.graphics.drawable.PaintDrawable
+                        ?: return@hookAfter
+                    runCatching {
+                        val paint = drawable.paint
+                        if (paint.color == DEFAULT_COLOR) paint.color = accentColor
+                    }
+                } ?: error("PaintDrawable(int) constructor not found")
+        }.onFailure { WeLogger.w(TAG, "hook PaintDrawable(int) failed", it) }
 
         // 文字：只拦「显式设置颜色」这一层，绝不拦每帧的绘制调用。
         runCatching {
