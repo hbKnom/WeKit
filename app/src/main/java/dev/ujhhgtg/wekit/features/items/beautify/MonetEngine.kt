@@ -540,7 +540,7 @@ object MonetEngine : ClickableFeature() {
      * 崩溃路径），color 走 `getColor`，string 走 `getString`；其它类型本轮不写入，取不到不算我们写坏。
      */
     /**
-     * 列出宿主全部 APK 里 `res/**` 下的资源文件路径（`res/drawable/ao1.xml` 这种）。
+     * 列出宿主全部 APK 里 `res/` 下的资源文件路径（`res/drawable/ao1.xml` 这种）。
      *
      * 用途见 [applyRuntimePackage] 之前的别名闸门：只有**宿主真的自带同名文件**的 drawable 角色
      * 才允许被改写成「同名文件 + 换色版 XML」；别名 / 引用型 drawable 没有同名文件，改写就会让
