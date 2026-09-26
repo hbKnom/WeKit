@@ -351,8 +351,24 @@ object WeConversationListViewApi : ApiFeature(), IResolveDex {
     }
 
     fun refresh() {
-        runOnUiThread {
-            val adapter = latestAdapter?.get() ?: return@runOnUiThread
+        runOnUiThread { refreshNow() }
+    }
+
+    /**
+     * [refresh] 的同步版本，**必须由调用方保证在主线程**。
+     *
+     * 为什么需要它：过滤首页会话列表靠改写 `getCount()` 的返回值，而宿主 ListView 只在
+     * `notifyDataSetChanged()` 时刷新自己的 mItemCount。`refresh()` 走 `runOnUiThread`
+     * （内部是 `Handler.post`，**即使已在主线程也是异步**），于是「改返回值」和「通知宿主」
+     * 被拆到两个 turn —— 中间只要有触摸/布局进来就会抛
+     *   IllegalStateException: The content of the adapter has changed but ListView did not
+     *   receive a notification.（wekit-crash-2026-09-26_16-02-11-423）
+     * 需要原子生效的调用方（ConversationGrouping 的分组切换）用这个版本，把两步压在同一个
+     * 主线程 turn 内。
+     */
+    fun refreshNow() {
+        run {
+            val adapter = latestAdapter?.get() ?: return@run
             when (latestBackend) {
                 Backend.LIST_VIEW -> {
                     val listView = latestContainer?.get() as? ListView
@@ -360,7 +376,12 @@ object WeConversationListViewApi : ApiFeature(), IResolveDex {
                     val realInstalledAdapter =
                         (installedAdapter as? HeaderViewListAdapter)?.wrappedAdapter ?: installedAdapter
                     if (realInstalledAdapter != null && realInstalledAdapter !== adapter) {
-                        return@runOnUiThread
+                        // 宿主装的不是我们记录的那个 adapter 实例（HomeUI 有可能换实例）。
+                        // 对「真正装上去的那个」也补一次通知，否则它的 mItemCount 会与我们
+                        // hook 返回的 count 脱节，触摸时抛 ISE。
+                        runCatching { (realInstalledAdapter as? BaseAdapter)?.notifyDataSetChanged() }
+                            .onFailure { WeLogger.w(TAG, "notify installed adapter failed", it) }
+                        return@run
                     }
                     dividerCoordinator.applyListView(listView)
                     (adapter as BaseAdapter).notifyDataSetChanged()
@@ -370,7 +391,7 @@ object WeConversationListViewApi : ApiFeature(), IResolveDex {
                     notifyAdapterChanged(adapter)
                 }
 
-                null -> return@runOnUiThread
+                null -> return@run
             }
         }
     }

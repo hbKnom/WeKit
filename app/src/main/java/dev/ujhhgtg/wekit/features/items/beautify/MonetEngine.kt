@@ -64,6 +64,7 @@ import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import dev.ujhhgtg.wekit.utils.monet.MonetDexEvidenceCollector
 import dev.ujhhgtg.wekit.utils.monet.MonetDexEvidenceProvider
 import dev.ujhhgtg.wekit.utils.monet.MonetResourceKey
+import dev.ujhhgtg.wekit.utils.monet.MonetResourceValue
 import dev.ujhhgtg.wekit.utils.monet.MonetResourceResolver
 import dev.ujhhgtg.wekit.utils.monet.MonetResolveProgress
 import dev.ujhhgtg.wekit.utils.monet.MonetResolveResult
@@ -118,11 +119,24 @@ object MonetEngine : ClickableFeature() {
     /** 注入后多久算「活过来了」（没活到这一刻就重启 = 疑似被注入的包搞崩）。 */
     private const val CONFIRM_DELAY_MS = 30_000L
 
-    /** 应用后多少毫秒内又重启才算「疑似崩溃」：正常手动重开微信不会这么快。 */
-    private const val RESTART_WINDOW_MS = 90_000L
+    /**
+     * 应用后多少毫秒内又重启才算「疑似崩溃」。
+     *
+     * 【2026-09-26 修正】原来取 90 秒，实机上是**误伤**：用户在 90 秒内自己重开微信
+     * （正常操作）会被记成一次「疑似被注入的包搞崩」。日志里那次熔断
+     * （16:03:09「连续 2 次疑似导致微信异常退出，已自动停用注入」）真正的崩溃其实是
+     * 会话列表 adapter 的 ISE（wekit-crash-2026-09-26_16-02-11-423，与莫奈毫无关系），
+     * 结果莫奈被整段停用 —— 用户看到的就是「有的生效、有的没生效」。
+     * 收到 20 秒：只有真正的「一注入就秒退」才会被记账。
+     */
+    private const val RESTART_WINDOW_MS = 20_000L
 
-    /** 连续这么多次疑似崩溃就自动停用注入（等用户重新解析再放行）。 */
-    private const val MAX_FAIL_STREAK = 2
+    /**
+     * 连续这么多次疑似崩溃就自动停用注入（等用户重新解析再放行）。
+     *
+     * 3 次而不是 2 次：单次误判的代价是「莫奈整个启动都不生效」，比多试一次严重得多。
+     */
+    private const val MAX_FAIL_STREAK = 3
 
     /**
      * 连续这么多次「解析没跑完就退出」就跳过解析（等用户重新解析再放行）。
@@ -132,14 +146,18 @@ object MonetEngine : ClickableFeature() {
      */
     private const val MAX_RESOLVE_FAIL_STREAK = 1
 
-    /** 超过这个窗口的「解析进行中」标记视为陈旧（例如解析期被手动强杀），不再累计。 */
-    private const val RESOLVE_INTERRUPT_WINDOW_MS = 30 * 60 * 1000L
+    /**
+     * 超过这个窗口的「解析进行中」标记视为陈旧，不再累计。
+     *
+     * 从 30 分钟收到 6 分钟：一次完整解析实机约 3 分钟（16:05:23 → 16:08:25 = 182070ms），
+     * 用户在解析后十几分钟才重启微信属于正常使用，不该被算成「解析没跑完」。
+     */
+    private const val RESOLVE_INTERRUPT_WINDOW_MS = 6 * 60 * 1000L
 
     /** 启动后延后这么久才开始资源解析：把最重的一段挪出启动关键路径。 */
     private const val INITIAL_RESOLVE_DELAY_MS = 20_000L
 
     /** 宿主 `res/` 下算作「可覆盖的真实文件」的扩展名（用于过滤别名 drawable）。 */
-    private val HOST_RESOURCE_FILE_EXTENSIONS = setOf("xml", "png", "webp", "jpg", "jpeg")
 
     const val KEY_BUBBLE_STYLE = "monet_bubble_style"
     const val KEY_MULTI_SCENE_CORNERS = "monet_multi_scene_corners"
@@ -430,14 +448,40 @@ object MonetEngine : ClickableFeature() {
                 //   resource ID #0x7f08116c / Unable to find resource ID #0x7f08116c
                 // （wekit-crash-2026-09-26_13-33-02 / 13-43-03）正是这条。所以先把宿主各 APK 的
                 // `res/**` 文件清单扫出来，只有「宿主真的自带该文件」的条目才允许覆盖。
-                val hostFiles = hostResourceFiles(paths)
-                val hostFileExists: (String) -> Boolean = { path -> path in hostFiles }
+                // 别名闸门：用宿主**资源表里的值类型**判断，而不是宿主 APK 的文件清单。
+                //
+                // 上一版拿「宿主 APK 里存在同名 `res/...` 文件」当判据，在实机上直接失效：
+                // 微信的资源做过路径混淆（AndResGuard 一类），base.apk 里的条目根本不叫
+                // `res/drawable/xxx.xml`，于是清单恒为「0 个」，**所有 drawable 覆盖被整批
+                // 丢掉** —— 用户看到的就是「莫奈解析成功、色也生效了，但圆角 PRO 一个都没
+                // 生效，标题栏分组栏角标、导航底栏、朋友圈、相册图标大量还是原生的」。
+                //
+                // 正确判据：值本身就是文件路径（[MonetResourceValue.Text] 一类）才允许覆盖；
+                // 值是 REFERENCE 的别名要原样保留引用链，否则宿主会去打开一个不存在的文件
+                //（Resources$NotFoundException: File res/drawable/ao1.xml from drawable
+                //  resource ID #0x7f08116c，wekit-crash-2026-09-26_13-33-02 / 13-43-03）。
+                // 查不到的资源保守放行，写包之后的 missingResourceFiles 复核兜最后一层。
+                val hostDrawableIsRealFile: (String) -> Boolean = realFileDrawable@{ path ->
+                    val relative = path.removePrefix("res/")
+                    val directory = relative.substringBefore('/', "")
+                    val fileName = relative.substringAfter('/', "")
+                    if (directory.isEmpty() || fileName.isEmpty() || fileName == relative) {
+                        return@realFileDrawable true
+                    }
+                    val node = graph.node(
+                        MonetResourceKey(directory.substringBefore('-'), fileName.substringBeforeLast('.', fileName)),
+                    ) ?: return@realFileDrawable true
+                    val value = node.values.firstOrNull { it.qualifiers == directory.substringAfter('-', "") }?.value
+                        ?: node.values.firstOrNull { it.qualifiers.isEmpty() }?.value
+                        ?: return@realFileDrawable true
+                    value !is MonetResourceValue.Reference
+                }
                 if (!MonetRuntimePackageWriter.write(
                         packageFile,
                         info.packageName,
                         resolution.plan,
                         hostReference,
-                        hostFileExists,
+                        hostDrawableIsRealFile,
                     )
                 ) {
                     // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
@@ -539,36 +583,6 @@ object MonetEngine : ClickableFeature() {
      * 类型分流按 `Resources.getResourceTypeName`：drawable/mipmap 走 `getDrawable`（这条正是
      * 崩溃路径），color 走 `getColor`，string 走 `getString`；其它类型本轮不写入，取不到不算我们写坏。
      */
-    /**
-     * 列出宿主全部 APK 里 `res/` 下的资源文件路径（`res/drawable/ao1.xml` 这种）。
-     *
-     * 用途见 [applyRuntimePackage] 之前的别名闸门：只有**宿主真的自带同名文件**的 drawable 角色
-     * 才允许被改写成「同名文件 + 换色版 XML」；别名 / 引用型 drawable 没有同名文件，改写就会让
-     * 宿主打开一个不存在的文件并直接崩进程。
-     *
-     * 扫一次全清单（微信 base.apk 约 7 万条目，纯 zip 目录遍历，几十毫秒）后放进 Set，
-     * 写入阶段每次判断都是 O(1)。任何 APK 读失败只跳过它自己，绝不因为清单拿不全而中断解析；
-     * 清单为空时下游会保守地跳过全部 drawable 覆盖（不生效，但绝不崩）。
-     */
-    private fun hostResourceFiles(paths: List<String>): Set<String> {
-        val files = HashSet<String>()
-        paths.forEach { path ->
-            runCatching {
-                java.util.zip.ZipFile(File(path)).use { zip ->
-                    val entries = zip.entries()
-                    while (entries.hasMoreElements()) {
-                        val name = entries.nextElement().name
-                        if (name.startsWith("res/") && name.substringAfterLast('.', "").lowercase() in HOST_RESOURCE_FILE_EXTENSIONS) {
-                            files.add(name)
-                        }
-                    }
-                }
-            }.onFailure { WeLogger.w(TAG, "cannot list host resource files in $path", it) }
-        }
-        WeLogger.i(TAG, "宿主资源文件清单：${files.size} 个（用于过滤别名 drawable）")
-        return files
-    }
-
     private fun smokeTestRuntimePackage(resources: Resources, bindings: MonetBindings?): Boolean {
         val ids = bindings?.roles?.values?.toList() ?: return true
         if (ids.isEmpty()) return true

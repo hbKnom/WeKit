@@ -62,7 +62,7 @@ object MonetRuntimePackageWriter {
         packageName: String,
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)? = null,
-        hostFileExists: ((path: String) -> Boolean)? = null,
+        hostDrawableIsRealFile: ((path: String) -> Boolean)? = null,
     ): Boolean {
         if (plan.isEmpty) {
             // 一个角色都没解析出来时不该抛异常打断整条流程：调用方会把它当成
@@ -76,7 +76,7 @@ object MonetRuntimePackageWriter {
         )
         val writtenFiles = HashSet<String>()
         try {
-            if (!writeTo(tmp, packageName, plan, hostReference, hostFileExists, writtenFiles)) {
+            if (!writeTo(tmp, packageName, plan, hostReference, hostDrawableIsRealFile, writtenFiles)) {
                 tmp.delete()
                 return false
             }
@@ -138,7 +138,7 @@ object MonetRuntimePackageWriter {
         packageName: String,
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)?,
-        hostFileExists: ((path: String) -> Boolean)?,
+        hostDrawableIsRealFile: ((path: String) -> Boolean)?,
         outFiles: MutableSet<String>,
     ): Boolean {
         val apk = ApkModule()
@@ -220,24 +220,23 @@ object MonetRuntimePackageWriter {
         // drawable 条目的值必须是「我们刚写进去的那个 XML 的路径」：宿主按 id 取 drawable 时
         // 走的是 value=字符串路径 -> 文件，类型名保持不变，所以既能替换又不改变宿主的取用方式。
         //
-        // 【2026-09-26 实机后默认关闭】见 [WRITE_DRAWABLE_OVERLAYS]：这些 XML 会让全局资源查找
-        // 变慢，并且一旦文件没落地就是宿主必崩的 Resources$NotFoundException。
+        // drawable 覆盖（圆角 PRO、角标、底栏/相册/朋友圈图标等全靠它）。
+        //
+        // 【2026-09-26 修正】上一版这里因为「宿主 APK 文件清单」闸门恒为空，把 drawable 整批
+        // 丢掉了（用户反馈「圆角一个都没生效、大量图标还是原生的」）。现在闸门改为按宿主资源表
+        // 的值类型判断（见 [hostDrawableIsRealFile]），只有别名/引用型 drawable 会被跳过。
         if (WRITE_DRAWABLE_OVERLAYS) {
             var aliasSkipped = 0
             plan.drawables.forEach { drawable ->
                 val binding = drawable.binding
                 fun emit(node: XmlNode, qualifiers: String) {
                     val path = xmlPath(binding.type, qualifiers, binding.name)
-                    // 别名 / 引用型 drawable：宿主这个 id 只是一条「指向别的资源」的别名，base.apk
-                    // 里并不存在同名文件。把它的值改写成路径，等于让宿主去打开一个不存在的文件 ——
-                    // 实机崩溃
+                    // 别名 / 引用型 drawable：宿主这个 id 只是一条「指向别的资源」的别名。
+                    // 把它的值改写成文件路径会破坏引用链，宿主去找一个不存在的文件就崩
                     //   Resources$NotFoundException: File res/drawable/ao1.xml from drawable
-                    //   resource ID #0x7f08116c  /  Unable to find resource ID #0x7f08116c
-                    // （wekit-crash-2026-09-26_13-33-02 与 13-43-03，宿主 MoreTabUI 取 drawable
-                    // 时崩）就是这条：解析阶段只认得「角色 -> id」，不知道这个 id 是真实文件还是
-                    // 别名，于是给别名也拼了一个并不存在的文件路径。只有宿主**真的自带该文件**的
-                    // 条目才允许覆盖 —— 那是「原文件 + 换色版」的关系，路径必然可打开。
-                    if (hostFileExists != null && !hostFileExists(path)) {
+                    //   resource ID #0x7f08116c（wekit-crash-2026-09-26_13-33-02 / 13-43-03）。
+                    // 判据由调用方给出（宿主资源表里该资源的值类型是否为 REFERENCE）。
+                    if (hostDrawableIsRealFile != null && !hostDrawableIsRealFile(path)) {
                         aliasSkipped++
                         return
                     }
@@ -263,7 +262,7 @@ object MonetRuntimePackageWriter {
                 WeLogger.i(
                     TAG,
                     "drawable overlays skipped: $aliasSkipped 条别名 drawable" +
-                        "（宿主 base.apk 内无同名文件，改写会变成「打开不存在的文件」而崩）",
+                        "（资源表里是 REFERENCE 别名，改写会变成「打开不存在的文件」而崩）",
                 )
             }
         } else if (plan.drawables.isNotEmpty()) {

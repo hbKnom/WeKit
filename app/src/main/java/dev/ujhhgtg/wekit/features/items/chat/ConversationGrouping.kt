@@ -471,6 +471,14 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
      * 标记跨线程共享会让另一条线程的下标映射被误跳过。
      */
     private val buildingAdapterCache = ThreadLocal<Boolean>()
+
+    /**
+     * 「正在读宿主 adapter 的真实条目数」标记。
+     *
+     * [rawAdapterCount] 会直接 invoke 宿主被 hook 的 `getCount()`；没有这层标记时它会再次
+     * 走 [hookConversationListAdapter] 里的过滤分支，读回过滤后的数字 —— 那正是我们要避开的。
+     */
+    private val suppressCountFilter = ThreadLocal<Boolean>()
     private val recyclerLists = Collections.synchronizedSet(
         Collections.newSetFromMap(WeakHashMap<Any, Boolean>()),
     )
@@ -599,6 +607,31 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         synchronized(recyclerLists) { recyclerLists.clear() }
         clearAdapterCaches()
         snapshotFailuresLogged.clear()
+        // BaseFeature.disable() 的顺序是 unhookAll() → onDisable()，到这里 hook 已经摘掉：
+        // getCount() 立刻回到原始值，而宿主的 mItemCount 还停在过滤后的数字上。补一次同步
+        // 通知把两者对齐，否则摘掉 hook 之后第一次触摸/布局就会抛 ISE。
+        onMainTurn { WeConversationListViewApi.refreshNow() }
+    }
+
+    /**
+     * 在**同一个主线程 turn** 内执行 [block]（已处于主线程时同步执行，否则 post 一次）。
+     *
+     * 为什么必须是这样：宿主首页会话列表是 AbsListView 子类，它只在
+     * `setAdapter` / `notifyDataSetChanged()` 时刷新自己的 mItemCount，之后每次触摸、
+     * 滚动、布局都会校验 `mItemCount == adapter.getCount()`，不等就抛
+     *
+     *     IllegalStateException: The content of the adapter has changed but ListView did not
+     *     receive a notification.（wekit-crash-2026-09-26_16-02-11-423）
+     *
+     * 而我们的分组过滤正是改写 `getCount()` 的返回值，所以「换过滤结果」和「通知宿主」
+     * 必须原子地落在同一个 turn 里。
+     */
+    private inline fun onMainTurn(crossinline block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            Handler(Looper.getMainLooper()).post { block() }
+        }
     }
 
     private fun hookConversationListAdapter() {
@@ -631,21 +664,24 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         }
         adapterMethods.forEach { methods ->
             methods.getCount.hookAfter {
+                if (suppressCountFilter.get() == true) return@hookAfter
                 if (groupingBackend != GroupingBackend.ADAPTER_FILTER) return@hookAfter
                 if (isAllTab(activeAdapterGroup.id)) return@hookAfter
                 val adapter = thisObject!!
                 // The inherited count method is also called by unrelated adapters.
                 if (!methods.getView.declaringClass.isInstance(adapter)) return@hookAfter
-                val boundCache = if (bindingAdapter.get() === adapter) {
-                    synchronized(adapterCaches) { adapterCaches[adapter] }
-                } else {
-                    null
-                }
-                if (boundCache != null) {
-                    result = boundCache.visiblePositions.size
-                    return@hookAfter
-                }
-                rebuildAdapterCache(adapter, result as Int)?.let { result = it.visiblePositions.size }
+                // **只读缓存，绝不在这里惰性重建。**
+                //
+                // 重建会让 `getCount()` 的返回值在同一帧里「悄悄」变成另一个数字，而宿主
+                // ListView 只在 setAdapter/onChanged 时更新自己的 mItemCount —— 两者一旦
+                // 脱节，滑动/触摸首页就会抛
+                //   IllegalStateException: The content of the adapter has changed but ListView
+                //   did not receive a notification.（wekit-crash-2026-09-26_16-02-11-423）
+                //
+                // 缓存由 primeAdapterCaches() 在「同一个主线程 turn 内、notify 之前」建好；
+                // 缓存为空 = 这个实例不参与过滤，返回原始 count 反而与宿主 mItemCount 一致。
+                val cache = synchronized(adapterCaches) { adapterCaches[adapter] } ?: return@hookAfter
+                result = cache.visiblePositions.size
             }
             methods.getView.hookBefore(priority = 100) {
                 if (groupingBackend != GroupingBackend.ADAPTER_FILTER) return@hookBefore
@@ -824,6 +860,47 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
 
     private fun clearAdapterCaches() {
         synchronized(adapterCaches) { adapterCaches.clear() }
+    }
+
+    /**
+     * 首页会话列表的 count 稳定性规则 —— 「滑动首页/切换分组偶发闪退」的根治办法。
+     *
+     * Android 的 AbsListView 只在 `setAdapter` / `AdapterDataSetObserver.onChanged()` 时更新
+     * 自己的 `mItemCount`，之后在触摸、滚动、布局路径里都会做
+     * `mItemCount != mAdapter.getCount()` 的校验，不等就直接抛
+     *
+     *     IllegalStateException: The content of the adapter has changed but ListView did not
+     *     receive a notification. [in ListView(-1, class o95.y3) with
+     *     Adapter(class com.tencent.mm.ui.ng)]
+     *
+     * （用户日志 wekit-crash-2026-09-26_16-02-11-423 里的真实崩溃。）
+     *
+     * 我们过滤首页列表靠的是改写 `getCount()` 的返回值，所以必须保证：
+     * **getCount 的返回值只在「与一次 notifyDataSetChanged 同一个主线程 turn」里变化。**
+     * 落成两条纪律：
+     *  1. `getCount` 的 hook 只读缓存、绝不自己重建；
+     *  2. 改变过滤状态的唯一入口是 [selectTab] → 本函数（同步把缓存换好）
+     *     → [refreshConversations]（同 turn 通知宿主）。
+     *
+     * 这样「缓存为空」就等价于「这个 adapter 实例不参与过滤」，它返回的原始 count 与宿主
+     * mItemCount 天然一致 —— 宁可这次不过滤，也绝不让两者脱节。
+     */
+    private fun primeAdapterCaches() {
+        val adapter = WeConversationListViewApi.currentAdapter() ?: return
+        val methods = adapterMethods.firstOrNull { it.getView.declaringClass.isInstance(adapter) } ?: return
+        val raw = rawAdapterCount(adapter, methods) ?: return
+        if (raw <= 0) return
+        rebuildAdapterCache(adapter, raw)
+    }
+
+    /** 读宿主 adapter 的真实（未过滤）条目数，绕过 getCount 上的过滤 hook。 */
+    private fun rawAdapterCount(adapter: Any, methods: AdapterMethods): Int? {
+        suppressCountFilter.set(true)
+        return try {
+            runCatching { methods.getCount.invoke(adapter) as Int }.getOrNull()
+        } finally {
+            suppressCountFilter.remove()
+        }
     }
 
     private fun adapterMethods(adapter: Any): AdapterMethods =
@@ -1070,11 +1147,13 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         } else {
             null
         }
-        clearAdapterCaches()
-        if (isActive) disable()
-        if (isEnabled) {
-            enable()
-            if (!isActive) return
+        // 摘/挂 hook 会让 getCount() 的返回值在「有缓存 ↔ 无缓存」之间切换，必须与通知宿主
+        // 待在同一个主线程 turn 里；enable() 失败时也要通知一次，把宿主拉回「未过滤」，
+        // 绝不让它的 mItemCount 停在旧的过滤值上。
+        onMainTurn {
+            clearAdapterCaches()
+            if (isActive) disable()
+            if (isEnabled) enable()
             refreshConversations(backend)
         }
     }
@@ -1101,17 +1180,35 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         } else {
             null
         }
-        clearAdapterCaches()
-        refreshConversations(groupingBackend)
+        // 时序（关键，见 primeAdapterCaches 的注释）：先把过滤缓存原子换好，再让宿主列表
+        // 通过 notifyDataSetChanged 重新取 count。两步必须落在同一个主线程 turn 内 ——
+        // 这样宿主的 mItemCount 始终等于我们 getCount 返回的值。
+        // 清缓存 → 重建 → 通知宿主重新取 count，三步必须在同一个主线程 turn 内完成
+        // （onMainTurn 在已处于主线程时是同步调用 —— 从 Compose 点击回调进来就是这条路）。
+        // 否则宿主的 mItemCount 会有一瞬间与 getCount() 的返回值不一致，滑动/触摸首页
+        // 就抛 ISE（wekit-crash-2026-09-26_16-02-11-423）。
+        onMainTurn {
+            clearAdapterCaches()
+            primeAdapterCaches()
+            refreshConversations(groupingBackend)
+        }
         restoreScrollPosition(groupId)
     }
 
     private fun refreshConversations(backend: GroupingBackend) {
         if (backend == GroupingBackend.ADAPTER_FILTER) {
-            // The paged Recycler adapter must rebuild through its own data source so count, item,
-            // bind, click and incremental-update positions stay on the same real list. Legacy
-            // ListView adapters keep the original cached-position refresh path.
-            if (!refreshRecyclerData()) WeConversationListViewApi.refresh()
+            // 页式 Recycler 适配器要通过它自己的数据源重建（count / item / bind / 点击 /
+            // 增量更新的下标必须落在同一份真实列表上）；宿主首页的会话列表则是 ListView
+            // （实机崩溃栈里的 `ListView(-1, class o95.y3)`），它只认
+            // `adapter.notifyDataSetChanged()`。
+            //
+            // **这里不能短路。** 原来写成 `if (!refreshRecyclerData()) refresh()`，只要进程里
+            // 存在任何一个 RecyclerView 列表（recyclerLists 非空）就会跳过 ListView 的刷新，
+            // 我们改过的 getCount 返回值就再也传不到 ListView 的 mItemCount —— 滑动/触摸首页
+            // 直接抛 IllegalStateException 闪退（wekit-crash-2026-09-26_16-02-11-423）。
+            // 两条路都要走。
+            refreshRecyclerData()
+            WeConversationListViewApi.refreshNow()
         } else {
             // Query Rewrite needs a fresh host query so the new SQL predicate is applied.
             WeConversationApi.reloadConversations()
