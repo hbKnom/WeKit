@@ -16,8 +16,8 @@
     <string name="jev_card_retry_hint">Tap this card to analyse again</string>
     <string name="jev_card_retry_footer">Retrying sends one more request to the model</string>
     <string name="jev_note_too_long">This message is longer than %1$d characters, so it is not sent to the model. The limit can be raised in settings.</string>
-    <string name="jev_hint_expand">Tap to expand · long press to copy</string>
-    <string name="jev_hint_collapse">Tap to collapse · long press to copy</string>
+    <string name="jev_hint_expand">▾ Tap to expand · long press to copy</string>
+    <string name="jev_hint_collapse">▴ Tap to collapse · long press to copy</string>
     <string name="jev_hint_copy">Long press to copy the reading</string>
     <string name="jev_hint_note">Note: %1$s</string>
     <string name="jev_meta_confidence">confidence %1$d%%</string>
@@ -42,7 +42,7 @@
     <string name="jev_ext_balance_other_run">They sent %1$d in a row, no reply from you yet</string>
     <string name="jev_ext_balance_self_run">The last %1$d messages are mostly yours</string>
     <string name="jev_ext_balance_enable">Speaker balance</string>
-    <string name="jev_ext_balance_enable_desc">Shows how much each side talks and who is waiting for a reply.</string>
+    <string name="jev_ext_balance_enable_desc">Shows how much each side talks as a ratio bar once expanded, and who is waiting for a reply.</string>
     <string name="jev_ext_topics_title">Topics</string>
     <string name="jev_ext_topics_none">no clear topic</string>
     <string name="jev_ext_topics_enable">Topic tags</string>
@@ -73,7 +73,7 @@
     <string name="jev_level_desc_watch">Signals are mixed: ask one more question before moving.</string>
     <string name="jev_level_desc_hold">Signals are negative: stop pushing and give it time.</string>
     <string name="jev_ext_level_enable">Advice level and risk</string>
-    <string name="jev_ext_level_enable_desc">Grades the advice into four levels and warns about one-sided or negative turns.</string>
+    <string name="jev_ext_level_enable_desc">Grades the advice into four levels (shown as a tag on the card) and warns about one-sided or negative turns.</string>
     <string name="jev_risk_title">Risk</string>
     <string name="jev_risk_level_high">risk: high</string>
     <string name="jev_risk_level_medium">risk: medium</string>
@@ -103,4 +103,32 @@
     <string name="jev_history_copied">Copied %1$d readings</string>
     <string name="jev_history_stats">%1$d ok · %2$d failed · %3$d cached</string>
     <string name="jev_history_fail_line">%1$s · %2$s</string>
+
+    <!-- 第 17 轮：卡片分层展示（标签行 / 富文本分层）与设置页重排新增的文案。 -->
+    <string name="jev_card_reading">Reading: %1$s</string>
+    <string name="jev_chip_level">Advice: %1$s</string>
+    <string name="jev_line_topics">Topics: %1$s</string>
+    <string name="jev_line_trend">Mood trend: %1$s</string>
+    <string name="jev_card_balance_self">Me</string>
+    <string name="jev_card_balance_other">Them</string>
+    <string name="jev_settings_section_switch">Switches</string>
+    <string name="jev_settings_section_card">Card look</string>
+    <string name="jev_settings_section_context">Context and insert-back</string>
+    <string name="jev_settings_section_runtime">Status and actions</string>
+    <string name="jev_settings_count">%1$d of %2$d on</string>
+    <string name="jev_settings_preview">Card preview</string>
+    <string name="jev_settings_preview_desc">With the switches below, the card under a message looks roughly like this.</string>
+    <string name="jev_preview_mood">Calm</string>
+    <string name="jev_preview_reading">This line is probably leaving room for a meet-up.</string>
+    <string name="jev_preview_advice">Pick up what they just mentioned and ask one more detail.</string>
+    <string name="jev_notice_save_failed">Save failed: %1$s</string>
+    <string name="jev_notice_testing">Testing the connection…</string>
+    <string name="jev_notice_reanalysed">Resubmitted the messages visible on this screen</string>
+    <string name="jev_notice_no_failure">No failed analysis to retry</string>
+    <string name="jev_notice_retried">Cleared %1$d failed records and resubmitted them</string>
+    <string name="jev_notice_cleared">Cleared %1$d cached results, re-analysing this screen</string>
+    <string name="jev_runtime_line">This run: %1$d requests · %2$d ok · %3$d failed · %4$d cached · %5$d waiting</string>
+    <string name="jev_recent_line">%1$s · %2$s · %3$s</string>
+    <string name="jev_export_title">Yanwai · recent readings (%1$d)</string>
+    <string name="jev_export_failed">analysis failed: %1$s</string>
 </resources>

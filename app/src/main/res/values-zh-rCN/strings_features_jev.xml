@@ -16,8 +16,8 @@
     <string name="jev_card_retry_hint">点击这张卡重新分析</string>
     <string name="jev_card_retry_footer">重试会重新请求一次模型</string>
     <string name="jev_note_too_long">本条超过 %1$d 字上限，为避免把长文整段发给模型，本条不分析（可在设置里提高上限）。</string>
-    <string name="jev_hint_expand">点击展开完整解读 · 长按复制</string>
-    <string name="jev_hint_collapse">点击收起 · 长按复制解读</string>
+    <string name="jev_hint_expand">▾ 点击展开完整解读 · 长按复制</string>
+    <string name="jev_hint_collapse">▴ 点击收起 · 长按复制解读</string>
     <string name="jev_hint_copy">长按复制解读</string>
     <string name="jev_hint_note">提示：%1$s</string>
     <string name="jev_meta_confidence">置信度 %1$d%%</string>
@@ -42,7 +42,7 @@
     <string name="jev_ext_balance_other_run">对方已连续发 %1$d 条，你还没回应</string>
     <string name="jev_ext_balance_self_run">最近 %1$d 条主要是你在说</string>
     <string name="jev_ext_balance_enable">互动均衡</string>
-    <string name="jev_ext_balance_enable_desc">显示本屏双方发言占比，以及谁在等回应。</string>
+    <string name="jev_ext_balance_enable_desc">展开后把双方发言占比画成比例横幅，并指出谁在等回应。</string>
     <string name="jev_ext_topics_title">话题</string>
     <string name="jev_ext_topics_none">没提取到明显话题</string>
     <string name="jev_ext_topics_enable">话题标签</string>
@@ -73,7 +73,7 @@
     <string name="jev_level_desc_watch">信号不够明确，先多问一句再决定是否推进。</string>
     <string name="jev_level_desc_hold">情绪偏负，先别推进，给对方留点空间。</string>
     <string name="jev_ext_level_enable">建议分级与风险提示</string>
-    <string name="jev_ext_level_enable_desc">把建议分成四档，并对单向、负面走向给出提示。</string>
+    <string name="jev_ext_level_enable_desc">把建议分成四档（卡片上用圆角标签显示），并对单向、负面走向给出提示。</string>
     <string name="jev_risk_title">风险提示</string>
     <string name="jev_risk_level_high">风险等级：高</string>
     <string name="jev_risk_level_medium">风险等级：中</string>
@@ -103,4 +103,32 @@
     <string name="jev_history_copied">已复制 %1$d 条解读</string>
     <string name="jev_history_stats">成功 %1$d · 失败 %2$d · 缓存 %3$d 条</string>
     <string name="jev_history_fail_line">%1$s · %2$s</string>
+
+    <!-- 第 17 轮：卡片分层展示（标签行 / 富文本分层）与设置页重排新增的文案。 -->
+    <string name="jev_card_reading">解读：%1$s</string>
+    <string name="jev_chip_level">建议：%1$s</string>
+    <string name="jev_line_topics">话题：%1$s</string>
+    <string name="jev_line_trend">情绪趋势：%1$s</string>
+    <string name="jev_card_balance_self">我</string>
+    <string name="jev_card_balance_other">对方</string>
+    <string name="jev_settings_section_switch">总开关</string>
+    <string name="jev_settings_section_card">卡片外观</string>
+    <string name="jev_settings_section_context">上下文与回插</string>
+    <string name="jev_settings_section_runtime">运行状态与操作</string>
+    <string name="jev_settings_count">%1$d/%2$d 已开</string>
+    <string name="jev_settings_preview">卡片预览</string>
+    <string name="jev_settings_preview_desc">下面这些开关生效后，插在消息下方的卡片大致长这样。</string>
+    <string name="jev_preview_mood">平静</string>
+    <string name="jev_preview_reading">这句可能在给见面留位置。</string>
+    <string name="jev_preview_advice">顺着刚提到的事，问一个还没说到的细节。</string>
+    <string name="jev_notice_save_failed">保存失败：%1$s</string>
+    <string name="jev_notice_testing">正在检测，请稍候…</string>
+    <string name="jev_notice_reanalysed">已重新提交本屏可见消息</string>
+    <string name="jev_notice_no_failure">没有失败的记录</string>
+    <string name="jev_notice_retried">已清掉 %1$d 条失败记录并重新提交</string>
+    <string name="jev_notice_cleared">已清空结果缓存（%1$d 条），正在重新分析本屏</string>
+    <string name="jev_runtime_line">本次运行：已发出请求 %1$d 次 · 成功 %2$d · 失败 %3$d · 缓存 %4$d 条 · 等待中 %5$d 条</string>
+    <string name="jev_recent_line">%1$s · %2$s · %3$s</string>
+    <string name="jev_export_title">潜语 · 最近解读（%1$d 条）</string>
+    <string name="jev_export_failed">分析失败：%1$s</string>
 </resources>
