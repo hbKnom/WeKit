@@ -44,10 +44,11 @@
     <string name="chat_analysis_dim_emoji">表情符号排行</string>
     <string name="chat_analysis_dim_pair">默契搭档</string>
     <string name="chat_analysis_dim_daily">每日开场与收尾</string>
-    <!-- ===== 第 20 轮：维度整合（25 个维度 = 核心 13 + 三个进阶包各 4）新增的维度名 ===== -->
+    <!-- ===== 第 20 轮：维度整合新增的维度名（第 21 轮再凝练：24 个维度 = 核心 12 + 三个进阶包各 4） ===== -->
     <string name="chat_analysis_dim_reply_rank">回复速度榜</string>
     <string name="chat_analysis_dim_profile_radar">个人作息雷达</string>
     <string name="chat_analysis_dim_mood_words">情绪词雷达</string>
+    <string name="chat_analysis_dim_vocab_breadth">用词广度</string>
     <string name="chat_analysis_dim_typing">打字习惯</string>
     <string name="chat_analysis_dim_appointment">约定与提醒</string>
     <string name="chat_analysis_dim_hour_volume">时段话量画像</string>

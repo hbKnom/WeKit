@@ -1109,7 +1109,7 @@ internal object ChatAnalysisUi {
         val rankOn = ChatAnalysisEngine.FEATURE_RANK in features
         val enabledCount = listOf(aiOn, statsOn, rankOn).count { it }
         val modelReady = selectedModelName.isNotBlank()
-        // 第 20 轮：报告整合成 25 个维度（核心 13 个始终输出 + 三个进阶包各 4 个），
+        // 第 20 轮整合成 25 个维度；第 21 轮再凝练成 24 个（核心 12 个始终输出 + 三个进阶包各 4 个），
         // 三个开关各自记着自己的包是否输出；自己是唯一写者，改动即时落盘，下一次分析生效。
         var packTimeOn by remember { mutableStateOf(ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_TIME)) }
         var packRelationOn by remember { mutableStateOf(ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_RELATION)) }
@@ -1262,7 +1262,7 @@ internal object ChatAnalysisUi {
                         )
                     }
                 }
-                // 第 20 轮：报告整合为 25 个维度（核心 13 + 三个进阶包各 4）。
+                // 第 20 轮整合为 25 个维度，第 21 轮再凝练为 24 个（核心 12 + 三个进阶包各 4）。
                 // 三张卡就是三个进阶包的开关：关掉只少这一包的四段，核心与其它包一行都不变。
                 item(key = "pack_time") {
                     GroupCard(
@@ -1397,7 +1397,7 @@ internal object ChatAnalysisUi {
                                 horizontalArrangement = Arrangement.spacedBy(ChipGap),
                                 verticalArrangement = Arrangement.spacedBy(ChipGap),
                             ) {
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_mood_words))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_vocab_breadth))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_typing))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_appointment))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_hour_volume))

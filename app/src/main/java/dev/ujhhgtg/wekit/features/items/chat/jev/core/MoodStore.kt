@@ -169,6 +169,20 @@ object MoodStore {
     var trendVersion: Int = 0
         private set
 
+    /**
+     * **按会话**分开的走势版本号：卡片指纹只准用这一个（[trendVersionOf]）。
+     *
+     * 全局 [trendVersion] 是「一屏卡片一起重排」的元凶：任意一条消息出结论它都会 +1，
+     * 于是屏幕上**所有**卡片的指纹一起失配 —— 包括别的会话的、早就出结果的 ——
+     * 全部重新排版、重新往宿主行预留高度、整屏重绘。这与之前「把全局队列长度放进指纹」
+     * 是同一类错误。走势只影响**同一会话**的卡片，所以版本号也必须按会话递增。
+     */
+    private val trendVersions = ConcurrentHashMap<String, Int>()
+
+    /** 某个会话的走势版本号（卡片指纹用；会话为空时恒为 0）。 */
+    fun trendVersionOf(talker: String): Int =
+        if (talker.isEmpty()) 0 else trendVersions[talker] ?: 0
+
     /** 记下这一句的情绪强度，用来给同一会话的下一张卡算走势。 */
     fun recordScore(talker: String, score: Double) {
         if (talker.isBlank() || !score.isFinite()) return
@@ -178,6 +192,7 @@ object MoodStore {
             while (deque.size > TREND_SAMPLES) deque.removeFirst()
         }
         trendVersion++
+        trendVersions[talker] = (trendVersions[talker] ?: 0) + 1
     }
 
     /**
@@ -227,6 +242,7 @@ object MoodStore {
         journal.clear()
         trends.clear()
         trendVersion++
+        trendVersions.clear()
         inserted.clear()
         completed.set(0)
         failed.set(0)

@@ -1370,7 +1370,7 @@ object ChatAnalysisEngine {
             appendRelationPackSections(r, extra, talker, isGroup, textN, nickCache)
         }
         if (ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_LANGUAGE)) {
-            appendLanguagePackSections(r, extra, textN)
+            appendLanguagePackSections(r, extra, textN, wordMap)
         }
 
         return r.toString()
@@ -1466,14 +1466,17 @@ object ChatAnalysisEngine {
         }
     }
 
-    // ---------------- 核心 3~5：活跃时段分布 / 活跃热力 / 作息与昼夜 ----------------
+    // ---------------- 核心 3~4：活跃时段与热力 / 作息与昼夜 ----------------
 
     /**
-     * 核心第 3~5 段（全是时间维度）。
+     * 核心第 3~4 段（全是时间维度）。
      *
-     * 第 3 段 = 原【全天活跃频次】+ 原【活跃集中度】：频次回答"一天里哪几段忙"，
-     * 集中度回答"忙得多集中"，同一份 24 格小时直方图能同时回答，没必要占两张卡片。
-     * 第 5 段 = 原【昼夜结构】+ 原【作息画像】+ 原【昼夜话量】：三段都是"作息"，
+     * 第 3 段 = 原【全天活跃频次】+ 原【活跃集中度】+ 原【活跃热力】：三段读的是同一份
+     * "小时 × 星期"活跃矩阵 —— 频次回答"一天里哪几段忙"、集中度回答"忙得多集中"、
+     * 热力回答"哪天的哪个小时最挤"。第 21 轮把热力并进本段，小时维度的两种读法
+     * （六段条形 + 7×24 矩阵）落在同一张卡片里对照着看，不再用两张卡片说同一件事；同时删掉了
+     * 原【活跃热力】段之前那 24 行「每小时分布」条形 —— 热力矩阵的列读的就是它，属于重复信息。
+     * 第 4 段 = 原【昼夜结构】+ 原【作息画像】+ 原【昼夜话量】：三段都是"作息"，
      * 合成一段后先是结构占比、再是作息画像、最后是昼夜话量的三种读法，读起来是一条链。
      */
     private fun appendCoreTime(
@@ -1527,7 +1530,7 @@ object ChatAnalysisEngine {
         }
 
         // ── 3) 活跃时段分布 ─────────────────────────────────────────
-        r.append("\n【活跃时段分布】\n")
+        r.append("\n【活跃时段与热力】\n")
         if (totalAll > 0) {
             r.append("最活跃时段：").append(hPeak).append(" 点（").append(hMax).append(" 条）\n")
             r.append("活跃小时数：").append(ex.activeHours).append(" 个\n")
@@ -1551,11 +1554,6 @@ object ChatAnalysisEngine {
                 r.append(bandNames[b]).append("点 ").append(bandSum[b]).append(" ")
                     .append(bar(bandSum[b], bMax, 16)).append("\n")
             }
-            r.append("每小时分布 0 点到 23 点\n")
-            for (h in 0 until 24) {
-                r.append(h).append("时 ").append(hourDist[h]).append(" ")
-                    .append(bar(hourDist[h], hMax, 16)).append("\n")
-            }
             r.append("集中度点评 ").append(
                 when {
                     pct(topSum, totalAll) >= 50 -> "越聊越集中 一半的话都挤在三个小时里"
@@ -1567,8 +1565,7 @@ object ChatAnalysisEngine {
             r.append("统计口径 该时段没有可统计的消息\n")
         }
 
-        // ── 4) 活跃热力（周几 × 小时）────────────────────────────────
-        r.append("\n【活跃热力】\n")
+        // ── 同段续：活跃热力（周几 × 小时）──────────────────────────
         // KPI 的值必须"以数字开头"：排版器会把值拆成「数字 + 单位」两段来画，
         // 值以中文开头时数字会被截出来、前缀会被丢掉，所以星期名一律写在结尾的读法行里。
         if (ex.heatPeakIdx >= 0) {
@@ -1577,7 +1574,7 @@ object ChatAnalysisEngine {
         }
         var heatCells = 0
         for (v in ex.heat) if (v > 0) heatCells++
-        r.append("活跃时段数：").append(heatCells).append(" 个\n")
+        r.append("热力活跃格：").append(heatCells).append(" / ").append(7 * 24).append(" 格\n")
         // 必须连续 7 行、每行 24 个数字：少一行就不成块，会被两侧解析器退回普通正文行（宁缺勿错）
         for (d in 0 until 7) {
             r.append(DAY_NAMES[d]).append(" →")
@@ -1878,6 +1875,41 @@ object ChatAnalysisEngine {
             r.append("语气倾向：").append(toneTrend(qD, eD, lD, wD, ex, textN)).append("\n")
         } else if (textN == 0) {
             r.append("标点统计：无可用正文\n")
+        }
+
+        // 情绪词（消息级词表命中）：原来单独占一个【情绪词雷达】段，与本节讲的是同一件事
+        // ——"情绪从哪读出来"。第 21 轮并进本节：上面是标点/语气的频次口径，下面是正负向词的
+        // 词表口径，两种口径在同一张卡片里对照着看，比分散在两个维度里更容易读。
+        if (textN > 0) {
+            r.append("正向词命中率：").append(pct(ex.moodPosMsgs, textN)).append("%\n")
+            r.append("负向词命中率：").append(pct(ex.moodNegMsgs, textN)).append("%\n")
+            r.append("正负比 ").append(ratioText(ex.moodPosMsgs, ex.moodNegMsgs)).append("\n")
+            val moodPosKeys = topKeys(ex.moodPos, 8)
+            val moodNegKeys = topKeys(ex.moodNeg, 8)
+            if (moodPosKeys.isNotEmpty()) {
+                val chips = StringBuilder()
+                for ((i, k) in moodPosKeys.withIndex()) {
+                    if (i > 0) chips.append("  ")
+                    chips.append(k).append("×").append(ex.moodPos[k] ?: 0)
+                }
+                r.append(chips).append("\n")
+            }
+            if (moodNegKeys.isNotEmpty()) {
+                val chips = StringBuilder()
+                for ((i, k) in moodNegKeys.withIndex()) {
+                    if (i > 0) chips.append("  ")
+                    chips.append(k).append("×").append(ex.moodNeg[k] ?: 0)
+                }
+                r.append(chips).append("\n")
+            }
+            r.append("情绪点评 ").append(
+                when {
+                    ex.moodPosMsgs == 0 && ex.moodNegMsgs == 0 -> "情绪不写在明面上 两边都没有明显情绪词"
+                    ex.moodPosMsgs >= ex.moodNegMsgs * 3 -> "情绪很正 正向词压倒性地多"
+                    ex.moodNegMsgs >= ex.moodPosMsgs * 3 -> "情绪偏低 负向词明显更多"
+                    else -> "正负交织 有开心也有吐槽"
+                }
+            ).append("\n")
         }
 
         // ── 9) 高频词与口头禅 ───────────────────────────────────────
@@ -2573,55 +2605,20 @@ object ChatAnalysisEngine {
     // ---------------- 进阶包三（语言与习惯）：4 个维度 ----------------
 
     /**
-     * 语言包：情绪词雷达 / 打字习惯 / 约定与提醒 / 时段话量画像（全部是本轮新增维度）。
+     * 语言包：打字习惯 / 约定与提醒 / 时段话量画像 / 用词广度。
      *
-     * 四个新维度都在**同一次扫描**里就地累计（固定词表 contains + 几个整数计数器 +
+     * 四个维度都在**同一次扫描**里就地累计（固定词表 contains + 几个整数计数器 +
      * 24 格定长数组），没有新增查询、没有第二遍遍历、没有随消息条数增长的内存。
+     * 第 21 轮把原来的【情绪词雷达】并入核心【情绪与语气】（同源指标不该占两个维度），
+     * 补进来的【用词广度】复用主循环已有的全量词频表（[wordMap]），同样零新增扫描。
      */
     private fun appendLanguagePackSections(
         r: StringBuilder,
         ex: ExtraStats,
         textN: Int,
+        wordMap: Map<String, Int>,
     ) {
-        // ── 22) 情绪词雷达（新）────────────────────────────────────
-        r.append("\n【情绪词雷达】\n")
-        if (textN > 0) {
-            r.append("正向词命中率：").append(pct(ex.moodPosMsgs, textN)).append("%\n")
-            r.append("负向词命中率：").append(pct(ex.moodNegMsgs, textN)).append("%\n")
-            r.append("正负比 ").append(ratioText(ex.moodPosMsgs, ex.moodNegMsgs)).append("\n")
-            val posKeys = topKeys(ex.moodPos, 8)
-            val negKeys = topKeys(ex.moodNeg, 8)
-            if (posKeys.isNotEmpty()) {
-                r.append("高频正向词 命中该词的消息条数\n")
-                val chips = StringBuilder()
-                for ((i, k) in posKeys.withIndex()) {
-                    if (i > 0) chips.append("  ")
-                    chips.append(k).append("×").append(ex.moodPos[k] ?: 0)
-                }
-                r.append(chips).append("\n")
-            }
-            if (negKeys.isNotEmpty()) {
-                r.append("高频负向词\n")
-                val chips = StringBuilder()
-                for ((i, k) in negKeys.withIndex()) {
-                    if (i > 0) chips.append("  ")
-                    chips.append(k).append("×").append(ex.moodNeg[k] ?: 0)
-                }
-                r.append(chips).append("\n")
-            }
-            r.append("情绪点评 ").append(
-                when {
-                    ex.moodPosMsgs == 0 && ex.moodNegMsgs == 0 -> "情绪不写在明面上 两边都没有明显情绪词"
-                    ex.moodPosMsgs >= ex.moodNegMsgs * 3 -> "情绪很正 正向词压倒性地多"
-                    ex.moodNegMsgs >= ex.moodPosMsgs * 3 -> "情绪偏低 负向词明显更多"
-                    else -> "正负交织 有开心也有吐槽"
-                }
-            ).append("\n")
-        } else {
-            r.append("统计口径 该时段没有文字消息\n")
-        }
-
-        // ── 23) 打字习惯（新）──────────────────────────────────────
+        // ── 22) 打字习惯 ──────────────────────────────────────────
         r.append("\n【打字习惯】\n")
         if (textN > 0) {
             r.append("无标点消息：").append(pct(ex.typNoPunct, textN)).append("%\n")
@@ -2642,7 +2639,7 @@ object ChatAnalysisEngine {
             r.append("统计口径 该时段没有文字消息\n")
         }
 
-        // ── 24) 约定与提醒（新）────────────────────────────────────
+        // ── 23) 约定与提醒 ────────────────────────────────────────
         r.append("\n【约定与提醒】\n")
         if (textN > 0) {
             r.append("约定词命中率：").append(pct(ex.apptMsgs, textN)).append("%\n")
@@ -2673,7 +2670,7 @@ object ChatAnalysisEngine {
             r.append("统计口径 该时段没有文字消息\n")
         }
 
-        // ── 25) 时段话量画像（新）──────────────────────────────────
+        // ── 24) 时段话量画像 ──────────────────────────────────────
         r.append("\n【时段话量画像】\n")
         if (textN > 0) {
             val avg = IntArray(24)
@@ -2710,6 +2707,36 @@ object ChatAnalysisEngine {
             ).append("\n")
         } else {
             r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 25) 用词广度 ──────────────────────────────────────────
+        // 与核心【高频词与口头禅】用的是同一份全量词频表，但回答的是另一个问题：
+        // 那边给"最常说的是哪几个词"（TopN 词表），这里给"用词到底散不散"
+        // （独立词种 / 总词次 / 集中度）。同一份统计的两种读法，信息不重复。
+        r.append("\n【用词广度】\n")
+        if (textN > 0 && wordMap.isNotEmpty()) {
+            var wordTotal = 0
+            for (v in wordMap.values) wordTotal += v
+            val kinds = wordMap.size
+            val top3 = topKeys(wordMap, 3)
+            var top3Sum = 0
+            for (k in top3) top3Sum += wordMap[k] ?: 0
+            r.append("独立词种：").append(kinds).append(" 种\n")
+            r.append("总词次：").append(wordTotal).append(" 次\n")
+            r.append("词种占比：").append(pct(kinds, wordTotal)).append("%\n")
+            r.append("Top3 词占比：").append(pct(top3Sum, wordTotal)).append("%\n")
+            if (top3.isNotEmpty()) {
+                r.append("最常用三词：").append(top3.joinToString(" / ")).append("\n")
+            }
+            r.append("用词点评 ").append(
+                when {
+                    pct(kinds, wordTotal) >= 40 -> "用词很散 很少重复同一批词"
+                    pct(top3Sum, wordTotal) >= 40 -> "翻来覆去就那几个词 句句都是老配方"
+                    else -> "用词集中度正常 该重复的重复 该换的换"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可切分的词\n")
         }
     }
     /** 热力格下标（周几 × 24 + 小时）→ 「周三 21 点」 */

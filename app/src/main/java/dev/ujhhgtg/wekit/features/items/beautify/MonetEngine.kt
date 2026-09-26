@@ -76,7 +76,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
+import dev.ujhhgtg.wekit.loader.utils.ActivityResourceHooks
 import java.io.File
+import java.util.Collections
+import java.util.WeakHashMap
 import kotlin.concurrent.thread
 import kotlin.io.path.div
 
@@ -276,6 +279,11 @@ object MonetEngine : ClickableFeature() {
         )
         runCatching { installBrandColorHooks() }
             .onFailure { WeLogger.w(TAG, "brand-colour fallback hooks unavailable", it) }
+        // ③ 宿主每建一个 Activity，就把运行时包挂到它自己的 `Resources` 上（幂等）。
+        //    实机反馈「解析正常、包 applied、取色/圆角/角标一律原生」的最可疑点就在这里：
+        //    loader 只挂在 application.resources 上，而真正渲染界面的那批 Resources 未必
+        //    与之共享同一个 ResourcesImpl（宿主的 Activity 会按自己的 config/主题另建 impl）。
+        ActivityResourceHooks.register { attachRuntimeLoader(it) }
         // ① 先把色板发给「WeKit 自己注入进微信界面」的组件。这一步只读系统的 Material You
         //    token（android.R.color.system_*），**不依赖宿主资源解析**，所以即使解析失败、
         //    被熔断跳过、或用户在解析期间还在用微信，注入界面也能拿到莫奈色 ——
@@ -360,18 +368,31 @@ object MonetEngine : ClickableFeature() {
                 // 解析前先过「解析期熔断」：上次解析没跑完就退出过，本次不再拿微信去试。
                 if (!guardResolveAttempt(force)) return@thread
                 if (!guardRuntimeInjection(force, packageFile)) return@thread
-                if (cached != null && packageFile.isFile) {
-                    WeLogger.i(
-                        TAG,
-                        "reusing cached bindings ${cached.roles.size} roles (unresolved ${cached.unresolved.size})",
-                    )
+                if (packageFile.isFile && (cached != null || !force)) {
+                    if (cached != null) {
+                        WeLogger.i(
+                            TAG,
+                            "reusing cached bindings ${cached.roles.size} roles (unresolved ${cached.unresolved.size})",
+                        )
+                    } else {
+                        // 绑定缓存丢了、但包还在：包名里已经编码了 fingerprint + 选项哈希，
+                        // 同一份包没必要重算。实机重算一次是 3 分钟量级的纯 CPU
+                        // （wekit-2026-09-26.log 的「用时就绪 179018ms / 209816ms」），
+                        // 期间整机被拖住 —— 用户反馈的「初加载特别卡顿」大半来自这里。
+                        WeLogger.w(
+                            TAG,
+                            "绑定缓存缺失但运行时包已存在（${packageFile.name}），直接复用、跳过全量解析",
+                        )
+                    }
                     applyRuntimePackage(packageFile, cached)
                     recordRuntimeApplied(packageFile)
                     publishPalette()
-                    _result.value = MonetResolveResult.Success(cached, packageFile)
+                    if (cached != null) {
+                        _result.value = MonetResolveResult.Success(cached, packageFile)
+                    }
                     WeLogger.i(
                         TAG,
-                        "缓存命中，本次启动未做资源解析，用时 ${(System.nanoTime() - startedAt) / 1_000_000} ms",
+                        "复用已有运行时包，本次启动未做资源解析，用时 ${(System.nanoTime() - startedAt) / 1_000_000} ms",
                     )
                     return@thread
                 }
@@ -572,6 +593,66 @@ object MonetEngine : ClickableFeature() {
         WeLogger.i(TAG, "applied ${file.name} (${file.length()} bytes)")
     }
 
+    /** 已经挂过运行时包的 `Resources`（弱引用，避免把宿主的 Resources 钉在内存里）。 */
+    private val runtimeLoaderAttached: MutableSet<Resources> =
+        Collections.newSetFromMap(WeakHashMap<Resources, Boolean>())
+
+    private var activityResourceProbeLogged = false
+
+    /**
+     * 把运行时资源包挂到**任意一个** `Resources` 实例上（幂等、失败只降级）。
+     *
+     * 由 [ActivityResourceHooks] 在每个 Activity 创建时调用。原因见 [onEnable] ③：
+     * loader 之前只挂在 `application.resources` 上，而实机反馈「解析正常、包 applied、
+     * 取色/圆角/角标一律没生效」，最可疑的就是宿主 UI 真正使用的那批 `Resources`
+     * 并没有拿到这个 loader（`Resources.addLoaders` 只作用于调用它的那个实例/impl）。
+     */
+    private fun attachRuntimeLoader(resources: Resources) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val file = _runtimePackage.value ?: return
+        if (!file.isFile) return
+        if (!runtimeLoaderAttached.add(resources)) return
+        try {
+            val loader = android.content.res.loader.ResourcesLoader()
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                loader.addProvider(ResourcesProvider.loadFromApk(descriptor))
+            }
+            resources.addLoaders(loader)
+        } catch (error: Throwable) {
+            runtimeLoaderAttached.remove(resources)
+            WeLogger.w(TAG, "cannot attach runtime package to activity resources", error)
+            return
+        }
+        probeActivityResources(resources)
+    }
+
+    /**
+     * 一次性诊断：宿主 Activity 自己的 `Resources` 上，我们写进包里的角色 id 到底能解析出几个。
+     *
+     * 与 `applyRuntimePackage` 里那次冒烟校验的计数对比，就能判定「loader 到底有没有挂到
+     * 宿主界面真正用的 Resources 上」：两边数字接近 = 挂上了；这里为 0 而 application 那边
+     * 非 0 = 之前根本没挂上（本轮修的正是这个）。只打一次日志，不在热路径刷。
+     */
+    private fun probeActivityResources(resources: Resources) {
+        if (activityResourceProbeLogged) return
+        activityResourceProbeLogged = true
+        runCatching {
+            val ids = cachedBindings()?.roles?.values?.toList() ?: return@runCatching
+            if (ids.isEmpty()) return@runCatching
+            var resolvable = 0
+            for (id in ids) {
+                if (runCatching { resources.getResourceTypeName(id) }.getOrNull() != null) {
+                    resolvable++
+                }
+            }
+            WeLogger.i(
+                TAG,
+                "Activity Resources 可见性探测：${ids.size} 个角色 id 中有 $resolvable 个可解析" +
+                    "（与冒烟校验的计数对比可判定运行时包是否作用在宿主界面上）",
+            )
+        }.onFailure { WeLogger.d(TAG, "activity resources probe failed", it) }
+    }
+
     /**
      * 冒烟校验：把**写进包的每一条**覆盖资源都按它的真实类型取一次，全部成功才算健康。
      *
@@ -588,9 +669,14 @@ object MonetEngine : ClickableFeature() {
         if (ids.isEmpty()) return true
         var checked = 0
         var failed = 0
+        var unresolvable = 0
         val samples = StringBuilder()
         for (id in ids) {
-            val type = runCatching { resources.getResourceTypeName(id) }.getOrNull() ?: continue
+            val type = runCatching { resources.getResourceTypeName(id) }.getOrNull()
+            if (type == null) {
+                unresolvable++
+                continue
+            }
             val ok = runCatching {
                 when (type) {
                     "color" -> {
@@ -623,7 +709,11 @@ object MonetEngine : ClickableFeature() {
             )
             return false
         }
-        WeLogger.i(TAG, "冒烟校验通过：$checked 条覆盖资源全部可取用")
+        WeLogger.i(
+            TAG,
+            "冒烟校验通过：$checked 条覆盖资源全部可取用；另有 $unresolvable 条角色 id 在宿主资源表里查不到" +
+                "（这些角色不会生效，若数字接近总数说明运行时包没被宿主资源采纳）",
+        )
         return true
     }
 

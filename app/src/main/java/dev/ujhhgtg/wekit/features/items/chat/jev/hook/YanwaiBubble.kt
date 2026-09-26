@@ -27,6 +27,7 @@ import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.Toast
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.ChatInsights
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.JevProtocol
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.SignalAnalyzer
@@ -184,6 +185,9 @@ object YanwaiBubble {
     /** 记录过的「画不了」签名：同一类宿主布局只记一条日志。 */
     private val unsupported = HashSet<String>()
 
+    /** 记录过的「降级/异常」签名：绘制与排版路径都在热点上，同一类问题只允许记一行。 */
+    private val warned = HashSet<String>()
+
     /** 已经打过一次「首批卡片已绘制」诊断。 */
     private var drewOnce = false
 
@@ -193,6 +197,18 @@ object YanwaiBubble {
      * 宿主侧只保留「我改过什么」以便完整还原：padding 原值、clickable 原值、监听器。
      */
     private class Card(val row: View, var key: String) {
+        /**
+         * 这张卡归属的那条消息的**本地 msgId**（>0 才允许画）。
+         *
+         * 卡片与消息的唯一绑定标识。宿主行、行内容器、列表位置都会在滚动中被复用/换绑，
+         * 只有 msgId 能说明「这张卡属于哪一条消息」；拿不到（<=0）就整条放弃 ——
+         * 绝不用行位置/下标/时间近似去猜归属（那正是「卡片串来串去」的来源）。
+         */
+        var messageId: Long = 0L
+
+        /** 归属会话（诊断与日志用）。 */
+        var talker: String = ""
+
         var input: AnalysisInput? = null
         var note: String? = null
         var screen: ChatInsights.Screen = ChatInsights.Screen()
@@ -210,6 +226,10 @@ object YanwaiBubble {
         var origPaddingBottom = 0
         var origClickable = false
         var origLongClickable = false
+
+        /** 点击/长按监听器是**我们装的**才由 [release] 摘下；宿主自己的监听器一律不碰。 */
+        var hookedClick = false
+        var hookedLongClick = false
 
         /** 已经预留的高度（px），仅用于日志与断言。 */
         var reserved = 0
@@ -231,9 +251,13 @@ object YanwaiBubble {
     /**
      * 渲染指纹：任何会影响画面的输入都放进来，只有它变了才重排。
      *
-     * 刻意**不含**全局队列长度（[MoodStore.pendingCount]）：队列每出一条结论就会让全屏
-     * 「正在分析…」的卡一起重排重画，这正是用户实测的「决策分析造成卡顿」的主因之一。
-     * 排队条数只在状态文本里用一次，卡片真正出结果时由 `onSettled → fill()` 精确重画它自己。
+     * 两条纪律（都是「整屏重排」踩出来的）：
+     *  1. **不含全局队列长度**：队列每出一条结论就 +1，会让全屏卡片一起重排重画 —— 这正是
+     *     用户实测的「决策分析造成卡顿」的主因之一。真正会打印排队条数的只有
+     *     「正在排队」那种卡（state = 'p'），所以 [queued] 只在那一种状态下参与比较，
+     *     而且按 5 取整（见 [queuedBucket]）。
+     *  2. **走势版本必须按会话**（[MoodStore.trendVersionOf]）：全局走势版本号同样是
+     *     「一条消息出结论 → 全屏卡片重排」，本质上是第 1 条的翻版。
      */
     private class Fingerprint(
         val key: String,
@@ -243,7 +267,8 @@ object YanwaiBubble {
         val note: String?,
         val expanded: Boolean,
         val night: Boolean,
-        val trendVersion: Int,
+        val trend: Int,
+        val queued: Int,
         val capacity: Boolean,
         val screenId: Int,
         val uiRevision: Int,
@@ -375,6 +400,16 @@ object YanwaiBubble {
             return false
         }
         val key = message.key
+        // ---------------- 归属闸门（唯一的写入口，所有调用方都被它保护） ----------------
+        // 卡片必须按「消息唯一标识」绑定：
+        //  1. 拿不到稳定标识（msgId <= 0 的本地暂态消息）：**放弃这一条**，绝不用位置/时间猜；
+        //  2. 这一行现在绑的不是这条消息（宿主已把它复用给别的消息）：先摘掉旧卡再说。
+        // 少了这道闸门，回填路径（结论落地时按 View 缓存回填）会把上一条消息的卡片
+        // 画到已经被复用给新消息的那一行上，也就是用户看到的「卡片串来串去」。
+        if (message.messageId <= 0L || rowMessageId(row) != message.messageId) {
+            clear(row)
+            return false
+        }
         var card = cards[row]
         if (card != null && card.key != key) {
             // 宿主行被复用成另一条消息：先还原它对容器的改动，再按新 key 重建
@@ -386,11 +421,46 @@ object YanwaiBubble {
             cards[row] = card
         }
         card.input = message
+        card.messageId = message.messageId
+        card.talker = message.talker
         card.note = note
         card.screen = screen
         card.capacityPending = capacityPending
         if (prepare(card)) render(card)
         return true
+    }
+
+    /**
+     * 这一行**当前**绑定的消息本地 msgId；拿不到稳定标识（没绑定 / msgId <= 0）返回 null。
+     *
+     * 数据源是宿主 onBindView 写下的绑定表（[WeChatMessageViewApi]）—— 那是「这一行现在
+     * 是谁」的唯一真相。列表位置、下标、时间戳、文本哈希都不能拿来判定卡片归属：
+     * 行会被复用、会被换绑，用它们就是在猜。
+     */
+    private fun rowMessageId(row: View): Long? {
+        val message = WeChatMessageViewApi.getBoundMessage(row) ?: return null
+        val id = try {
+            message.id
+        } catch (t: Throwable) {
+            0L
+        }
+        return if (id > 0L) id else null
+    }
+
+    /**
+     * 队列深度对指纹的影响：**只影响「正在排队」那张卡**，而且按 5 取整。
+     *
+     * 全局队列长度绝不能无条件进指纹（见 [Fingerprint]）：这里只让「排队中」这类卡感知
+     * 深度，而且每 5 条才可能变一次 —— 与「每出一条结论全屏卡片一起重排」完全不是一个量级。
+     */
+    private fun queuedBucket(): Int {
+        val depth = MoodStore.pendingCount()
+        return if (depth <= 1) depth else ((depth + 4) / 5) * 5
+    }
+
+    /** 同一类降级/异常只记一行（日志每行都要落一次磁盘，而这条降级路径每拍都会被重试）。 */
+    private fun warnOnce(signature: String, message: String) {
+        if (warned.add(signature)) MoodLog.w(message)
     }
 
     /** 卡片随行解绑/回收一起消失，并把宿主的 padding / 监听器还原。 */
@@ -579,11 +649,8 @@ object YanwaiBubble {
                 )
             }
         }
-        // 卡片那片留白里没有任何宿主子 View，所以这里的点击/长按不会抢走气泡上的手势
-        runCatching {
-            if (!container.isClickable) container.isClickable = true
-            if (!container.isLongClickable) container.isLongClickable = true
-        }
+        // 注意：这里**不动** clickable / 监听器 —— 那是 [hookClicks] 的事，
+        // 而且只有在装得上我们自己的监听器时才动（宿主原有的监听器不许被覆盖/抹掉）。
         card.reserved = height
     }
 
@@ -592,19 +659,27 @@ object YanwaiBubble {
         val container = card.container
         if (card.hooked && container != null) {
             runCatching {
-                container.setOnClickListener(null)
-                container.setOnLongClickListener(null)
+                // 只摘我们装上去的那一个，并把 clickable 还原成装之前的原值；
+                // 宿主原本的监听器不许被我们抹掉
+                if (card.hookedClick) {
+                    container.setOnClickListener(null)
+                    container.isClickable = card.origClickable
+                }
+                if (card.hookedLongClick) {
+                    container.setOnLongClickListener(null)
+                    container.isLongClickable = card.origLongClickable
+                }
                 container.setPadding(
                     container.paddingLeft,
                     container.paddingTop,
                     container.paddingRight,
                     card.origPaddingBottom,
                 )
-                container.isClickable = card.origClickable
-                container.isLongClickable = card.origLongClickable
             }
         }
         card.hooked = false
+        card.hookedClick = false
+        card.hookedLongClick = false
         card.reserved = 0
     }
 
@@ -612,8 +687,19 @@ object YanwaiBubble {
         val container = card.container ?: return
         val row = card.row
         runCatching {
-            container.setOnClickListener { onClick(row) }
-            container.setOnLongClickListener { onLongClick(row) }
+            // 宿主自己在容器上装了监听器时**不抢**：抢过来再在 release 里置空，
+            // 等于把宿主原有的交互永久改坏（我们拿不到它的原值，没法还原）。
+            // 这种情况下卡片的展开/复制/重试让位给宿主的交互语义。
+            if (!card.hookedClick && !container.hasOnClickListeners()) {
+                card.origClickable = container.isClickable
+                container.setOnClickListener { onClick(row) }
+                card.hookedClick = true
+            }
+            if (!card.hookedLongClick && !container.hasOnLongClickListeners()) {
+                card.origLongClickable = container.isLongClickable
+                container.setOnLongClickListener { onLongClick(row) }
+                card.hookedLongClick = true
+            }
         }
     }
 
@@ -645,7 +731,8 @@ object YanwaiBubble {
             note = card.note,
             expanded = card.expanded,
             night = night,
-            trendVersion = MoodStore.trendVersion,
+            trend = MoodStore.trendVersionOf(input.talker),
+            queued = if (state == 'p') queuedBucket() else 0,
             capacity = card.capacityPending,
             screenId = System.identityHashCode(card.screen),
             uiRevision = ModulePrefs.uiRevision,
@@ -666,8 +753,10 @@ object YanwaiBubble {
             }
             buildCard(row, card, width, pal, accent, mood, failure)
         }.getOrElse {
-            // 拿不到辅助信息（截图/OCR/native/洞察失败）只降级：这张卡这一帧不画，绝不影响分析
-            MoodLog.i("卡片排版降级：${it.javaClass.simpleName} ${it.message}")
+            // 拿不到辅助信息（截图/OCR/native/洞察失败）只降级：这张卡这一帧不画，绝不影响分析。
+            // 同一类异常只记一行：这条降级路径每拍都会被重试，无节制的日志本身就是卡顿源
+            // （MoodLog 每写一行都要落一次磁盘）。
+            warnOnce("layout:${it.javaClass.simpleName}", "卡片排版降级：${it.javaClass.simpleName} ${it.message}")
             return
         }
         card.width = width
@@ -1461,8 +1550,25 @@ object YanwaiBubble {
 
     // ------------------------------------------------------------------ 绘制实现
 
+    /**
+     * 每帧由宿主列表的 ViewOverlay 调用（[CardLayer.draw]）。
+     *
+     * 这里在宿主的 `draw()` 调用栈里，所以有两条硬约束：
+     *  1. **绝不抛异常**：任何异常都会顺着宿主 draw 直接闪退微信。整段包 try，出错只记
+     *     一行日志并跳过这一帧的卡片（宁可少画一张卡，也不能崩宿主）。
+     *  2. **画之前再校验一次归属**：只有「这一行现在绑定的消息就是这张卡那一条」才画。
+     *     宿主行被复用/换绑、而卡片还没来得及被回收的那一小段时间里，宁可不画。
+     */
     private fun drawCards(list: View, canvas: Canvas) {
         if (cards.isEmpty()) return
+        try {
+            drawCardsUnchecked(list, canvas)
+        } catch (t: Throwable) {
+            warnOnce("draw:${t.javaClass.simpleName}", "卡片绘制异常（已跳过，不影响宿主）：${t.javaClass.simpleName} ${t.message}")
+        }
+    }
+
+    private fun drawCardsUnchecked(list: View, canvas: Canvas) {
         val height = list.height
         val margin = SIDE_MARGIN_DP * list.resources.displayMetrics.density
         val x = list.paddingLeft + margin
@@ -1471,6 +1577,8 @@ object YanwaiBubble {
             val container = card.container ?: continue
             if (card.list !== list) continue
             if (!container.isAttachedToWindow) continue
+            // 归属校验：行已经不是这条消息了就不画（等 handle/clear 把它收走）
+            if (card.messageId <= 0L || rowMessageId(card.row) != card.messageId) continue
             val top = offsetWithin(container, list) ?: continue
             // 卡片落在内容器 padding 留白的顶端：容器高度 wrap_content，所以这段留白
             // 就是我们预留出来的空间，位置与行完全同步（不需要任何滚动回调）

@@ -120,7 +120,13 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      */
     private const val RETRY_SWEEP_DELAY_MS = 35_000L
 
-    /** 一轮重扫之后仍有「失败过又没结论」的可见行时，最多再排这么多次（退避后放弃）。 */
+    /**
+     * 一轮自动重扫里的退避上限（35s、70s、105s… 最多排到这里）。
+     *
+     * 注意它只是「单轮退避的封顶」，不是「重试次数的封顶」—— 真正的次数上限在
+     * [SignalAnalyzer.tryConsumeAutoRetry]（每条消息 6 次）。这里封顶是为了不让
+     * 同一轮退避越排越久（否则等冷却的行会被拖到几十分钟之后才重扫一次）。
+     */
     private const val MAX_RETRY_SWEEPS = 6
 
     private val main = Handler(Looper.getMainLooper())
@@ -134,6 +140,14 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      * 只在主线程读写。
      */
     private var retryBlockedRows = 0
+
+    /**
+     * 本轮重扫里「自动重投额度已用尽」的可见行数。
+     *
+     * 与 [retryBlockedRows] 分开：额度用尽的行再排多少轮重扫也不会自己好，
+     * 只保留卡片上的手动重试入口 —— 混在一起会让重扫无限空转。
+     */
+    private var retryExhaustedRows = 0
 
     /** 正在等待结果的行（主线程私有），避免对同一行重复 show。 */
     private val awaiting = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
@@ -169,6 +183,14 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         val input: AnalysisInput,
         val note: String?,
         val screen: ChatInsights.Screen,
+        /**
+         * 生成这份输入时那条消息的**对象身份**（[MessageInfo.instance]）。
+         *
+         * msgId > 0 时归属判定只看 msgId；但本地暂态消息的 msgId 是 0，此时只有对象身份
+         * 能把两条不同的消息分开 —— 少了它，两条 msgId 都是 0 的消息会被当成同一条，
+         * 缓存/回填就会把 A 的结论挂到 B 上（卡片串台）。
+         */
+        val owner: Any,
     )
 
     /** key -> 提交时刻（elapsedRealtime）。用于看门狗判定，与系统时间跳变无关。 */
@@ -428,8 +450,13 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     }
 
     override fun onMessageViewDetached(view: View, message: MessageInfo, rebound: Boolean) {
-        // 重绑只是换了消息：卡片由紧接着的 show() 按新 key 覆写，这里不要清（清了会闪一下）。
-        if (rebound) return
+        // 重绑（rebound = true）就是「这一行换了消息」：旧卡片的内容与它向宿主容器预留的高度
+        // 都属于**上一条**消息，必须当场摘掉，否则在宿主列表把它当新消息画出来的那一帧里，
+        // 用户看到的就是「别的消息下面挂着这条消息的卡片」。
+        //
+        // 为什么这样不会闪：宿主是先派发 Detached(rebound=true) 再派发 Attached/onCreateView，
+        // 两者在**同一个 onBindView 调用栈、同一帧**内完成 —— 摘掉之后紧接着的 handle()
+        // 会按新的消息标识把卡片重建出来，用户看不到中间态。
         onMain { forget(view) }
     }
 
@@ -460,14 +487,22 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         retrySweepScheduled = false
         if (!installed || !ModulePrefs.enabled) return@Runnable
         retryBlockedRows = 0
+        retryExhaustedRows = 0
         rescan()
-        // 重扫之后还有「失败过又没结论」的行 → 再排一次（退避 35s / 70s / …）。
-        // 没有可分析能力（未配 Key）或已经重试够多次就不再排，避免无声无息地空转。
-        if (retryBlockedRows > 0 && ModulePrefs.canAnalyze && retrySweepAttempts < MAX_RETRY_SWEEPS) {
-            retrySweepAttempts++
+        // 重扫之后还有「失败过、但只是还在冷却里」的行 → 继续排（退避 35s / 70s / …）。
+        //
+        // 旧实现在次数到顶时把计数清零并**直接停机**，于是刚过完额度的那条失败消息
+        // 在下一轮里谁也不管，要等下一条消息失败才顺带被重扫一次 —— 这就是
+        // 「有的消息永远分析不出来」的残留。现在分成两类：还在冷却的行继续排，
+        // 额度真的用尽的行走手动重试（卡片上有点击入口），且不再空转。
+        if (retryBlockedRows > 0 && ModulePrefs.canAnalyze) {
+            retrySweepAttempts = (retrySweepAttempts + 1).coerceAtMost(MAX_RETRY_SWEEPS)
             scheduleRetrySweep(RETRY_SWEEP_DELAY_MS * retrySweepAttempts)
         } else {
             retrySweepAttempts = 0
+            if (retryExhaustedRows > 0) {
+                logOnce("retry-exhausted", "有 $retryExhaustedRows 行自动重投额度用尽，等待手动重试")
+            }
         }
     }
 
@@ -478,9 +513,15 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             forget(view)
             return
         }
-        // 绑定已经换人（异步回调期间列表又滚了一格）：交给新绑定的那次回调处理。
+        // 绑定已经换人（异步回调期间列表又滚了一格）：这一行现在属于**别的消息**。
+        // 以前这里只是 return，把上一条消息的卡片留在这一行上 —— 用户看到的就是
+        // 「卡片先挂到别的消息上，过一会才规范」。现在当场摘掉：紧接着新绑定的那次
+        // 回调会把新消息的卡片挂上，中间不留任何错挂窗口。
         val actual = WeChatMessageViewApi.getBoundMessage(view)
-        if (actual != null && actual.id != message.id) return
+        if (actual != null && !sameMessage(actual, message)) {
+            forget(view)
+            return
+        }
         val row = rowOf(view, message) ?: run {
             forget(view)
             return
@@ -511,23 +552,43 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      *
      * 队列满时**不提交也不放弃**：登记到 [capacityWaiting]，队列一有空位由节拍自动补投。
      */
-    private fun submitIfNeeded(key: String, input: AnalysisInput) {
-        if (submittedAt.containsKey(key) || MoodStore.isPending(key)) return
-        if (MoodStore.get(key) != null) return
-        // 失败过的消息**允许**自动重投（节流在 SignalAnalyzer.mayRetryFailed / submit 里）。
+    private fun submitIfNeeded(key: String, input: AnalysisInput): Boolean {
+        if (submittedAt.containsKey(key) || MoodStore.isPending(key)) return true
+        if (MoodStore.get(key) != null) return true
+        // 失败过的消息**允许**自动重投，但要有冷却与次数上限（都在 SignalAnalyzer 里）。
         // 旧实现这里无条件 return，等于「失败一次就永久不再分析这一条」，与用户要求的
         // 「被选定的聊天每一条文本消息都要被分析」直接冲突。
-        if (SignalAnalyzer.failure(key) != null && !SignalAnalyzer.mayRetryFailed(key)) {
-            retryBlockedRows++
-            return
+        if (SignalAnalyzer.failure(key) != null) {
+            // 先看冷却：还在 30s 冷却里就不该消耗重投额度（否则额度被白等掉）
+            if (SignalAnalyzer.coolingDown(key)) {
+                retryBlockedRows++
+                return false
+            }
+            when (SignalAnalyzer.tryConsumeAutoRetry(key)) {
+                SignalAnalyzer.RetryVerdict.EXHAUSTED -> {
+                    retryExhaustedRows++
+                    return false
+                }
+
+                SignalAnalyzer.RetryVerdict.COOLING -> {
+                    retryBlockedRows++
+                    return false
+                }
+
+                SignalAnalyzer.RetryVerdict.READY -> Unit
+            }
         }
         if (SignalAnalyzer.atCapacity()) {
             retryBlockedRows++
-            return
+            return false
         }
         if (SignalAnalyzer.submit(input) != null) {
             submittedAt.putIfAbsent(key, SystemClock.elapsedRealtime())
+            return true
         }
+        // submit 被拒（仍在冷却/未配置/超限）：还算「有活可干」，让重扫多排一轮
+        if (SignalAnalyzer.failure(key) != null) retryBlockedRows++
+        return false
     }
 
     private fun isSettled(key: String): Boolean =
@@ -593,14 +654,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     /**
      * 取这一行的分析输入（带缓存）。
      *
-     * 缓存命中条件是「同一个 View 仍然绑着同一条消息」—— 重绑（滚出滚入）后
+     * 缓存命中条件是「同一个 View 仍然绑着**同一条消息**」—— 重绑（滚出滚入）后
      * [WeChatMessageViewApi] 会重新走一次 handle()，所以这里只需要防御性地校验一次。
      */
     private fun rowOf(view: View, message: MessageInfo): Row? {
         val cached = inputs[view]
-        if (cached != null && cached.input.messageId == message.id && cached.input.talker == message.talker) {
-            return cached
-        }
+        if (cached != null && rowMatches(cached, message)) return cached
         val fresh = buildRow(view, message) ?: run {
             inputs.remove(view)
             return null
@@ -609,8 +668,52 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         return fresh
     }
 
+    /**
+     * 缓存里的这一行是否仍然属于这条消息。
+     *
+     * **按消息唯一标识判定**：msgId > 0 用 msgId（同一台设备上唯一且稳定），
+     * 否则退回消息对象身份。绝不用行位置、下标、时间或文本近似 —— 那些在滚动复用下都会串。
+     */
+    private fun rowMatches(row: Row, message: MessageInfo): Boolean {
+        if (row.input.talker != message.talker) return false
+        val id = messageIdOf(message)
+        return if (id > 0L) row.input.messageId == id else row.owner === message.instance
+    }
+
+    /** 两条 [MessageInfo] 是不是同一条消息（同上：msgId 优先，暂态消息退回对象身份）。 */
+    private fun sameMessage(a: MessageInfo, b: MessageInfo): Boolean {
+        if (a.talker != b.talker) return false
+        val idA = messageIdOf(a)
+        val idB = messageIdOf(b)
+        return if (idA > 0L && idB > 0L) idA == idB else a.instance === b.instance
+    }
+
+    /**
+     * 安全取消息的本地 msgId：字段取不到（宿主版本差异）时按「没有稳定标识」处理。
+     *
+     * 这里绝不能抛：它跑在宿主的 onBindView / 绘制路径里，抛出去就是把微信打崩。
+     */
+    private fun messageIdOf(message: MessageInfo): Long =
+        try {
+            message.id
+        } catch (t: Throwable) {
+            0L
+        }
+
+    /**
+     * 当前绑定仍然有效的行缓存。
+     *
+     * View 被复用（换绑到别的消息）之后，[inputs] 里的旧条目要等到下一拍 handle/forget
+     * 才会被清掉；中间这段时间如果拿它去回填结论，就会把上一条消息的卡片画到新消息下面。
+     * 所以这里逐条按**当前绑定**校验，校验不过的直接丢掉、绝不参与回填。
+     */
     private fun allRows(): List<Pair<View, Row>> =
         synchronized(inputs) { inputs.entries.map { it.key to it.value } }
+            .mapNotNull { (view, row) ->
+                val bound = WeChatMessageViewApi.getBoundMessage(view) ?: return@mapNotNull null
+                if (!rowMatches(row, bound)) return@mapNotNull null
+                view to row
+            }
 
     /**
      * View + MessageInfo -> 分析输入。
@@ -622,16 +725,16 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      * 「也分析我发的消息」默认**开**（[ModulePrefs.analyzeSelf]）：用户要求被选定会话的
      * 每一条文本消息都要被分析，自己发的也算。
      */
-    private fun buildRow(view: View, message: MessageInfo): Row? {
-        val text = MessageMetadata.analyzeText(message, ModulePrefs.analyzeSelf) ?: return null
+    private fun buildRow(view: View, message: MessageInfo): Row? = runCatching {
+        val text = MessageMetadata.analyzeText(message, ModulePrefs.analyzeSelf) ?: return@runCatching null
         val talker = message.talker
-        if (talker.isBlank()) return null
+        if (talker.isBlank()) return@runCatching null
         val screen = screenOf(view, message, text)
         val input = AnalysisInput(
             text = text,
             talker = talker,
             context = screen.context,
-            messageId = message.id,
+            messageId = messageIdOf(message),
             speaker = MessageMetadata.speaker(message),
             createdAt = runCatching { message.createTime }.getOrDefault(0L),
         )
@@ -640,7 +743,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         } else {
             null
         }
-        return Row(input, note, screen)
+        Row(input, note, screen, message.instance)
+    }.getOrElse {
+        // 反射取文本/前文失败（宿主版本差异）只放弃这一条，绝不把异常抛进宿主的 onBindView：
+        // 那属于「滑动聊天记录闪退」。同一类异常只记一行，避免刷屏与同步磁盘写。
+        logOnce("build:${it.javaClass.simpleName}", "构造分析输入失败：${it.javaClass.simpleName} ${it.message}")
+        null
     }
 
     /**

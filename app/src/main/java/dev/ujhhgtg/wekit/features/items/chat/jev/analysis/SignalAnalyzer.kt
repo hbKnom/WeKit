@@ -47,14 +47,34 @@ object SignalAnalyzer {
     /** 在跑/在排队的输入：看门狗结清时要拿它回调展示层，否则只能结清一个没有身份的状态。 */
     private val pendingInputs = java.util.concurrent.ConcurrentHashMap<String, AnalysisInput>()
 
-    /** 「失败过」的消息上一次被允许自动重投的时刻（[mayRetryFailed] 用）。 */
+    /** 「失败过」的消息上一次被允许自动重投的时刻（[tryConsumeAutoRetry] 用）。 */
     private val autoRetryAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    /** 同一条失败消息两次自动重投之间的最小间隔。 */
+    /**
+     * 「失败过」的消息**已经用掉多少次**自动重投额度。
+     *
+     * 只有上限没有下限是以前的老毛病：`mayRetryFailed` 每 [AUTO_RETRY_MIN_GAP_MS] 就放行一次，
+     * 一条永远失败的消息（网络断了、服务挂了）会被无限重投，一直烧流量与电量。
+     * 现在每条消息的自动重投次数封顶到 [MAX_AUTO_RETRIES] 次，用尽之后只剩两条路：
+     * 用户点卡片手动重试，或设置页的「重试全部失败」。
+     */
+    private val autoRetries = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** 同一条失败消息两次自动重投之间的最小间隔（按次数指数放大，见 [autoRetryGapMs]）。 */
     private const val AUTO_RETRY_MIN_GAP_MS = 15_000L
+
+    /** 单次自动重投间隔的上限，别让退避到几十分钟才试一次。 */
+    private const val AUTO_RETRY_MAX_GAP_MS = 120_000L
+
+    /** 每条消息自动重投的次数上限（之后只保留手动重试入口）。 */
+    private const val MAX_AUTO_RETRIES = 6
 
     /** 失败后的冷却：这段时间内同一条消息不重复打模型，但失败原因必须一直可见（可手动重试）。 */
     private const val RETRY_COOLDOWN_MS = 30_000L
+
+    /** 第 n 次自动重投的等待间隔：15s、30s、60s、120s… 封顶 [AUTO_RETRY_MAX_GAP_MS]。 */
+    private fun autoRetryGapMs(attempts: Int): Long =
+        (AUTO_RETRY_MIN_GAP_MS shl attempts.coerceIn(0, 3)).coerceAtMost(AUTO_RETRY_MAX_GAP_MS)
 
     /**
      * 结论落地（成功 **或** 失败）的回调接口。
@@ -88,24 +108,61 @@ object SignalAnalyzer {
     fun failure(key: String): String? = failureMessages[key]
 
     /**
-     * 「这条失败过的消息现在能不能再自动重投一次」。
-     *
-     * 第 17 轮新增：用户要求「被选定的聊天每一条文本消息都要被分析」，而旧实现里
-     * 扫描器的提交入口一看到 [failure] 非空就永久放弃 —— 于是**只要失败过一次
-     * （超时、网络抖、当时还没配好 Key），这一条就再也不会自动重试**，用户看到的就是
-     * 「有的消息分析得出来、有的永远不会分析」。
-     *
-     * 这里给自动重投一个最小间隔（防止 1 秒一拍的重扫把请求打爆），真正的配额/冷却
-     * 判断仍在 [submit] 里：未配置、超出字数上限、仍在 [RETRY_COOLDOWN_MS] 冷却内的
-     * 消息即使被重投也会被挡下并立刻返回 null。
+     * 自动重投的判定结果。调用方（扫描器的 [dev.ujhhgtg.wekit.features.items.chat.jev.hook.YanwaiScanner]）
+     * 靠它区分「再等一会就好」和「这一条已经没额度了」，从而决定还要不要继续排重扫。
      */
-    fun mayRetryFailed(key: String): Boolean {
+    enum class RetryVerdict {
+        /** 允许重投（本次调用**已经消耗**一次该消息的重投额度）。 */
+        READY,
+
+        /** 还在间隔里：等下一轮重扫即可，不消耗额度。 */
+        COOLING,
+
+        /** 自动重投额度已用尽：只保留卡片上的手动重试入口。 */
+        EXHAUSTED,
+    }
+
+    /**
+     * 「这条失败过的消息现在能不能再自动重投一次」——**会消耗一次额度**。
+     *
+     * 第 17 轮新增（用户要求「被选定的聊天每一条文本消息都要被分析」）：旧实现里
+     * 扫描器的提交入口一看到 [failure] 非空就永久放弃 —— 于是**只要失败过一次
+     * （超时、网络抖、当时还没配好 Key），这一条就再也不会自动重试**。
+     *
+     * 本轮补上另外半边：自动重投要有**冷却 + 次数上限**（[autoRetryGapMs] /
+     * [MAX_AUTO_RETRIES]），否则一条永远失败的消息会被无限重投。
+     * 真正的配额判断仍在 [submit] 里：未配置、超出字数上限、仍在 [RETRY_COOLDOWN_MS]
+     * 冷却内的消息即使被重投也会被挡下并立刻返回 null。
+     */
+    fun tryConsumeAutoRetry(key: String): RetryVerdict {
+        val attempts = autoRetries[key] ?: 0
+        if (attempts >= MAX_AUTO_RETRIES) return RetryVerdict.EXHAUSTED
         val now = System.currentTimeMillis()
         val last = autoRetryAt[key] ?: Long.MIN_VALUE
-        if (now - last < AUTO_RETRY_MIN_GAP_MS) return false
+        if (last != Long.MIN_VALUE && now - last < autoRetryGapMs(attempts)) return RetryVerdict.COOLING
         autoRetryAt[key] = now
-        return true
+        val next = attempts + 1
+        autoRetries[key] = next
+        if (next >= MAX_AUTO_RETRIES) {
+            // 恰好用尽：记一行（每条消息只会出现一次），用户看到的是卡片上的手动重试入口
+            MoodLog.w("自动重投额度已用尽（$MAX_AUTO_RETRIES 次）：${key.take(8)}，改由手动重试")
+        }
+        return RetryVerdict.READY
     }
+
+    /**
+     * 兼容旧调用点的布尔版（会消耗额度，见 [tryConsumeAutoRetry]）。
+     */
+    fun mayRetryFailed(key: String): Boolean = tryConsumeAutoRetry(key) == RetryVerdict.READY
+
+    /**
+     * 这一条是否还在 [RETRY_COOLDOWN_MS] 失败冷却里。
+     *
+     * 扫描器据此把「还在冷却」与「额度用尽」分开：前者等下一轮重扫就行，
+     * 后者再排也是白排 —— 而且**冷却检查必须先于额度消耗**，否则冷却是白等的。
+     */
+    fun coolingDown(key: String): Boolean =
+        System.currentTimeMillis() - (failures[key] ?: 0L) < RETRY_COOLDOWN_MS
 
     /** 已发出的请求数（含重试），设置页显示运行状态用。 */
     val requestCount: Int get() = client.requestCount
@@ -157,6 +214,9 @@ object SignalAnalyzer {
     fun retryFailure(key: String) {
         failures.remove(key)
         failureMessages.remove(key)
+        // 手动重试：额度也一并清零，用户主动点一次不该被判「你已经试过 6 次了」
+        autoRetries.remove(key)
+        autoRetryAt.remove(key)
     }
 
     /** 「重试全部失败」：清掉所有冷却与失败标记，交给调用方重新提交可见行。 */
@@ -165,6 +225,7 @@ object SignalAnalyzer {
         failures.clear()
         failureMessages.clear()
         autoRetryAt.clear()
+        autoRetries.clear()
         return count
     }
 
@@ -173,6 +234,7 @@ object SignalAnalyzer {
         failures.clear()
         failureMessages.clear()
         autoRetryAt.clear()
+        autoRetries.clear()
         pendingInputs.clear()
         startTimes.clear()
         MoodStore.clearResults()
@@ -265,6 +327,9 @@ object SignalAnalyzer {
     private fun abort(key: String, input: AnalysisInput, reason: String) {
         failures.remove(key)
         autoRetryAt[key] = System.currentTimeMillis()
+        // 配置类原因（没填 Key）不消耗自动重投额度：用户在设置里补好之后
+        // 这一条还要能自己接着跑，不能因为「还没配好时试了几次」就被判额度用尽。
+        autoRetries.remove(key)
         failureMessages[key] = reason
         MoodStore.release(key)
         startTimes.remove(key)
@@ -277,6 +342,7 @@ object SignalAnalyzer {
         MoodStore.complete(key, mood)
         failures.remove(key)
         autoRetryAt.remove(key)
+        autoRetries.remove(key)
         failureMessages.remove(key)
         startTimes.remove(key)
         pendingInputs.remove(key)

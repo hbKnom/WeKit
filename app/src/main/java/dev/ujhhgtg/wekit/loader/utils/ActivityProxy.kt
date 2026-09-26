@@ -27,7 +27,9 @@ import dev.ujhhgtg.wekit.constants.PackageNames
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.Intent
+import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
+import java.lang.reflect.Field
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -73,25 +75,114 @@ object ActivityProxy {
 
             hookIActivityManager()
             hookPackageManager(ctx, currentActivityThread, clazzActivityThread)
-            // 【2026-09-26 撤销 handleStartActivity 生命周期守卫 —— 它自己就是更大的 bug】
-            //
-            // 上一轮在这里挂了 `ActivityThread.handleStartActivity` 的 before hook：发现 record
-            // 未处于 stopped 就强制置为 stopped，目的是绕开框架断言
-            //   IllegalStateException: Can't start activity that is not stopped
-            // 实机结果：副作用远远大于它要修的问题。借壳启动（设置页借宿主的
-            // WeChatSplashActivity 当壳，见 ActProxyMgr.SETTINGS_PROXY）时，框架拿到的是被我们
-            // 篡改过的生命周期状态，`performStart` / 窗口可见性 / 绘制之间的时序对不上，
-            // 表现就是**打开 WeKit 设置直接黑屏**（用户 2026-09-26 13:42:47 截图：壁纸+状态栏，
-            // 没有任何内容），同时整机更卡。
-            //
-            // 该断言本身是偶发竞态（1891 版整轮只出现 1 次），而黑屏是必现的体验灾难。
-            // 因此整体撤销这段守卫：不动框架的 record 状态，宁可保留极低概率的偶发崩溃，
-            // 也不能让用户常态黑屏。若要再收敛那个竞态，方向是「串行化借壳启动 / 让两次
-            // startActivity 不再并发操作同一批 record」，而不是在框架内部篡改状态。
+            installLifecycleGuards()
 
             initialized = true
         }.onFailure { WeLogger.e(TAG, "failed to init stub activity hooks", it) }
     }
+
+    private var recordStoppedField: Field? = null
+    private var recordIntentField: Field? = null
+    private var recordActivityField: Field? = null
+
+    /** 已经就「重复派发」告警过的记录名，避免刷日志。 */
+    private val warnedDuplicateRecords: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * 借壳启动的「重复派发」防线（第 21 轮）。
+     *
+     * 事实依据：实机 `wekit-2026-09-26.log` 18:29:51，一次「打开 WeKit 设置」会看到**两份**
+     * SettingsActivity 实例被创建（@260678190 / @142825114，相差 43ms），紧接着主线程在
+     * `ActivityThread.handleStartActivity` 抛
+     *   `IllegalStateException: Can't start activity that is not stopped.`
+     * 经 JavaCrashHandler 后进程直接死掉。同一份日志里 18:27:31 / 18:29:03 / 18:29:51 三次崩溃
+     * 全是这一条 —— 用户侧表现就是「点 WeKit 设置必崩」。
+     *
+     * 成因：微信自己的 `WxSplash$SplashHackHandlerCallback` 会把 EXECUTE_TRANSACTION(159) 拆成
+     * 「先扣住、稍后再派发」（日志里只有 `before handleMessage 159, splash false,
+     * pending early true` 而缺 `handleMessage 159` 的那几次就是被扣住的），同一条事务里的
+     * LaunchActivityItem / StartActivityItem 于是被派发第二次。框架的 handleStartActivity 有硬
+     * 断言 `r.stopped` 才允许 start，第二次派发时 record 早就 not stopped，断言就把进程带走。
+     *
+     * 这里**不篡改框架状态**（上一轮强置 `stopped=true` 会黑屏，见 05acde62 那份撤销说明），
+     * 只做「重复即跳过」：
+     *
+     *  1. `handleLaunchActivity`：record 里已经有我们自己的 Activity 实例 → 本次是重复派发，
+     *     直接把已有实例当返回值返回：既不造第二个实例（原来每崩一次都泄漏一个），也不再
+     *     走到后面的 ON_START 断言。
+     *  2. `handleStartActivity`：record 已经不是 stopped（= 已经在运行）→ 这次 start 在语义上
+     *     无事可做，返回 no-op，而不是抛断言把进程打死。
+     *
+     * 两个守卫都只在「框架本来就会出错」的分支生效：正常生命周期里 r.activity 为空、
+     * r.stopped 为 true，两者都不会命中，因此不影响宿主自己的正常启动流程。
+     */
+    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+    private fun installLifecycleGuards() {
+        runCatching {
+            Class.forName("android.app.ActivityThread").declaredMethods
+                .firstOrNull { it.name == "handleLaunchActivity" && it.parameterTypes.size == 3 }
+                ?.hookBeforeDirectly {
+                    val param = this
+                    val record = args.getOrNull(0) ?: return@hookBeforeDirectly
+                    runCatching {
+                        val existing =
+                            activityFieldOf(record.javaClass).get(record) as? Activity
+                                ?: return@runCatching
+                        if (!ActProxyMgr.isModuleProxyActivity(existing.javaClass.name)) {
+                            return@runCatching
+                        }
+                        if (warnedDuplicateRecords.add("launch:" + existing.javaClass.name)) {
+                            WeLogger.w(
+                                TAG,
+                                "同一条 record 被重复派发 launch（微信 splash hack 扣住后又发了一次），" +
+                                    "已跳过重复创建：${existing.javaClass.name}"
+                            )
+                        }
+                        param.result = existing
+                    }.onFailure { WeLogger.w(TAG, "duplicate launch guard failed", it) }
+                }
+        }.onFailure { WeLogger.w(TAG, "install handleLaunchActivity guard failed", it) }
+
+        runCatching {
+            val method = Class.forName("android.app.ActivityThread").declaredMethods
+                .firstOrNull { it.name == "handleStartActivity" }
+                ?: error("handleStartActivity not found")
+            method.hookBeforeDirectly {
+                val param = this
+                val record = args.getOrNull(0) ?: return@hookBeforeDirectly
+                runCatching {
+                    if (stoppedFieldOf(record.javaClass).getBoolean(record)) {
+                        return@runCatching
+                    }
+                    val name = runCatching {
+                        val raw = intentFieldOf(record.javaClass).get(record)
+                        (raw as? android.content.Intent)?.component?.className ?: raw.toString()
+                    }.getOrNull() ?: record.javaClass.simpleName
+                    if (warnedDuplicateRecords.add("start:$name")) {
+                        WeLogger.w(
+                            TAG,
+                            "record 已不是 stopped 却又收到 START 事务（重复派发），已按 no-op 处理；" +
+                                "否则框架会抛 Can't start activity that is not stopped 崩进程：$name"
+                        )
+                    }
+                    // handleStartActivity 返回 void：跳过原方法就等于 no-op。
+                    param.result = null
+                }.onFailure { WeLogger.w(TAG, "duplicate start guard failed", it) }
+            }
+        }.onFailure { WeLogger.w(TAG, "install handleStartActivity guard failed", it) }
+    }
+
+    private fun stoppedFieldOf(clazz: Class<*>): Field =
+        recordStoppedField
+            ?: clazz.getDeclaredField("stopped").makeAccessible().also { recordStoppedField = it }
+
+    private fun intentFieldOf(clazz: Class<*>): Field =
+        recordIntentField
+            ?: clazz.getDeclaredField("intent").makeAccessible().also { recordIntentField = it }
+
+    private fun activityFieldOf(clazz: Class<*>): Field =
+        recordActivityField
+            ?: clazz.getDeclaredField("activity").makeAccessible().also { recordActivityField = it }
 
 
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
@@ -270,7 +361,12 @@ object ActivityProxy {
                 val wrapper = intentField.get(record) as? Intent
                 recoverIntent(wrapper)?.let { recovered ->
                     intentField.set(record, recovered.intent)
-                    IntentTokenCache.remove(recovered.token)
+                    // 【第 21 轮】这里不再 `IntentTokenCache.remove`：微信的 splash hack 会把
+                    // 同一条事务扣住后再派发一次，第二次派发时若 token 已经没了，`recoverIntent`
+                    // 只能放弃替换，于是框架真的把宿主 splash 壳拉起来（日志里的
+                    // `token expired or lost in handler` + WeChatSplashActivity CREATED/RESUMED），
+                    // 这正是重复创建 + ON_START 断言的来源。token 由 IntentTokenCache 自己按
+                    // TTL 回收，留着它才能让重复派发也拿到真实 intent。
                 }
             }.onFailure { WeLogger.e(TAG, "handleLaunchActivity error", it) }
         }
@@ -297,7 +393,8 @@ object ActivityProxy {
                                 updateLaunchingActivityIntent(transaction, recovered.intent)
                             }
 
-                            IntentTokenCache.remove(recovered.token)
+                            // token 故意不删：允许 splash hack 扣住的同一条事务在第二次派发时
+                            // 同样拿到真实 intent（由 IntentTokenCache 的 TTL 负责回收）。
                         }
                     }
                 }
@@ -380,6 +477,7 @@ object ActivityProxy {
 
         override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
             ResourcesInjector.injectModuleRes(activity.resources)
+            ActivityResourceHooks.dispatch(activity.resources)
             if (ActProxyMgr.isModuleProxyActivity(activity.javaClass.name)) {
                 val cl = ParcelableFixer.hybridClassLoader
                 runCatching {
@@ -400,6 +498,7 @@ object ActivityProxy {
             persistentState: PersistableBundle?
         ) {
             ResourcesInjector.injectModuleRes(activity.resources)
+            ActivityResourceHooks.dispatch(activity.resources)
             base.callActivityOnCreate(activity, icicle, persistentState)
         }
 

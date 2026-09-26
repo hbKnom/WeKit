@@ -173,6 +173,25 @@ object ChatAnalysisPng {
     private const val FOOTER_STRIP_GAP = 12
     private const val FOOTER_STRIP_H = 7f
 
+    /**
+     * 多页导出的「续页页头」留白带（第 21 轮：续页观感修复）。
+     *
+     * 分页导出的绘制是「每页重放同一套绘制代码」，页头信息卡只落在第 1 页的页内，
+     * 第 2 页起页顶就是没有任何标识的裸内容（页头卡片的绘制落在页外、被页裁剪丢掉）——
+     * 看图的人分不清这是续页、还是画漏了页头，而内容直接贴到画布上边缘，观感上也像"内容溢出了画布"。
+     *
+     * 现在第 2 页起每页顶部预留本高度的留白带，带内画一条轻量续页横幅（品牌 · 会话名 + 第 N / M 页）。
+     * 留白带**参与分页容量计算**（[paginate] 里续页容量 = 单页容量 − 本高度），所以它只会把内容往下推，
+     * 永远不会压到内容上；单页导出（绝大多数报告）完全不受影响。
+     */
+    private const val PAGE_HEAD_BAND_H = 132
+
+    /** 续页横幅文字行高（横幅在留白带内垂直居中） */
+    private const val PAGE_HEAD_TEXT_H = 56
+
+    /** 续页横幅左侧「品牌 · 会话名」占内容区宽度的比例（右侧留给页码，两者永不重叠） */
+    private const val PAGE_HEAD_NAME_W_RATIO = 0.56f
+
     /** 顶部信息卡：品牌行高 */
     private const val BRAND_LINE_H = 84
 
@@ -479,6 +498,15 @@ object ChatAnalysisPng {
     private const val EMPTY_HINT = "该时段没有可统计的文本消息。"
     private const val EMPTY_HINT_SUB = "请换一个时间范围，或确认该会话在此范围内确实有文本消息。"
 
+    /**
+     * 页底收口文案（分页导出时每页内容区结尾处）。
+     *
+     * [CAP_SPLIT_TEXT] 用于"卡片被拦腰截断"（断点落在卡片内部），[CAP_CONTINUE_TEXT] 用于
+     * "整张卡片收尾"（断点正好是条目边界）—— 后者只说"接下页"，不制造多余的紧张感。
+     */
+    private const val CAP_SPLIT_TEXT = "本节未完 · 见下页"
+    private const val CAP_CONTINUE_TEXT = "接下页"
+
     /** 孤字控制：段落末行短于等于这个字符数时，从上一行挪一个字下来 */
     private const val ORPHAN_MAX_CHARS = 2
 
@@ -599,6 +627,13 @@ object ChatAnalysisPng {
             FOOTER_STRIP_H <= FOOTER_H.toFloat()) { "PNG 页脚内部排版超出页脚高度" }
         // 元信息行的字号必须小于行高，否则文字会被自己的行高裁掉
         require(FOOTER_META_H > FS_SMALL) { "PNG 页脚元信息行高小于字号" }
+
+        // ---- 续页页头：留白带要装得下横幅文字行，且不能吃掉续页的可用高度 ----
+        require(PAGE_HEAD_BAND_H > PAGE_HEAD_TEXT_H + 40) { "PNG 续页页头装不下横幅文字行" }
+        require(PAGE_HEAD_BAND_H < (MAX_HEIGHT - (CARD_GAP + FOOTER_H + BOTTOM_PAD)) / 4) {
+            "PNG 续页页头占用单页容量比例过大"
+        }
+        require(PAGE_HEAD_NAME_W_RATIO in 0.2f..0.8f) { "PNG 续页页头会话名宽度比例非法" }
     }
 
     // ==================================================================
@@ -1362,8 +1397,14 @@ object ChatAnalysisPng {
     // 六、绘制
     // ==================================================================
 
-    /** 一页的几何：内容区间 [top, contentBottom)，页高 = 内容 + 页脚收尾。 */
-    private class Page(val top: Int, val contentBottom: Int, val height: Int)
+    /**
+     * 一页的几何：内容区间 [top + [headBand], contentBottom)，页高 = 内容 + 页脚收尾。
+     *
+     * [headBand] 只对多页导出的第 2 页起非零（续页页头留白带，见 [PAGE_HEAD_BAND_H]）：
+     * 它把本页的**内容起点**下移，同时已经在 [paginate] 里从容量中扣掉，所以既不会压内容，
+     * 也不会让任何一页超高。
+     */
+    private class Page(val top: Int, val contentBottom: Int, val height: Int, val headBand: Int = 0)
 
     /**
      * 导出（可能多页）。
@@ -1429,31 +1470,69 @@ object ChatAnalysisPng {
             // 跨页提示：本页顶部落在某张卡片内部（= 上一页没画完、这一页接着画）时，
             // 页脚要写清「接的是哪一节」，否则单张图不知道自己画的是谁的续页。
             val continues = continuedTitle(items, itemTops, page.top)
-            // 本页内容是不是在卡片中途被打断（断点不是任何一条条目边界）
-            val splits = splitsInsideItem(itemTops, page.contentBottom, contentEnd)
 
             // 单页时沿用「最小画布高度」（短报告不会被压成一条，观感与旧版一致）；
             // 多页时每页高度完全由分页几何决定，不额外加高。
             val pageHeight = if (multi) page.height else maxOf(page.height, MIN_H)
+
+            // 本页的平移原点：第 2 页起把内容整体下移 [Page.headBand]，页顶让给续页页头横幅。
+            // 于是"内容坐标 = page.top"正好落在横幅之下，横幅不会吞掉任何内容；
+            // 而留白带的高度在分页时已经从容量里扣掉（见 [paginate]），页高也已含进去，
+            // 所以页内总占用永远 ≤ MAX_HEIGHT，任何内容长度都不会画到画布之外。
+            val pageOrigin = page.top - page.headBand
+
+            // 本页内容区下边界：按分页几何裁，同时硬性不超过「页底 − 页脚保留带」。
+            // 这一层是纯防御：即使将来常量改动让两者不自洽，内容也只会被裁短，
+            // 绝不会画穿页脚、更不会画到画布之外（画布边界安全由此成为结构保证，而不是巧合）。
+            val contentBottom = page.contentBottom
+                .coerceAtMost(pageOrigin + page.height - (CARD_GAP + FOOTER_H + BOTTOM_PAD))
+                .coerceAtLeast(page.top)
+
+            // 页脚上边界：多页时紧接内容；单页时贴到画布底部（短报告不会在页脚下面拖一条空白）。
+            // 单页且 pageHeight == page.height 时两者恰好相等，几何与旧版一致。
+            val footerTop = if (multi) contentBottom + CARD_GAP
+            else maxOf(contentBottom + CARD_GAP, pageOrigin + pageHeight - BOTTOM_PAD - FOOTER_H)
+
+            // 本页内容是不是在卡片中途被打断（断点不是任何一条条目边界）
+            val splits = splitsInsideItem(itemTops, contentBottom, contentEnd)
+
             val bmp = Bitmap.createBitmap(W, pageHeight, Bitmap.Config.ARGB_8888)
             try {
                 val cv = Canvas(bmp)
                 // 平移：之后所有绘制代码用的都是「整幅画布」的绝对坐标，
                 // 与本页落在哪一段无关（绘制代码一行都不用改）。
-                cv.translate(0f, -page.top.toFloat())
+                // 第 2 页起整体再多平移一个 headBand —— 见 [pageOrigin]。
+                cv.translate(0f, -pageOrigin.toFloat())
 
                 // ---- 背景：极浅的竖向渐变（上浅蓝 → 下纯白），跨页仍然连续 ----
+                // 裁剪范围必须用「本页实际画布高」（pageHeight），不能用分页几何里的 page.height：
+                // 单页导出且最短画布高度（MIN_H）生效时 pageHeight > page.height，
+                // 旧写法会在画布底部留下一条没被任何绘制覆盖的**透明条带**（PNG 里就是"底部缺口"）。
                 cv.save()
-                cv.clipRect(0f, page.top.toFloat(), W.toFloat(), (page.top + page.height).toFloat())
-                cv.drawRect(0f, 0f, W.toFloat(), canvasHeight.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    shader = LinearGradient(
-                        0f, 0f, 0f, canvasHeight.toFloat(),
-                        intArrayOf(COLOR_BG_TOP, COLOR_BG_MID, COLOR_BG_BOTTOM),
-                        floatArrayOf(0f, 0.35f, 1f),
-                        Shader.TileMode.CLAMP,
-                    )
-                })
+                cv.clipRect(0f, pageOrigin.toFloat(), W.toFloat(), (pageOrigin + pageHeight).toFloat())
+                // 只画本页那一段：渐变是按整幅画布坐标算的（跨页连续），
+                // 但绘制范围收窄到本页后，就不存在"每次导出都往画布外画一整幅矩形"的无谓绘制
+                cv.drawRect(
+                    0f, pageOrigin.toFloat(), W.toFloat(), (pageOrigin + pageHeight).toFloat(),
+                    Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        shader = LinearGradient(
+                            0f, 0f, 0f, canvasHeight.toFloat(),
+                            intArrayOf(COLOR_BG_TOP, COLOR_BG_MID, COLOR_BG_BOTTOM),
+                            floatArrayOf(0f, 0.35f, 1f),
+                            Shader.TileMode.CLAMP,
+                        )
+                    },
+                )
                 cv.restore()
+
+                // ---- 续页页头（第 2 页起）：留白带里的一条轻量横幅 ----
+                // 页头信息卡只属于第 1 页；续页靠这条横幅自证身份，页顶不再是一块裸内容。
+                if (page.headBand > 0) {
+                    cv.save()
+                    cv.clipRect(0f, pageOrigin.toFloat(), W.toFloat(), page.top.toFloat())
+                    drawPageHead(cv, pageOrigin, sessionName, index + 1, pages.size)
+                    cv.restore()
+                }
 
                 // ---- 内容区：严格裁到本页的内容边界 ----
                 // 这里是「每张分页图底部总溢出」的根因修复点：
@@ -1464,23 +1543,25 @@ object ChatAnalysisPng {
                 // 现在内容区硬裁到 contentBottom：越界的半截行只会在下一页出现，
                 // 一次不多、一次不少，卡片边界与页脚永远不会被内容侵占。
                 cv.save()
-                cv.clipRect(0f, page.top.toFloat(), W.toFloat(), page.contentBottom.toFloat())
+                cv.clipRect(0f, page.top.toFloat(), W.toFloat(), contentBottom.toFloat())
 
                 // ---- 第二遍：按同一份几何绘制 ----
                 var y = CANVAS_PAD
-                drawHeaderCard(cv, y, header)
+                // 页头信息卡只画在第 1 页：其余页的页顶留给续页页头横幅，
+                // 也顺手消掉了"每页重放页头卡片、再被页裁剪丢掉"的整批越界绘制
+                if (page.top <= CANVAS_PAD) drawHeaderCard(cv, y, header)
                 y += header.height
 
                 for (i in items.indices) {
                     y += gapBefore(items, i)
                     val item = items[i]
                     val h = itemHeight(item)
-                    // 完全落在本页之上的：跳过（不画），但 y 必须继续累加
+                    // 完全落在本页内容区之上的：跳过（不画），但 y 必须继续累加
                     if (y + h <= page.top) {
                         y += h
                         continue
                     }
-                    if (y >= page.contentBottom) break
+                    if (y >= contentBottom) break
                     when (item) {
                         is Item.Pill -> {
                             drawGroupPill(cv, item, y.toFloat())
@@ -1493,17 +1574,20 @@ object ChatAnalysisPng {
                 }
                 cv.restore()
 
-                // ---- 截断收口：只在「卡片被拦腰截断」的页面上画 ----
+                // ---- 页底收口：只要本页不是最后一页就画 ----
                 // 位置取内容边界与页脚之间的 CARD_GAP 空档，不占内容高度、不动任何既有坐标。
-                if (splits) {
+                // 断在卡片中途（splits）时补一句「本节未完 · 见下页」，断在整卡片边界时
+                // 只留一条渐隐细线 +「接下页」——两种情形都让"这是页边"一目了然，
+                // 不会让人误读成内容溢出了画布。
+                if (contentBottom < contentEnd) {
                     cv.save()
                     cv.clipRect(
                         0f,
-                        page.contentBottom.toFloat(),
+                        contentBottom.toFloat(),
                         W.toFloat(),
-                        (page.contentBottom + CARD_GAP).toFloat(),
+                        (contentBottom + CARD_GAP).toFloat(),
                     )
-                    drawContinuedCap(cv, page.contentBottom)
+                    drawContinuedCap(cv, contentBottom, splits)
                     cv.restore()
                 }
 
@@ -1511,13 +1595,13 @@ object ChatAnalysisPng {
                 cv.save()
                 cv.clipRect(
                     0f,
-                    (page.contentBottom + CARD_GAP).toFloat(),
+                    footerTop.toFloat(),
                     W.toFloat(),
-                    (page.top + page.height).toFloat(),
+                    (pageOrigin + pageHeight).toFloat(),
                 )
                 drawFooter(
                     cv = cv,
-                    top = page.contentBottom + CARD_GAP,
+                    top = footerTop,
                     pageLabel = label,
                     meta = footerMeta,
                     hint = if (continues.isBlank()) "" else "接上页 · $continues",
@@ -1536,10 +1620,12 @@ object ChatAnalysisPng {
     }
 
     /** 一页的高度 = 内容高度 + 页脚收尾（[CARD_GAP] + [FOOTER_H] + [BOTTOM_PAD]）。 */
-    private fun pageOf(top: Int, contentBottom: Int): Page {
-        val height = (contentBottom - top) + CARD_GAP + FOOTER_H + BOTTOM_PAD
+    private fun pageOf(top: Int, contentBottom: Int, headBand: Int = 0): Page {
+        // 页高 = 续页页头留白带 + 内容高 + 页脚收尾：留白带把内容整体下移，必须计入页高，
+        // 否则续页内容会被推出画布底边切成两半。
+        val height = headBand + (contentBottom - top) + CARD_GAP + FOOTER_H + BOTTOM_PAD
         require(height <= MAX_HEIGHT) { "PNG 分页高度超限：${height}px" }
-        return Page(top, contentBottom, height)
+        return Page(top, contentBottom, height, headBand)
     }
 
 
@@ -1582,13 +1668,15 @@ object ChatAnalysisPng {
     }
 
     /**
-     * 「本节未完 · 见下页」收口。
+     * 页底收口（不是最后一页时都会画）。
      *
      * 画在内容边界到页脚之间的 [CARD_GAP] 空档里：右侧一句提示 + 一条渐隐细线，
-     * 明确告诉读者"这张卡片不是到这里就结束了，是被分页断开的"，
-     * 免得看图的人以为内容画漏了。不占内容高度、不改动任何既有坐标。
+     * 明确告诉读者"这张图到此为止，后面还有"——断在整卡片边界时说「接下页」，
+     * 断在卡片中途（[splits]）时补一句「本节未完 · 见下页」，
+     * 免得看图的人把页边误读成"内容画漏了 / 溢出了画布"。
+     * 不占内容高度、不改动任何既有坐标。
      */
-    private fun drawContinuedCap(cv: Canvas, contentBottom: Int) {
+    private fun drawContinuedCap(cv: Canvas, contentBottom: Int, splits: Boolean) {
         val lineY = contentBottom + 8f
         cv.drawRect(
             RectF(CARD_LEFT.toFloat(), lineY, CARD_RIGHT.toFloat(), lineY + 2f),
@@ -1606,12 +1694,68 @@ object ChatAnalysisPng {
             },
         )
         val p = paint(FS_SMALL, COLOR_ACCENT, bold = true)
-        val text = "本节未完 · 见下页"
+        val text = if (splits) CAP_SPLIT_TEXT else CAP_CONTINUE_TEXT
         val textW = p.measureText(text)
         val bandTop = lineY + 2f
         val bandH = (contentBottom + CARD_GAP - bandTop).coerceAtLeast(1f)
         val clip = RectF(CARD_RIGHT - textW - 8f, bandTop, CARD_RIGHT.toFloat(), bandTop + bandH)
         drawClipped(cv, text, clip.left, fitBaseline(bandTop, bandH, p, clip.bottom), clip, p)
+    }
+
+    /**
+     * 续页页头（多页导出的第 2 页起，画在 [PAGE_HEAD_BAND_H] 留白带里）。
+     *
+     * 横幅克制到不能再克制：左侧一行小字「品牌 · 会话名」，右侧「第 N / M 页」，
+     * 底部一条渐隐分隔线（与页脚顶部同款语言，浅到不抢内容）。
+     * 它**不参与内容绘制**（内容裁剪从留白带底部开始），也不改变任何既有坐标 ——
+     * 只是把"这一页是上页的续页"说清楚，让续页页顶不再是一块没有归属的裸内容。
+     */
+    private fun drawPageHead(cv: Canvas, top: Int, sessionName: String, index: Int, count: Int) {
+        val bandTop = top.toFloat()
+        val bandBottom = (top + PAGE_HEAD_BAND_H).toFloat()
+        val textTop = bandTop + (PAGE_HEAD_BAND_H - PAGE_HEAD_TEXT_H) / 2f
+        val textBottom = textTop + PAGE_HEAD_TEXT_H
+
+        // 底部渐隐分隔线：把续页页头与正文轻轻分开
+        cv.drawRect(
+            RectF(CARD_LEFT.toFloat(), bandBottom - 2f, CARD_RIGHT.toFloat(), bandBottom),
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    CARD_LEFT.toFloat(), 0f, CARD_RIGHT.toFloat(), 0f,
+                    intArrayOf(
+                        withAlpha(COLOR_ACCENT, 0x00),
+                        withAlpha(COLOR_ACCENT, 0x33),
+                        withAlpha(COLOR_ACCENT, 0x00),
+                    ),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+            },
+        )
+
+        // 左：品牌 + 会话名（截断在内容区一半宽以内，右侧永远留给页码）
+        val nameP = paint(FS_SMALL, COLOR_META)
+        val nameW = CONTENT_W * PAGE_HEAD_NAME_W_RATIO
+        val nameText = truncateToWidth(
+            if (sessionName.isBlank()) BRAND_TEXT else "$BRAND_TEXT · $sessionName",
+            nameW,
+            nameP,
+        )
+        val nameClip = RectF(CONTENT_LEFT.toFloat(), textTop, CONTENT_LEFT + nameW, textBottom)
+        drawClipped(
+            cv, nameText, nameClip.left,
+            fitBaseline(textTop, PAGE_HEAD_TEXT_H.toFloat(), nameP, textBottom), nameClip, nameP,
+        )
+
+        // 右：第 N / M 页
+        val pageP = paint(FS_SMALL, COLOR_ACCENT, bold = true)
+        val pageText = "第 $index / $count 页"
+        val pageW = pageP.measureText(pageText)
+        val pageClip = RectF(CONTENT_RIGHT - pageW - 4f, textTop, CONTENT_RIGHT.toFloat(), textBottom)
+        drawClipped(
+            cv, pageText, pageClip.left,
+            fitBaseline(textTop, PAGE_HEAD_TEXT_H.toFloat(), pageP, textBottom), pageClip, pageP,
+        )
     }
     /**
      * 可断点集合（内容纵坐标）。
@@ -1654,26 +1798,41 @@ object ChatAnalysisPng {
         val reserved = CARD_GAP + FOOTER_H + BOTTOM_PAD
         val usable = MAX_HEIGHT - reserved
         require(usable > 0) { "PNG 单页可用高度必须为正" }
+        // 第 2 页起页顶要让出续页页头留白带，可放内容的高度随之减少
+        val restUsable = usable - PAGE_HEAD_BAND_H
+        require(restUsable > usable / 2) { "PNG 续页可用高度不足（续页页头占比过大）" }
         if (contentEnd <= usable) return listOf(pageOf(0, contentEnd))
 
-        val count = Math.ceil(contentEnd.toDouble() / usable).toInt().coerceAtLeast(2)
+        /** 第 k 页（0 基）的内容容量：首页用整页，续页扣掉续页页头 */
+        fun capOf(k: Int): Int = if (k == 0) usable else restUsable
+
+        // 页数：第 1 页容量 usable，其后每页 restUsable —— 只按"能不能装下"推页数，不靠估算
+        var count = 1
+        while (contentEnd > usable + (count - 1) * restUsable) count++
+
+        // suffixCap[k] = 第 k 页（含）之后所有页的容量和：用来反推"本页至少要切到哪，后面才放得下"
+        val suffixCap = IntArray(count + 1)
+        for (k in count - 1 downTo 0) suffixCap[k] = suffixCap[k + 1] + capOf(k)
+
         val target = contentEnd.toDouble() / count
         val pages = ArrayList<Page>(count)
         var top = 0
-        for (k in 1 until count) {
-            // 本页之后还剩几页（含最后一页）：为了后面放得下，本页至少要切到 minCut；
-            // 本页自己也不能超过 usable，所以最多切到 maxCut。
-            val restPages = count - k
-            val minCut = maxOf(top + 1, contentEnd - restPages * usable)
-            val maxCut = minOf(top + usable, contentEnd - 1)
-            val ideal = Math.round(target * k).toInt()
-            val cut = nearestCut(preferred, minCut, maxCut, ideal)
-                ?: nearestCut(cuts, minCut, maxCut, ideal)
-                ?: ideal.coerceIn(minCut, maxCut)
-            pages.add(pageOf(top, cut))
+        for (k in 0 until count - 1) {
+            val cap = capOf(k)
+            val minCut = maxOf(top + 1, contentEnd - suffixCap[k + 1])
+            val maxCut = minOf(top + cap, contentEnd - 1)
+            // 兜底：正常不会出现 minCut > maxCut（页数就是按容量推出来的），
+            // 真出现也只退化成"本页装满"，绝不产生 contentBottom < top 的非法页。
+            if (maxCut <= top) break
+            val lo = minOf(minCut, maxCut)
+            val ideal = Math.round(target * (k + 1)).toInt()
+            val cut = nearestCut(preferred, lo, maxCut, ideal)
+                ?: nearestCut(cuts, lo, maxCut, ideal)
+                ?: ideal.coerceIn(lo, maxCut)
+            pages.add(pageOf(top, cut, if (k == 0) 0 else PAGE_HEAD_BAND_H))
             top = cut
         }
-        pages.add(pageOf(top, contentEnd))
+        pages.add(pageOf(top, contentEnd, if (pages.isEmpty()) 0 else PAGE_HEAD_BAND_H))
         return pages
     }
 
