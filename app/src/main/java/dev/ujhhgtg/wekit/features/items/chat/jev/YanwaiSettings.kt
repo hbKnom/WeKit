@@ -19,6 +19,7 @@ import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Bolt
 import com.composables.icons.materialsymbols.outlined.Tune
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.ChatInsights
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.SignalAnalyzer
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ApiProfiles
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ApiSettings
@@ -72,6 +73,11 @@ object YanwaiSettings {
             var analyzeSelf by remember { mutableStateOf(ModulePrefs.analyzeSelf) }
             var cardExpanded by remember { mutableStateOf(ModulePrefs.cardExpanded) }
             var showTrend by remember { mutableStateOf(ModulePrefs.showTrend) }
+            // 卡片扩展块（建议强度 / 互动均衡 / 话题 / 情绪趋势）：默认全开，可逐项关掉
+            var showLevel by remember { mutableStateOf(ModulePrefs.showLevel) }
+            var showBalance by remember { mutableStateOf(ModulePrefs.showBalance) }
+            var showTopics by remember { mutableStateOf(ModulePrefs.showTopics) }
+            var showTrendPanel by remember { mutableStateOf(ModulePrefs.showTrendPanel) }
             var insertFreshText by remember {
                 mutableStateOf(ModulePrefs.insertFreshSeconds.toString())
             }
@@ -151,6 +157,10 @@ object YanwaiSettings {
                 ModulePrefs.setAnalyzeSelf(analyzeSelf)
                 ModulePrefs.setCardExpanded(cardExpanded)
                 ModulePrefs.setShowTrend(showTrend)
+                ModulePrefs.setShowLevel(showLevel)
+                ModulePrefs.setShowBalance(showBalance)
+                ModulePrefs.setShowTopics(showTopics)
+                ModulePrefs.setShowTrendPanel(showTrendPanel)
                 ModulePrefs.setInsertFreshSeconds(fresh)
                 ModulePrefs.setContextLimit(limit)
                 ModulePrefs.setScope(
@@ -257,6 +267,57 @@ object YanwaiSettings {
                                 trailingDivider = true,
                             )
                         }
+                        // ------------------------------------------------------ 卡片扩展
+                        item {
+                            Text(
+                                text = stringResource(R.string.jev_settings_section_ext),
+                                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Bolt,
+                                title = stringResource(R.string.jev_ext_level_enable),
+                                description = stringResource(R.string.jev_ext_level_enable_desc),
+                                checked = showLevel,
+                                onCheckedChange = { showLevel = it },
+                                trailingDivider = true,
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Tune,
+                                title = stringResource(R.string.jev_ext_balance_enable),
+                                description = stringResource(R.string.jev_ext_balance_enable_desc),
+                                checked = showBalance,
+                                onCheckedChange = { showBalance = it },
+                                trailingDivider = true,
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Tune,
+                                title = stringResource(R.string.jev_ext_topics_enable),
+                                description = stringResource(
+                                    R.string.jev_ext_topics_enable_desc,
+                                    ChatInsights.MAX_TOPICS,
+                                ),
+                                checked = showTopics,
+                                onCheckedChange = { showTopics = it },
+                                trailingDivider = true,
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                icon = MaterialSymbols.Outlined.Bolt,
+                                title = stringResource(R.string.jev_ext_trend_enable),
+                                description = stringResource(R.string.jev_ext_trend_enable_desc),
+                                checked = showTrendPanel,
+                                onCheckedChange = { showTrendPanel = it },
+                                trailingDivider = true,
+                            )
+                        }
+
                         item {
                             SwitchWidget(
                                 icon = MaterialSymbols.Outlined.Tune,

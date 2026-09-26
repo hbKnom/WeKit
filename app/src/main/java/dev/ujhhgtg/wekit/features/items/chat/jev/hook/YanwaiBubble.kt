@@ -15,9 +15,12 @@ import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
+import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.ChatInsights
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.JevProtocol
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.SignalAnalyzer
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.AnalysisInput
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.JevText
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodBar
@@ -26,6 +29,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.dominantName
 import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.IdentityHashMap
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -73,6 +77,8 @@ object YanwaiBubble {
         val meta: TextView,
         val reading: TextView,
         val advice: TextView,
+        /** 卡片扩展块：建议分级 / 话题 / 互动均衡 / 情绪趋势 / 风险依据。 */
+        val insight: TextView,
         val footer: TextView,
         /** 是否展开了完整解读（默认取设置里的「卡片默认展开详情」）。 */
         var expanded: Boolean = ModulePrefs.cardExpanded,
@@ -81,6 +87,10 @@ object YanwaiBubble {
         /** 最近一次渲染用的输入与跳过原因：展开/收起时要按它原样重绘（不再走一遍扫描器）。 */
         var input: AnalysisInput? = null,
         var note: String? = null,
+        /** 本屏素材（谁在说话 + 前文/本条原文），绑定那一刻由扫描器算好。 */
+        var screen: ChatInsights.Screen = ChatInsights.Screen(),
+        /** 队列满、这一条还没排上：卡片要如实说明「在等空位」，而不是看起来卡住了。 */
+        var capacityPending: Boolean = false,
     )
 
     /**
@@ -97,6 +107,8 @@ object YanwaiBubble {
         val expanded: Boolean,
         val night: Boolean,
         val trendVersion: Int,
+        val capacity: Boolean,
+        val screenId: Int,
     )
 
     private val cards = IdentityHashMap<View, Card>()
@@ -114,7 +126,13 @@ object YanwaiBubble {
     /**
      * 画/刷新一张卡片。返回 true 表示这张卡已经就绪（含「本来就不该有卡」的情况）。
      */
-    fun show(row: View, message: AnalysisInput?, note: String? = null): Boolean {
+    fun show(
+        row: View,
+        message: AnalysisInput?,
+        note: String? = null,
+        screen: ChatInsights.Screen = ChatInsights.Screen(),
+        capacityPending: Boolean = false,
+    ): Boolean {
         if (message == null || !ModulePrefs.enabled || !ModulePrefs.displayBubble ||
             !ModulePrefs.inScope(message.talker)
         ) {
@@ -133,6 +151,8 @@ object YanwaiBubble {
         }
         state.input = message
         state.note = note
+        state.screen = screen
+        state.capacityPending = capacityPending
         render(row, state, message, note)
         return true
     }
@@ -161,6 +181,9 @@ object YanwaiBubble {
             expanded = card.expanded,
             night = night,
             trendVersion = MoodStore.trendVersion,
+            capacity = card.capacityPending,
+            // 本屏素材只在重绑时换对象：用实例身份当指纹，避免每拍哈希整屏文本
+            screenId = System.identityHashCode(card.screen),
         )
         if (fingerprint == card.fingerprint) return
         card.fingerprint = fingerprint
@@ -179,44 +202,52 @@ object YanwaiBubble {
 
         when {
             failure != null -> {
-                card.header.text = "潜语 · 分析失败"
+                card.header.text = JevText.get(R.string.jev_card_failed_title)
                 card.header.setTextColor(pal.warning)
                 card.bars.visibility = View.GONE
                 card.meta.visibility = View.GONE
-                card.reading.text = "$failure\n（点击这张卡重新分析）"
+                card.reading.text = failure + "\n" + JevText.get(R.string.jev_card_retry_hint)
                 card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
-                card.footer.text = "重试会重新请求一次模型"
+                card.insight.visibility = View.GONE
+                card.footer.text = JevText.get(R.string.jev_card_retry_footer)
                 card.footer.visibility = View.VISIBLE
             }
 
             mood != null -> renderMood(card, input, mood, pal, accent)
 
             !ModulePrefs.canAnalyze -> {
-                card.header.text = "潜语 · 未配置"
+                card.header.text = JevText.get(R.string.jev_card_unconfigured_title)
                 card.header.setTextColor(pal.muted)
                 card.bars.visibility = View.GONE
                 card.meta.visibility = View.GONE
-                card.reading.text = "还没填写模型渠道与 API Key，填写后本卡会自动开始分析。"
+                card.reading.text = JevText.get(R.string.jev_card_unconfigured_body)
                 card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
+                card.insight.visibility = View.GONE
                 card.footer.visibility = View.GONE
             }
 
             else -> {
                 val queued = if (note == null) MoodStore.pendingCount() else 0
-                card.header.text = if (note != null) "潜语 · 已跳过" else "潜语 · 正在分析"
+                card.header.text = if (note != null) {
+                    JevText.get(R.string.jev_card_skipped_title)
+                } else {
+                    JevText.get(R.string.jev_card_pending_title)
+                }
                 card.header.setTextColor(pal.muted)
                 card.bars.visibility = View.GONE
                 card.meta.visibility = View.GONE
-                card.reading.text = note ?: if (queued > 1) {
+                card.reading.text = note ?: when {
+                    // 队列满、这一条还没排上：说清「在等空位、不会丢」，别让它看起来卡住了
+                    card.capacityPending -> JevText.get(R.string.jev_card_pending_capacity, queued)
                     // 一屏多条同时提交时给个排队交代：卡片看起来「卡住了」多数只是还没轮到
-                    "已提交给模型，正在排队分析（本屏共 $queued 条）。结论会回填到这张卡上。"
-                } else {
-                    "已提交给模型，正在分析。结论会回填到这张卡上。"
+                    queued > 1 -> JevText.get(R.string.jev_card_pending_queued, queued)
+                    else -> JevText.get(R.string.jev_card_pending_solo)
                 }
                 card.reading.visibility = View.VISIBLE
                 card.advice.visibility = View.GONE
+                card.insight.visibility = View.GONE
                 card.footer.visibility = View.GONE
             }
         }
@@ -233,16 +264,16 @@ object YanwaiBubble {
         val arrow = if (ModulePrefs.showTrend) {
             MoodStore.trendOf(input.talker)?.let {
                 val points = (abs(it) * 100).roundToInt()
-                when {
-                    points < 5 -> "· 与前几句持平"
-                    it > 0 -> "· 较前几句 ↑$points"
-                    else -> "· 较前几句 ↓$points"
+                "· " + when {
+                    points < 5 -> JevText.get(R.string.jev_trend_flat)
+                    it > 0 -> JevText.get(R.string.jev_trend_up, points)
+                    else -> JevText.get(R.string.jev_trend_down, points)
                 }
             }
         } else {
             null
         }
-        card.header.text = listOf("潜语 · ${mood.dominantName()}", arrow.orEmpty())
+        card.header.text = listOf(JevText.get(R.string.jev_card_title, mood.dominantName()), arrow.orEmpty())
             .filter { it.isNotEmpty() }.joinToString("  ")
         card.header.setTextColor(accent)
 
@@ -259,7 +290,9 @@ object YanwaiBubble {
         val metaParts = mutableListOf<String>()
         mood.sceneLabel?.let { metaParts += it }
         mood.progressLabel?.let { metaParts += it }
-        if (mood.confidence > 0.0) metaParts += "置信度 ${(mood.confidence * 100).roundToInt()}%"
+        if (mood.confidence > 0.0) {
+            metaParts += JevText.get(R.string.jev_meta_confidence, (mood.confidence * 100).roundToInt())
+        }
         card.meta.text = metaParts.joinToString(" · ")
         card.meta.visibility = if (card.meta.text.isNullOrBlank()) View.GONE else View.VISIBLE
 
@@ -283,20 +316,126 @@ object YanwaiBubble {
         card.reading.visibility = if (reading.isBlank()) View.GONE else View.VISIBLE
 
         // 建议：最该看的一行，永远显示
-        card.advice.text = mood.advice?.let { "建议：$it" }.orEmpty()
+        card.advice.text = mood.advice?.let { JevText.get(R.string.jev_advice, it) }.orEmpty()
         card.advice.visibility = if (mood.advice.isNullOrBlank()) View.GONE else View.VISIBLE
 
         // 页脚：降级说明优先，其次交互提示
         val expandable = canExpand(mood)
         val hint = when {
-            mood.note != null -> "提示：${mood.note}"
-            expandable && card.expanded -> "点击收起 · 长按复制解读"
-            expandable -> "点击展开完整解读 · 长按复制"
-            else -> "长按复制解读"
+            mood.note != null -> JevText.get(R.string.jev_hint_note, mood.note)
+            expandable && card.expanded -> JevText.get(R.string.jev_hint_collapse)
+            expandable -> JevText.get(R.string.jev_hint_expand)
+            else -> JevText.get(R.string.jev_hint_copy)
         }
         card.footer.text = hint
         card.footer.visibility = View.VISIBLE
+
+        // 扩展块（建议强度 / 话题 / 互动均衡 / 趋势 / 风险）
+        renderInsights(card, input, mood, pal, accent)
     }
+
+    /**
+     * 卡片扩展块：把 [ChatInsights] 的纯计算结果渲染成几行三语文案。
+     *
+     * 收起时只留「建议强度 + 话题」两行（三秒内看得完），展开后再补互动均衡、
+     * 情绪趋势与风险依据；四个开关（[ModulePrefs.showLevel] / [ModulePrefs.showBalance] /
+     * [ModulePrefs.showTopics] / [ModulePrefs.showTrendPanel]）全关就直接不画这一块。
+     *
+     * 计算失败一律降级为「不画」：卡片少一块不影响原来的解读与建议。
+     */
+    private fun renderInsights(
+        card: Card,
+        input: AnalysisInput,
+        mood: Mood,
+        pal: Palette,
+        accent: Int,
+    ) {
+        if (!ModulePrefs.showLevel && !ModulePrefs.showBalance &&
+            !ModulePrefs.showTopics && !ModulePrefs.showTrendPanel
+        ) {
+            card.insight.visibility = View.GONE
+            return
+        }
+        val insight = runCatching {
+            ChatInsights.build(mood, card.screen, MoodStore.recentScores(input.talker))
+        }.getOrNull()
+        if (insight == null) {
+            card.insight.visibility = View.GONE
+            return
+        }
+        val lines = ArrayList<String>(6)
+        // 1) 建议强度：第一行，三秒内最该看到的东西
+        if (ModulePrefs.showLevel) {
+            insight.level?.let {
+                lines += JevText.get(
+                    R.string.jev_ext_level_title,
+                    JevText.get(ChatInsights.levelLabel(it)),
+                )
+            }
+        }
+        // 2) 话题标签：一行，命中不到就说「没提取到」，不留空行
+        if (ModulePrefs.showTopics) {
+            val topics = insight.topics.map { JevText.get(it) }.filter { it.isNotEmpty() }
+            lines += JevText.get(R.string.jev_ext_topics_title) + "：" +
+                topics.joinToString(" / ").ifEmpty { JevText.get(R.string.jev_ext_topics_none) }
+        }
+        val riskLevel = insight.risk?.level ?: 0
+        if (card.expanded) {
+            insight.balance?.let { balance ->
+                if (ModulePrefs.showBalance) {
+                    lines += JevText.get(R.string.jev_ext_balance_title, balance.total)
+                    lines += JevText.get(
+                        R.string.jev_ext_balance_value,
+                        balance.selfPercent,
+                        balance.otherPercent,
+                    )
+                    if (balance.otherRun >= 2) {
+                        lines += JevText.get(R.string.jev_ext_balance_other_run, balance.otherRun)
+                    }
+                    if (balance.selfRun >= 3) {
+                        lines += JevText.get(R.string.jev_ext_balance_self_run, balance.selfRun)
+                    }
+                }
+            }
+            insight.trend?.let { trend ->
+                if (ModulePrefs.showTrendPanel) {
+                    val direction = when {
+                        trend.direction > 0 -> R.string.jev_ext_trend_up
+                        trend.direction < 0 -> R.string.jev_ext_trend_down
+                        else -> R.string.jev_ext_trend_flat
+                    }
+                    lines += JevText.get(R.string.jev_ext_trend_title) + "：" +
+                        JevText.get(direction, trend.samples)
+                    lines += JevText.get(
+                        R.string.jev_ext_trend_stat,
+                        formatScore(trend.mean),
+                        formatScore(trend.swing),
+                    )
+                }
+            }
+            insight.risk?.let { risk ->
+                if (ModulePrefs.showLevel) {
+                    lines += JevText.get(R.string.jev_risk_title) + " · " + JevText.get(riskLevelText(risk.level))
+                    risk.notes.forEach { (id, args) -> lines += JevText.get(id, *args) }
+                }
+            }
+        } else if (ModulePrefs.showLevel && riskLevel >= 1) {
+            // 收起时只给一行风险等级：有依据才说，细节留给展开
+            lines += JevText.get(R.string.jev_risk_title) + " · " + JevText.get(riskLevelText(riskLevel))
+        }
+        val text = lines.filter { it.isNotBlank() }.joinToString("\n")
+        card.insight.text = text
+        card.insight.setTextColor(if (riskLevel >= 1) pal.warning else if (card.expanded) pal.body else accent)
+        card.insight.visibility = if (text.isBlank()) View.GONE else View.VISIBLE
+    }
+
+    private fun riskLevelText(level: Int): Int = when {
+        level >= 2 -> R.string.jev_risk_level_high
+        level == 1 -> R.string.jev_risk_level_medium
+        else -> R.string.jev_risk_level_low
+    }
+
+    private fun formatScore(value: Double): String = String.format(Locale.US, "%.2f", value)
 
     /** 还有没有「收起来时看不到」的内容可展开。 */
     private fun canExpand(mood: Mood): Boolean =
@@ -399,6 +538,7 @@ object YanwaiBubble {
             meta = views.meta,
             reading = views.reading,
             advice = views.advice,
+            insight = views.insight,
             footer = views.footer,
         )
     }
@@ -447,6 +587,7 @@ object YanwaiBubble {
         val meta: TextView,
         val reading: TextView,
         val advice: TextView,
+        val insight: TextView,
         val footer: TextView,
     )
 
@@ -500,6 +641,16 @@ object YanwaiBubble {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(row, 5) }
         }
+        val insight = TextView(row.context).apply {
+            textSize = 11f
+            setTextColor(pal.body)
+            includeFontPadding = false
+            setLineSpacing(dp(row, 2).toFloat(), 1f)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(row, 5) }
+        }
         val column = LinearLayout(row.context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(row, 10), dp(row, 8), dp(row, 10), dp(row, 8))
@@ -508,6 +659,7 @@ object YanwaiBubble {
             addView(meta)
             addView(reading)
             addView(advice)
+            addView(insight)
             addView(footer)
         }
         val container = LinearLayout(row.context).apply {
@@ -518,7 +670,7 @@ object YanwaiBubble {
             // 宽度由调用方在布局参数里钉死（=气泡宽度）；这里让内容列占满剩余宽度
             addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        return Views(container, stripe, header, bars, meta, reading, advice, footer)
+        return Views(container, stripe, header, bars, meta, reading, advice, insight, footer)
     }
 
     /**
