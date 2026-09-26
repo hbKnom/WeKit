@@ -107,45 +107,17 @@ private fun homeSidePanelShouldReparentExternalChrome(
  * 侧滑面板 / 主页工具栏挂件的主题。
  *
  * 面板里的卡片、容器、文字全是 WeKit 自己用 Compose 画的，莫奈引擎改的是宿主微信的资源 id，
- * 覆盖不到这些界面。[InjectedUiTheme] 虽然也会跟着引擎换色，但它是拿引擎 primary **当种子
- * 重新派生**一套 M3 色板，surface / container 那几档"面"色与引擎实际替换给微信原生界面的值
- * 仍有色差（实机反馈的「没美化到位」）。
+ * 覆盖不到这些界面 —— 所以必须跟着引擎色板走，面板才不会和原生部分割裂。
  *
- * 所以这里在引擎生效时，用 [MonetColors] 的 token 直接覆盖 scheme 里承载"面"的角色，
- * 让面板与原生完全同源；引擎未启用 / 未解析成功（[MonetColors.tokens] 返回 null）时一行不改，
- * 完全沿用原来的 [InjectedUiTheme] 配色。
+ * 第 17 轮：这份「用引擎 token 覆盖 M3 角色」的逻辑**已经收敛到
+ * [SeedResolver.injectedScheme] / [SeedResolver.applyMonetTokens]**（所有注入界面的唯一来源），
+ * 这里不再自己复制一份（复制出来只会和主路慢慢走偏，例如缺 surfaceBright / surfaceVariant 时
+ * 面板里的卡片、代码块底就和别的注入界面不是一个色）。引擎未启用时 [InjectedUiTheme] 自身
+ * 就会退回原来的配色，行为不变。
  */
 @Composable
 private fun MonetPanelTheme(content: @Composable () -> Unit) {
-    InjectedUiTheme {
-        val night = isSystemInDarkTheme()
-        val tokens = MonetColors.applied.value?.let { MonetColors.tokens(night) }
-        if (tokens == null) {
-            content()
-        } else {
-            MaterialTheme(
-                colorScheme = MaterialTheme.colorScheme.copy(
-                    primary = Color(tokens.primary),
-                    onPrimary = Color(tokens.onPrimary),
-                    primaryContainer = Color(tokens.primaryContainer),
-                    onPrimaryContainer = Color(tokens.onPrimaryContainer),
-                    surface = Color(tokens.surface),
-                    // M3 的容器档位在 token 里只有 surface / surfaceContainer / surfaceContainerHigh
-                    // 三档，低档位按表面色向容器色插值，保持原来的层次感。
-                    surfaceContainerLow = Color(
-                        MonetColors.blend(tokens.surface, tokens.surfaceContainer, 0.5)
-                    ),
-                    surfaceContainer = Color(tokens.surfaceContainer),
-                    surfaceContainerHigh = Color(tokens.surfaceContainerHigh),
-                    surfaceContainerHighest = Color(tokens.surfaceContainerHigh),
-                    onSurface = Color(tokens.onSurface),
-                    onSurfaceVariant = Color(tokens.onSurfaceVariant),
-                    outline = Color(tokens.outline),
-                ),
-                content = content,
-            )
-        }
-    }
+    InjectedUiTheme(content = content)
 }
 
 @Suppress("DEPRECATION")

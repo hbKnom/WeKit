@@ -964,33 +964,10 @@ object ChatToolbar : ClickableFeature(), IResolveDex {
  */
 @Composable
 internal fun MonetInjectedTheme(content: @Composable () -> Unit) {
-    InjectedUiTheme {
-        val night = isSystemInDarkTheme()
-        val tokens = MonetColors.applied.value?.let { MonetColors.tokens(night) }
-        if (tokens == null) {
-            content()
-        } else {
-            MaterialTheme(
-                colorScheme = MaterialTheme.colorScheme.copy(
-                    primary = Color(tokens.primary),
-                    onPrimary = Color(tokens.onPrimary),
-                    primaryContainer = Color(tokens.primaryContainer),
-                    onPrimaryContainer = Color(tokens.onPrimaryContainer),
-                    surface = Color(tokens.surface),
-                    surfaceContainerLow = Color(
-                        MonetColors.blend(tokens.surface, tokens.surfaceContainer, 0.5)
-                    ),
-                    surfaceContainer = Color(tokens.surfaceContainer),
-                    surfaceContainerHigh = Color(tokens.surfaceContainerHigh),
-                    surfaceContainerHighest = Color(tokens.surfaceContainerHigh),
-                    onSurface = Color(tokens.onSurface),
-                    onSurfaceVariant = Color(tokens.onSurfaceVariant),
-                    outline = Color(tokens.outline),
-                ),
-                content = content,
-            )
-        }
-    }
+    // 引擎 token 的覆盖已经收敛到 [dev.ujhhgtg.wekit.ui.utils.theme.SeedResolver.injectedScheme]
+    // 里（所有注入到微信界面的 WeKit UI 都走同一条路），这里只需要用统一的注入主题即可。
+    // 保留这个函数名是为了不动既有的两处调用点。
+    InjectedUiTheme(content = content)
 }
 
 @Composable

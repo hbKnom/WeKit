@@ -108,9 +108,32 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      */
     private const val SCREEN_SNAPSHOT_TTL_MS = 250L
 
+    /**
+     * 失败消息自动重扫的延迟。
+     *
+     * 「每一条文本消息都要被分析」的兜底：失败（超时 / 网络抖 / 刚启动时还没配好 Key）
+     * 之后不再要求用户滚动一下或手点重试 —— 等这么久自动重扫一次，
+     * 重扫会把可见行重新走一遍 `handle` → `submitIfNeeded`。
+     *
+     * **必须大于 [SignalAnalyzer] 的失败冷却**：冷却期内重扫会被 `submit` 挡回来，
+     * 等于白扫一次（旧值 20s < 冷却 30s，正好踩在这个坑上）。
+     */
+    private const val RETRY_SWEEP_DELAY_MS = 35_000L
+
+    /** 一轮重扫之后仍有「失败过又没结论」的可见行时，最多再排这么多次（退避后放弃）。 */
+    private const val MAX_RETRY_SWEEPS = 6
+
     private val main = Handler(Looper.getMainLooper())
     private var installed = false
     private var tickScheduled = false
+    private var retrySweepScheduled = false
+    private var retrySweepAttempts = 0
+
+    /**
+     * 本轮重扫里「失败过、但这次仍没能重新提交」的可见行数（[retrySweep] 用）。
+     * 只在主线程读写。
+     */
+    private var retryBlockedRows = 0
 
     /** 正在等待结果的行（主线程私有），避免对同一行重复 show。 */
     private val awaiting = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
@@ -340,6 +363,8 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     fun uninstall() {
         installed = false
         main.removeCallbacks(tick)
+        main.removeCallbacks(retrySweep)
+        retrySweepScheduled = false
         tickScheduled = false
         awaiting.clear()
         capacityWaiting.clear()
@@ -419,6 +444,30 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             if (!installed) return@post
             submittedAt.remove(input.key)
             fill(input.key)
+            // 这一次没结论（失败/超时/未配置）：安排一次延迟重扫，让这一条有机会自动重来。
+            if (mood == null) scheduleRetrySweep()
+        }
+    }
+
+    /** 失败后的自动重扫（同一时刻只排一次），见 [RETRY_SWEEP_DELAY_MS]。 */
+    private fun scheduleRetrySweep(delayMs: Long = RETRY_SWEEP_DELAY_MS) {
+        if (retrySweepScheduled) return
+        retrySweepScheduled = true
+        main.postDelayed(retrySweep, delayMs)
+    }
+
+    private val retrySweep = Runnable {
+        retrySweepScheduled = false
+        if (!installed || !ModulePrefs.enabled) return@Runnable
+        retryBlockedRows = 0
+        rescan()
+        // 重扫之后还有「失败过又没结论」的行 → 再排一次（退避 35s / 70s / …）。
+        // 没有可分析能力（未配 Key）或已经重试够多次就不再排，避免无声无息地空转。
+        if (retryBlockedRows > 0 && ModulePrefs.canAnalyze && retrySweepAttempts < MAX_RETRY_SWEEPS) {
+            retrySweepAttempts++
+            scheduleRetrySweep(RETRY_SWEEP_DELAY_MS * retrySweepAttempts)
+        } else {
+            retrySweepAttempts = 0
         }
     }
 
@@ -465,8 +514,17 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     private fun submitIfNeeded(key: String, input: AnalysisInput) {
         if (submittedAt.containsKey(key) || MoodStore.isPending(key)) return
         if (MoodStore.get(key) != null) return
-        if (SignalAnalyzer.failure(key) != null) return
-        if (SignalAnalyzer.atCapacity()) return
+        // 失败过的消息**允许**自动重投（节流在 SignalAnalyzer.mayRetryFailed / submit 里）。
+        // 旧实现这里无条件 return，等于「失败一次就永久不再分析这一条」，与用户要求的
+        // 「被选定的聊天每一条文本消息都要被分析」直接冲突。
+        if (SignalAnalyzer.failure(key) != null && !SignalAnalyzer.mayRetryFailed(key)) {
+            retryBlockedRows++
+            return
+        }
+        if (SignalAnalyzer.atCapacity()) {
+            retryBlockedRows++
+            return
+        }
         if (SignalAnalyzer.submit(input) != null) {
             submittedAt.putIfAbsent(key, SystemClock.elapsedRealtime())
         }

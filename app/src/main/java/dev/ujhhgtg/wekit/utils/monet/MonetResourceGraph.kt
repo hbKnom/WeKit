@@ -1,5 +1,6 @@
 package dev.ujhhgtg.wekit.utils.monet
 
+import dev.ujhhgtg.wekit.utils.WeLogger
 import java.io.Serializable
 
 class MonetResourceGraph(
@@ -23,9 +24,27 @@ class MonetResourceGraph(
     }
 
     init {
-        require(byId.size == nodes.size) { "duplicate resource ID" }
-        require(byKey.size == nodes.size) { "duplicate resource key" }
-        require(xmlByOwner.keys.all(byId::containsKey)) { "XML owner is absent from resource table" }
+        // 资源表可能是 base.apk + split + 用户装的 overlay 合并出来的：同一 resourceId 或
+        // 同一 (type,name) 出现两次在真机上完全可能（**不同微信版本尤其如此**）。
+        //
+        // 旧实现在这里 `require(...)`：真机上撞到重复项就直接抛错 → 整次莫奈解析失败、
+        // 一行颜色都注入不了。现在按 `associateBy` 的「后到覆盖先到」去重，只丢弃重复项，
+        // 其余资源照常参与匹配；XML 宿主不在表里也只是那几棵树的引用查不到，不会连带失败。
+        if (byId.size != nodes.size || byKey.size != nodes.size) {
+            WeLogger.w(
+                TAG,
+                "宿主资源表存在重复条目（节点 ${nodes.size}，按 id 去重后 ${byId.size}，" +
+                    "按 key 去重后 ${byKey.size}），已按后到覆盖先到合并",
+            )
+        }
+        val orphanXml = xmlByOwner.keys.count { it !in byId }
+        if (orphanXml > 0) {
+            WeLogger.w(TAG, "有 $orphanXml 棵 XML 的宿主资源不在资源表里，已忽略")
+        }
+    }
+
+    private companion object {
+        const val TAG = "MonetResourceGraph"
     }
 
     fun node(id: Int): MonetResourceNode? = byId[id]

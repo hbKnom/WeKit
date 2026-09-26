@@ -89,14 +89,22 @@ object MonetResourceResolver {
         // 启动图标是可选的：旧实现用 requireNotNull，微信某次改动挪走 drawable/icon
         // 就足以让整次解析失败（用户看到的就是「解析出错」）。缺了就跳过这一张图。
         val splashIconId = graph.node(MonetResourceKey("drawable", "icon"))?.id ?: 0
-        val authored = MonetAssetInjector.plan(
-            resolved = resolved,
-            palette = palette,
-            style = bubbleStyle,
-            multiSceneCorners = multiSceneCorners,
-            splashIconId = splashIconId,
-            slots = slots,
-        )
+        // 可视化资源（气泡/底栏/启动图/主题图标）的编排依赖大量「按布局结构探测」的启发式，
+        // 任何一个角色或锚点缺失都不该带走整次解析 —— 颜色才是莫奈的主干。
+        // 这里再兜一层：编排整体失败就**只注入颜色**（plan 里 colors 照常带上），
+        // 于是「某台机器上编排崩了」最坏的结果是少了气泡圆角，而不是莫奈完全不生效。
+        val authored = runCatching {
+            MonetAssetInjector.plan(
+                resolved = resolved,
+                palette = palette,
+                style = bubbleStyle,
+                multiSceneCorners = multiSceneCorners,
+                splashIconId = splashIconId,
+                slots = slots,
+            )
+        }.onFailure {
+            WeLogger.w(TAG, "可视化资源编排失败，本次只注入颜色（其余照常）", it)
+        }.getOrDefault(MonetOverlayPlan())
         val plan = authored.copy(colors = colors)
         val unresolved = MonetStructureMatcher.roleIds - resolved.keys
         @Suppress("UNUSED_EXPRESSION") palette

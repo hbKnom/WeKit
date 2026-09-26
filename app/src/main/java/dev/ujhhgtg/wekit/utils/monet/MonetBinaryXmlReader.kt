@@ -20,10 +20,11 @@ object MonetBinaryXmlReader {
         MonetXmlElement(
             name = name,
             namespace = uri,
-            attributes = attributes.asSequence().map { attribute ->
-                val valueType = requireNotNull(attribute.valueType) {
-                    "binary XML attribute ${attribute.name} has no value type"
-                }
+            attributes = attributes.asSequence().mapNotNull { attribute ->
+                // 个别属性没有 valueType：旧实现 requireNotNull 抛错 → 整棵 XML 被丢掉
+                // （实机日志里「XML 解析失败 4844 个」有一部分就是这么来的）。
+                // 现在只跳过这一个属性。
+                val valueType = attribute.valueType ?: return@mapNotNull null
                 val value = if (valueType.isReference) {
                     MonetResourceValue.Reference(attribute.data, valueType.name).also {
                         referenceIds += attribute.data
@@ -46,7 +47,8 @@ object MonetBinaryXmlReader {
                 when (child) {
                     is ResXmlElement -> child.toMonetElement(referenceIds)
                     is ResXmlTextNode -> null
-                    else -> error("unsupported binary XML node ${child.javaClass.name}")
+                    // 不认识的节点类型只跳过这一个节点，不再让整棵 XML 解析失败。
+                    else -> null
                 }
             }.toList(),
         )

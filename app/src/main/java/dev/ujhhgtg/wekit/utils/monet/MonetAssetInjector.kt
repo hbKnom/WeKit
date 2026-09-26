@@ -1,5 +1,7 @@
 package dev.ujhhgtg.wekit.utils.monet
 
+import dev.ujhhgtg.wekit.utils.WeLogger
+
 /**
  * Authors the replacement WeChat resources. Every `*Bubbles` / `baseVisuals` / `corners` function
  * produces a list of [DrawableTarget]s that [MonetRuntimePackageWriter] turns into the runtime
@@ -9,6 +11,8 @@ package dev.ujhhgtg.wekit.utils.monet
  * was replaced by runtime injection, but the authored visuals are byte-for-byte the previous ones.
  */
 object MonetAssetInjector {
+
+    private const val TAG = "MonetAssetInjector"
 
     fun baseVisuals(
         resolved: Map<String, MonetResourceNode>,
@@ -215,7 +219,13 @@ object MonetAssetInjector {
         palette: Palette,
         slots: MonetHostTypeSlots = MonetHostTypeSlots.EMPTY,
     ): List<DrawableTarget> {
-        val mipmapTarget = requireNotNull(resolved["launcher.themed.icon"]).binding()
+        // 「拿不到辅助信息 ≠ 功能失败」：主题图标是可选增强，锚点缺失就整块跳过，
+        // 绝不因此让整次解析失败（旧实现 requireNotNull 在此处直接抛 IllegalArgumentException）。
+        val anchor = resolved["launcher.themed.icon"] ?: run {
+            WeLogger.w(TAG, "launcher.themed.icon 未解析，跳过主题图标")
+            return emptyList()
+        }
+        val mipmapTarget = anchor.binding()
         val adaptive = XmlNode(
             "adaptive-icon",
             children = listOf(
@@ -224,10 +234,13 @@ object MonetAssetInjector {
                 XmlNode("monochrome", listOf(android("drawable", ATTR_DRAWABLE, XmlValue.NamedReference("drawable", "wekit_icon_mono")))),
             ),
         )
+        val background = adaptiveIconBinding(resolved, "wekit_icon_bg", 0, slots) ?: return emptyList()
+        val foreground = adaptiveIconBinding(resolved, "wekit_icon_fg", 1, slots) ?: return emptyList()
+        val monochrome = adaptiveIconBinding(resolved, "wekit_icon_mono", 2, slots) ?: return emptyList()
         return listOf(
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_bg", 0, slots), solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_fg", 1, slots), foregroundIcon()),
-            DrawableTarget(adaptiveIconBinding(resolved, "wekit_icon_mono", 2, slots), monochromeIcon()),
+            DrawableTarget(background, solid(0xfff4fbf5.toInt()), solid(palette.surfaceDark)),
+            DrawableTarget(foreground, foregroundIcon()),
+            DrawableTarget(monochrome, monochromeIcon()),
             DrawableTarget(
                 mipmapTarget.copy(qualifiers = listOf("-anydpi-v26")),
                 adaptive,
@@ -242,7 +255,18 @@ object MonetAssetInjector {
         light: XmlNode,
         night: XmlNode,
     ) {
-        add(DrawableTarget(requireNotNull(resolved[role]) { role }.binding(), light, night))
+        // 这一个角色没解析出来**只少这一张图**，绝不让整包作废。
+        //
+        // 旧实现是 `requireNotNull(resolved[role]) { role }`：实机日志（2026-09-26）里
+        // `resource analysis failed during RESOLVING_ROLES / IllegalArgumentException:
+        // launcher.splash.background` 就是它 —— 同一轮里 44 个角色未解析，
+        // 只要其中任何一个在被要求注入的名单里，整次解析就归零、莫奈完全不生效。
+        val node = resolved[role]
+        if (node == null) {
+            WeLogger.w(TAG, "角色 $role 未解析，跳过该视觉项")
+            return
+        }
+        add(DrawableTarget(node.binding(), light, night))
     }
 
     /**
@@ -259,8 +283,8 @@ object MonetAssetInjector {
         name: String,
         sequence: Int,
         slots: MonetHostTypeSlots,
-    ): MonetBinding {
-        val anchor = requireNotNull(resolved["launcher.themed.icon"]).binding()
+    ): MonetBinding? {
+        val anchor = resolved["launcher.themed.icon"]?.binding() ?: return null
         return anchor.copy(
             id = slots.syntheticId("drawable", sequence, fallbackTypeId = (anchor.id ushr 16) and 0xff),
             name = name,

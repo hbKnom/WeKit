@@ -171,7 +171,14 @@ object MonetStructureMatcher {
             }
         }
         var matched = 0
-        val noticeCardColors = graph.noticeCardColors()
+        // 公告卡片（notice card）的颜色只在部分版本的布局里存在，探测里有 `single()` /
+        // `require` 这类硬断言。旧实现把它放在**逐角色的 runCatching 之外**，于是
+        // 「这台机器的布局和基线对不上」时抛出的 NoSuchElementException("List is empty")
+        // 会一路冒到顶层 —— 实机看到的正是「解析失败：List is empty」，整次解析白跑、莫奈全灭。
+        // 现在它和逐角色一样只降级：探测不出来就只让这两个角色缺席。
+        val noticeCardColors = runCatching { graph.noticeCardColors() }
+            .onFailure { WeLogger.w(TAG, "公告卡片颜色特征不可用，相关角色跳过", it) }
+            .getOrDefault(emptySet<Int>() to emptySet<Int>())
         val initialCandidates = MONET_RULES.associateWith { rule ->
             onProgress(matched, MONET_RULES.size, "匹配角色候选：${rule.id}")
             // Reuse the type-indexed node list built for the evidence scan instead of rebuilding it
@@ -200,9 +207,10 @@ object MonetStructureMatcher {
             val semanticCandidates: Set<Int>? = when (rule.id) {
                 // Older search bars share the global surface color. Only overlay a dedicated tint;
                 // the shared color remains owned by slot-40, whose night palette is different.
-                SEARCH_BAR_BACKGROUND -> graph.actionBarSearchBackgroundColors().also {
-                    require(it.isNotEmpty()) { "search bar background tint is missing" }
-                } - idsByToken["usage:drawable:selector/item/rotate/rotate/shape/solid:16843173:color"].orEmpty()
+                // 探测为空就是「该角色缺席」，不再 require 抛错（空集与抛错的最终效果一样，
+                // 但抛错会把这一条错误留在日志里误导排查）。
+                SEARCH_BAR_BACKGROUND -> graph.actionBarSearchBackgroundColors() -
+                    idsByToken["usage:drawable:selector/item/rotate/rotate/shape/solid:16843173:color"].orEmpty()
                 VOICE_INPUT_BACKGROUND -> graph.voiceInputBackgroundColors()
                 THREE_STATE_STROKE -> graph.threeStateSelectorDefaultStrokeColors()
                 FINDER_LIVE_TAB -> colorCandidates?.filterNotTo(linkedSetOf()) { graph.isVipBadgeColor(it) }
@@ -707,12 +715,11 @@ private fun MonetResourceGraph.voiceInputBackgroundColors(): Set<Int> = buildSet
                 element.children.any { it.name == "TextView" && it.literal("textSize") == 4353L &&
                     it.literal("textStyle") == 1L }
         }.forEach { button ->
-            val color = requireNotNull(button.reference("background")?.let(this@voiceInputBackgroundColors::node)) {
-                "voice input button background is missing"
-            }
-            require(color.key.type == "color" && color.defaultLiteral() == 0xfff2f2f2L) {
-                "unexpected voice input button background: ${color.key}"
-            }
+            // 这一版布局里没有这个按钮 / 颜色对不上 → 只跳过这个元素。
+            // 旧实现在这里 require 抛错，把「某个版本没有这块 UI」升级成「整次解析失败」。
+            val color = button.reference("background")?.let(this@voiceInputBackgroundColors::node)
+                ?: return@forEach
+            if (color.key.type != "color" || color.defaultLiteral() != 0xfff2f2f2L) return@forEach
             add(color.id)
         }
     }
@@ -727,14 +734,16 @@ private fun MonetResourceGraph.ecsFeedbackBackgroundColors(): Set<Int> = buildSe
         element.name == "TextView" && element.literal("layout_width") == 11265L &&
             element.literal("layout_height") == 6401L
     }.forEach { button ->
-        val drawable = requireNotNull(button.reference("background")) { "ECS feedback background is missing" }
-        val shape = xmlTrees(drawable).single()
-        require(shape.name == "shape" && shape.descendant("corners")?.literal("radius") == 1537L)
-        val color = requireNotNull(shape.descendant("solid")?.reference("color")?.let(this@ecsFeedbackBackgroundColors::node))
-        require(color.key.type == "color" && color.defaultLiteral() == 0x26000000L)
+        val drawable = button.reference("background") ?: return@forEach
+        val shape = xmlTrees(drawable).singleOrNull() ?: return@forEach
+        if (shape.name != "shape" || shape.descendant("corners")?.literal("radius") != 1537L) return@forEach
+        val color = shape.descendant("solid")?.reference("color")
+            ?.let(this@ecsFeedbackBackgroundColors::node) ?: return@forEach
+        if (color.key.type != "color" || color.defaultLiteral() != 0x26000000L) return@forEach
         add(color.id)
     }
-    require(layouts.isEmpty() || isNotEmpty()) { "ECS pages exist but their feedback background is missing" }
+    // 旧实现最后还有一句 `require(layouts.isEmpty() || isNotEmpty())`：只要这台机器上
+    // 存在 ECS 页面但基线里找不到反馈底，整次解析就失败。现在没有就没有，让角色缺席即可。
 }
 
 /** This notice row and its dedicated colors are absent from the inspected 8.0.65/8.0.67 layouts. */
@@ -749,14 +758,19 @@ private fun MonetResourceGraph.noticeCardColors(): Pair<Set<Int>, Set<Int>> {
                 it.reference("src")?.let(::node)?.key == MonetResourceKey("raw", "icons_filled_arrow")
             }
         }.forEach { row ->
-            val text = row.children.single { it.name == "TextView" && it.literal("maxLines") == 1L &&
-                it.literal("singleLine")?.let { value -> value != 0L } == true }
-            val foreground = requireNotNull(text.reference("textColor")?.let(::node))
-            val shape = xmlTrees(requireNotNull(row.reference("background"))).single()
-            require(shape.name == "shape" && shape.descendant("corners")?.literal("radius") == 1025L)
-            val background = requireNotNull(shape.descendant("solid")?.reference("color")?.let(::node))
-            require(background.key.type == "color" && background.defaultLiteral() == 0xfff7f7f7L)
-            require(foreground.key.type == "color" && foreground.defaultLiteral() == 0x8c000000L)
+            // 每一处探测失败都只跳过这一行（旧实现全是 `single()` / `requireNotNull`，
+            // 任何一处对不上就把整次解析打断）。
+            val text = row.children.singleOrNull {
+                it.name == "TextView" && it.literal("maxLines") == 1L &&
+                    it.literal("singleLine")?.let { value -> value != 0L } == true
+            } ?: return@forEach
+            val foreground = text.reference("textColor")?.let(::node) ?: return@forEach
+            val shape = xmlTrees(row.reference("background") ?: return@forEach).singleOrNull()
+                ?: return@forEach
+            if (shape.name != "shape" || shape.descendant("corners")?.literal("radius") != 1025L) return@forEach
+            val background = shape.descendant("solid")?.reference("color")?.let(::node) ?: return@forEach
+            if (background.key.type != "color" || background.defaultLiteral() != 0xfff7f7f7L) return@forEach
+            if (foreground.key.type != "color" || foreground.defaultLiteral() != 0x8c000000L) return@forEach
             backgrounds += background.id
             foregrounds += foreground.id
         }
