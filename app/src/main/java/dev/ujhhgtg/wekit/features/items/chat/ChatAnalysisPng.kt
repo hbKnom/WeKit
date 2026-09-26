@@ -241,6 +241,12 @@ object ChatAnalysisPng {
     private const val KPI_PAD_H = 34
     private const val KPI_PAD_V = 34
     private const val KPI_COL_GAP = 24
+
+    /**
+     * 第 17 轮：KPI 单元左侧那条归属色细条的宽度（比卡片的 CARD_ACCENT_W 更细）。
+     * 只用于绘制，不参与任何几何计算，因此不进 init 的静态门禁。
+     */
+    private const val KPI_STRIP_W = 8f
     private const val KPI_ROW_GAP = 28
     private const val KPI_LABEL_ROW_H = 46
     private const val KPI_LABEL_VALUE_GAP = 12
@@ -444,6 +450,16 @@ object ChatAnalysisPng {
     private const val COLOR_META = 0xFF7C8CA0.toInt()
     private const val COLOR_ACCENT = 0xFF2E7DD1.toInt()
     private const val COLOR_ACCENT2 = 0xFF12B3A8.toInt()
+
+    /**
+     * 第 17 轮新增的两个分节色（紫 / 橙）。
+     *
+     * 老版本整本统计报告只有一种蓝："几十个 KPI 网格连成一整片"，分节只能靠标题认。
+     * 加这两个色之后，分节按 [sectionAccentOf] 循环取色（与弹窗同一套落点），
+     * 导出图与弹窗一眼对得上。亮度与既有两色对齐（白底上都清晰），不参与任何几何计算。
+     */
+    private const val COLOR_ACCENT3 = 0xFF7A5AF8.toInt()
+    private const val COLOR_ACCENT4 = 0xFFE0603A.toInt()
     private const val COLOR_SUCCESS = 0xFF1F9D55.toInt()
     private const val COLOR_WARN = 0xFFD89A16.toInt()
     private const val COLOR_DANGER = 0xFFD64545.toInt()
@@ -1195,6 +1211,7 @@ object ChatAnalysisPng {
         accent: Int,
         startNo: Int,
         bodyP: Paint,
+        tintBySection: Boolean = false,
     ): List<Item.Card> {
         val cards = ArrayList<Item.Card>()
         var no = startNo
@@ -1211,7 +1228,11 @@ object ChatAnalysisPng {
             val lastBottom = rows.lastOrNull()?.let { it.top + it.height } ?: 0
             val height = maxOf(CARD_MIN_H, CARD_PAD_V * 2 + headerH + lastBottom)
             val index = if (title != null) ++no else 0
-            cards.add(Item.Card(title, index, accent, rows, height))
+            // 第 17 轮：本地统计的分节按标题取归属色（取不到就沿用分组色，行为不变）；
+            // AI 报告不参与取色 —— 它整组共用分组色，这是它的"身份"，不能被标题打散。
+            val cardAccent =
+                if (tintBySection && title != null) sectionAccentOf(title) ?: accent else accent
+            cards.add(Item.Card(title, index, cardAccent, rows, height))
         }
 
         for (u in units) {
@@ -1226,10 +1247,36 @@ object ChatAnalysisPng {
         return cards
     }
 
+    /**
+     * 第 17 轮：分节归属色。
+     *
+     * 与弹窗 ChatAnalysisUi.sectionAccent **同一套落点**（同族信息不同色、与相邻章节错开），
+     * 只是把弹窗的三个主题色位映射成导出图的两个（后为四个）固定色：
+     * ToneAccent→COLOR_ACCENT、ToneAlt→COLOR_ACCENT2、ToneThird→COLOR_ACCENT3。
+     * 第 17 轮的六个新段位也按同一条规则接上去（老报告末段是【作息画像】，所以从蓝色接）。
+     *
+     * 取不到（AI 报告的自由标题、空标题）返回 null，由调用方回退到分组色。
+     */
+    private fun sectionAccentOf(title: String): Int? = when {
+        title.contains("载体偏好") || title.contains("高频词") || title.contains("活跃日历") -> COLOR_ACCENT2
+        title.contains("活跃频次") || title.contains("情绪指纹") || title.contains("互动节奏") -> COLOR_ACCENT3
+        title.contains("核心指标") || title.contains("发言排行") || title.contains("昼夜结构") -> COLOR_ACCENT
+        title.contains("消息长度") || title.contains("口头禅") -> COLOR_ACCENT2
+        title.contains("标点与语气") || title.contains("沉默与主动性") -> COLOR_ACCENT3
+        title.contains("互动平衡") || title.contains("话题切换") -> COLOR_ACCENT
+        title.contains("活跃热力") || title.contains("媒体与表情") -> COLOR_ACCENT3
+        title.contains("回复延迟") || title.contains("话题关键词") -> COLOR_ACCENT2
+        title.contains("连击与打断") || title.contains("@与互动") -> COLOR_ACCENT
+        title.contains("活跃集中度") || title.contains("特殊消息") -> COLOR_ACCENT
+        title.contains("复读") || title.contains("昼夜话量") -> COLOR_ACCENT2
+        title.contains("提问与回应") || title.contains("连续活跃") -> COLOR_ACCENT3
+        else -> null
+    }
+
     private fun buildItems(stats: String, ai: String, bodyP: Paint): List<Item> {
         val items = ArrayList<Item>()
         var nextNo = 1
-        val statsCards = buildCards(groupKpis(parseBlocks(stats)), COLOR_ACCENT, nextNo, bodyP)
+        val statsCards = buildCards(groupKpis(parseBlocks(stats)), COLOR_ACCENT, nextNo, bodyP, true)
         nextNo += statsCards.count { it.title != null }
         val aiCards = buildCards(groupKpis(parseBlocks(ai)), COLOR_ACCENT2, nextNo, bodyP)
 
@@ -1895,6 +1942,13 @@ object ChatAnalysisPng {
         cv.drawRoundRect(
             rect, 26f, 26f,
             shapePaint(blendOnWhite(tint, 0x3A), stroke = true, strokeWidth = 2f),
+        )
+        // 第 17 轮：左侧归属色细条（与弹窗 KPI 卡片的左条同款）。
+        // 画在单元内部左侧的 34px 内边距里（KPI_PAD_H），不碰任何文字、不改任何几何。
+        cv.drawRoundRect(
+            RectF(rect.left, rect.top + 12f, rect.left + KPI_STRIP_W, rect.bottom - 12f),
+            KPI_STRIP_W / 2f, KPI_STRIP_W / 2f,
+            shapePaint(blendOnWhite(tint, 0x5A)),
         )
 
         val innerLeft = (left + KPI_PAD_H).toFloat()

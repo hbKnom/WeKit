@@ -524,6 +524,17 @@ internal object ChatAnalysisUi {
         Row(
             modifier = modifier
                 .fillMaxWidth()
+                .drawWithContent {
+                    drawContent()
+                    // 标题带下沿一条极淡的归属色细线（画在已有的 4dp 底部内边距里，
+                    // 不占任何布局）：与 PNG 的"渐变下划线 + 细分隔线"同一视觉语言。
+                    val hair = 1.5f * density
+                    drawRect(
+                        color = accent.copy(alpha = 0.16f),
+                        topLeft = Offset(0f, size.height - hair),
+                        size = Size(size.width, hair),
+                    )
+                }
                 .padding(bottom = Space4),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1051,6 +1062,8 @@ internal object ChatAnalysisUi {
         val modelReady = selectedModelName.isNotBlank()
         // 第 16 轮：扩展维度包的开关状态（自己是唯一写者，改动即时落盘，下一次分析生效）
         var extraDimsOn by remember { mutableStateOf(ChatAnalysisExtraDims.isEnabled()) }
+        // 第 17 轮：第二个扩展维度包的开关状态（同一套纪律：即时落盘、下一次分析生效）
+        var dims17On by remember { mutableStateOf(ChatAnalysisRound17Dims.isEnabled()) }
 
         BudgetedDialog(
             title = {
@@ -1227,6 +1240,56 @@ internal object ChatAnalysisUi {
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_reply_fetch))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_topic_period))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_rhythm))
+                            }
+                        }
+                    }
+                }
+                // 第 17 轮：第二个扩展维度包（同样纯追加、默认开启；关掉就回到第 16 轮的篇幅）
+                item(key = "dims17") {
+                    GroupCard(
+                        title = stringResource(R.string.chat_analysis_dims17_card),
+                        index = 5,
+                        badge = stringResource(
+                            R.string.chat_analysis_dims17_badge,
+                            ChatAnalysisRound17Dims.DIM_COUNT,
+                        ),
+                    ) {
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Star,
+                            iconPlaceholder = true,
+                            title = stringResource(R.string.chat_analysis_dims17_title),
+                            description = stringResource(R.string.chat_analysis_dims17_desc),
+                            checked = dims17On,
+                            onCheckedChange = { on ->
+                                dims17On = on
+                                ChatAnalysisRound17Dims.setEnabled(on)
+                            },
+                        )
+                        InCardDivider()
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space16, vertical = Space12)
+                        ) {
+                            Text(
+                                stringResource(R.string.chat_analysis_dims17_list_title),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ToneText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(Space8))
+                            FlowRow(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                                verticalArrangement = Arrangement.spacedBy(ChipGap),
+                            ) {
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_concentration))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_repeat))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_ask_reply))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_special_msg))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_streak))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_daynight_words))
                             }
                         }
                     }
@@ -1966,6 +2029,12 @@ internal object ChatAnalysisUi {
         title.contains("活跃热力") || title.contains("媒体与表情") -> ToneThird
         title.contains("回复延迟") || title.contains("话题关键词") -> ToneAlt
         title.contains("连击与打断") || title.contains("@与互动") -> ToneAccent
+        // 第 17 轮新增的六个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
+        // 老报告排在最后的是【作息画像】= ToneThird，所以集中度从 ToneAccent 接上）。
+        // 弹窗与 PNG 导出（ChatAnalysisPng.sectionAccentOf）用同一套落点，两边颜色对得上。
+        title.contains("活跃集中度") || title.contains("特殊消息") -> ToneAccent
+        title.contains("复读") || title.contains("昼夜话量") -> ToneAlt
+        title.contains("提问与回应") || title.contains("连续活跃") -> ToneThird
         else -> fallback
     }
 
@@ -2028,6 +2097,18 @@ internal object ChatAnalysisUi {
                 Column(
                     Modifier
                         .fillMaxWidth()
+                        .drawWithContent {
+                            // 顶部一层极淡的归属色渐隐带（只画，不改任何内边距）：
+                            // 卡片因此有了"底色倾向"，与 PNG 卡片的白→浅强调色渐变同源。
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    listOf(accent.copy(alpha = 0.07f), Color.Transparent),
+                                    startY = 0f,
+                                    endY = 56f * density,
+                                )
+                            )
+                            drawContent()
+                        }
                         .padding(CardPad)
                 ) {
                     if (title != null) {
@@ -2339,6 +2420,15 @@ internal object ChatAnalysisUi {
             modifier
                 .clip(shape)
                 .background(accent.copy(alpha = 0.08f))
+                .drawWithContent {
+                    // 左侧 3dp 归属色竖条（只画，不改内边距）：
+                    // KPI 卡片也带上自己那一节的颜色，一张网格里能看出分组。
+                    drawRect(
+                        color = accent.copy(alpha = 0.55f),
+                        size = Size(3.dp.toPx(), size.height),
+                    )
+                    drawContent()
+                }
                 .padding(horizontal = Space12, vertical = Space10)
         ) {
             Column(

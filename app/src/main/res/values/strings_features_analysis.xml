@@ -15,4 +15,17 @@
     <string name="chat_analysis_dim_reply_fetch">Who gets replied to</string>
     <string name="chat_analysis_dim_topic_period">Topic time-of-day</string>
     <string name="chat_analysis_dim_rhythm">Daily rhythm</string>
+    <!-- 第 17 轮：观感美化 + 六个新维度（同样只追加，老 key 一字未改） -->
+    <string name="chat_analysis_dims17_card">Extended analysis II</string>
+    <string name="chat_analysis_dims17_badge">%1$d new</string>
+    <string name="chat_analysis_dims17_title">Extended dimension pack II</string>
+    <string name="chat_analysis_dims17_desc">Appends 6 more dimensions: hourly concentration, repeats &amp; copycats, questions &amp; replies, special-message radar, active streaks and day/night message length. All of them are computed inside the existing scan, with no extra database read.</string>
+    <string name="chat_analysis_dims17_list_title">Dimensions in this pack</string>
+
+    <string name="chat_analysis_dim_concentration">Hourly concentration</string>
+    <string name="chat_analysis_dim_repeat">Repeats &amp; copycats</string>
+    <string name="chat_analysis_dim_ask_reply">Questions &amp; replies</string>
+    <string name="chat_analysis_dim_special_msg">Special-message radar</string>
+    <string name="chat_analysis_dim_streak">Active streaks</string>
+    <string name="chat_analysis_dim_daynight_words">Day/night length</string>
 </resources>

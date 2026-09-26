@@ -15,4 +15,17 @@
     <string name="chat_analysis_dim_reply_fetch">被接話榜</string>
     <string name="chat_analysis_dim_topic_period">話題時段偏好</string>
     <string name="chat_analysis_dim_rhythm">作息畫像</string>
+    <!-- 第 17 輪：觀感美化 + 六個新維度（同樣只追加，舊 key 一字未改） -->
+    <string name="chat_analysis_dims17_card">擴展分析維度 II</string>
+    <string name="chat_analysis_dims17_badge">%1$d 項新增</string>
+    <string name="chat_analysis_dims17_title">擴展維度包 II</string>
+    <string name="chat_analysis_dims17_desc">在報告末尾再追加 6 個維度：活躍集中度、複讀與重複、提問與回應、特殊訊息雷達、連續活躍、晝夜話量。全部在原來那一次掃描裡算完，不多讀一條訊息。關掉即回到上一版的篇幅。</string>
+    <string name="chat_analysis_dims17_list_title">本包包含的維度</string>
+
+    <string name="chat_analysis_dim_concentration">活躍集中度</string>
+    <string name="chat_analysis_dim_repeat">複讀與重複</string>
+    <string name="chat_analysis_dim_ask_reply">提問與回應</string>
+    <string name="chat_analysis_dim_special_msg">特殊訊息雷達</string>
+    <string name="chat_analysis_dim_streak">連續活躍</string>
+    <string name="chat_analysis_dim_daynight_words">晝夜話量</string>
 </resources>

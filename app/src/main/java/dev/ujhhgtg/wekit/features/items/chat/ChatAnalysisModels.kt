@@ -163,3 +163,25 @@ object ChatAnalysisExtraDims {
         runCatching { WePrefs.putBool(KEY_EXTRA_DIMS, on) }
     }
 }
+
+/**
+ * 第 17 轮「观感 + 维度扩展」开关。
+ *
+ * 第 17 轮往报告末尾**再追加**六个纯计算维度（活跃集中度 / 复读与重复 / 提问与回应 /
+ * 特殊消息雷达 / 连续活跃 / 昼夜话量）。与第 16 轮同一套纪律：只在末尾追加，
+ * 老段落的文本一字未改，所以默认开启不会改变任何既有解析结果；关掉就退回第 16 轮的篇幅。
+ *
+ * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
+ */
+object ChatAnalysisRound17Dims {
+    private const val KEY_DIMS17 = "chat_analysis_dims_v17"
+
+    /** 第 17 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
+    const val DIM_COUNT = 6
+
+    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_DIMS17, true) }.getOrDefault(true)
+
+    fun setEnabled(on: Boolean) {
+        runCatching { WePrefs.putBool(KEY_DIMS17, on) }
+    }
+}

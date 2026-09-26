@@ -133,6 +133,25 @@ object ChatAnalysisEngine {
     }
 
     /**
+     * 第 17 轮：长句口径（>20 字）。
+     *
+     * 与【废话程度鉴定】的「5 字以下 / 5-20 / 20-50」分档上界逐字一致 ——
+     * 两边若用不同的分界，报告里会出现"长句占比 30% 但废话率 0%"这种自相矛盾的读数。
+     */
+    private const val LONG_BODY_MIN = 20
+
+    /**
+     * 第 17 轮：提问被算作"有人接"的宽限窗口（10 分钟）。
+     *
+     * 与【回应速度画像】的 10 分档同源：超过 10 分钟才来的下一句，更像是新话题，
+     * 而不是对上一个疑问句的回答。
+     */
+    private const val ASK_WINDOW_MS = 600_000L
+
+    /** 第 17 轮：复读金句在报告里最多保留的原文字数（超长正文只留开头，避免撞上摘录上限） */
+    private const val REPEAT_SAMPLE_MAX = 24
+
+    /**
      * 第 15 轮：话题词表（固定 28 个，**不随消息内容增长**）。
      *
      * 为什么不再跑一遍分词：分词结果会随语料无限膨胀（大群几十万条能产出十几万 token），
@@ -334,6 +353,19 @@ object ChatAnalysisEngine {
                 if (minuteOfDay > ex.latestMinute) ex.latestMinute = minuteOfDay
                 val dayKey = hc.get(Calendar.YEAR) * 1000 + hc.get(Calendar.DAY_OF_YEAR)
                 if (dayKey != ex.curDayKey) {
+                    // ---- 第 17 轮：连续活跃天数（只在日期切换时算一次，纯整数比较）----
+                    if (ex.prevDayKey > 0) {
+                        if (isNextDay(ex.prevDayKey, dayKey)) {
+                            ex.dayRun++
+                        } else {
+                            ex.dayBreak++
+                            ex.dayRun = 1
+                        }
+                    } else {
+                        ex.dayRun = 1
+                    }
+                    ex.prevDayKey = dayKey
+                    if (ex.dayRun > ex.dayRunMax) ex.dayRunMax = ex.dayRun
                     // 跨天：收尾上一天（把它的活跃跨度并进日画像），再开新的一天
                     closeDay(ex)
                     ex.curDayKey = dayKey
@@ -490,6 +522,16 @@ object ChatAnalysisEngine {
                     // ---- 第 16 轮：我的文字消息数（被接话率的分母）与深夜/白天文字基数 ----
                     if (senderKey == "我") ex.myTexts++
                     if (night) ex.nightText++ else ex.dayText++
+                    // ---- 第 17 轮：昼夜话量 / 复读 / 提问与回应（同一次扫描内增量，零额外遍历）----
+                    if (night) {
+                        ex.nightChars += body.length
+                        if (body.length > LONG_BODY_MIN) ex.nightLong++
+                    } else {
+                        ex.dayChars += body.length
+                        if (body.length > LONG_BODY_MIN) ex.dayLong++
+                    }
+                    scanRepeat(ex, senderKey, body)
+                    scanQuestion(ex, senderKey, body, lastReplyGap)
                     scanPunctuation(body, ex)
                     if (body.length <= CLICHE_BODY_MAX) scanCliches(body, ex)
                     if (body.length <= TOPIC_BODY_MAX) scanTopics(body, ex, night)
@@ -794,6 +836,46 @@ object ChatAnalysisEngine {
         var topicDayMsgs = 0
         var nightText = 0
         var dayText = 0
+
+        // ---- 第 17 轮：六个新维度的累计量（同样是标量与"只看上一条"的短状态）----
+
+        /** 复读：正文与上一条逐字相同、且换了人的次数 */
+        var repeatMsgs = 0
+
+        /** 复读当前链长与最长链长（连续命中多少次） */
+        var repeatChain = 0
+        var repeatChainMax = 0
+
+        /** 复读金句：第一条被原样复述过的正文（截断到 [REPEAT_SAMPLE_MAX] 字） */
+        var repeatSample = ""
+
+        /** 上一条文字消息的正文与发送者（复读判定只需要"上一条"，不留任何历史） */
+        var prevBody = ""
+        var prevBodyFrom = ""
+
+        /** 提问与回应：提问条数 / 被回应条数 / 自己追问条数 */
+        var qAsks = 0
+        var qAnswered = 0
+        var qSelfFollow = 0
+
+        /** 被回应提问的等待时长之和与条数（平均等待的分子 / 分母） */
+        var waitSum = 0L
+        var waitCount = 0
+
+        /** 未决提问的提问人（空串 = 当前没有未决提问；只留一条，零集合） */
+        var pendingAskFrom = ""
+
+        /** 连续活跃：上一个「年 × 1000 + 年内第几天」、当前连击、最长连击、断档次数 */
+        var prevDayKey = 0
+        var dayRun = 0
+        var dayRunMax = 0
+        var dayBreak = 0
+
+        /** 昼夜话量：深夜 / 白天的纯文字字数与长句（> [LONG_BODY_MIN] 字）条数 */
+        var nightChars = 0L
+        var dayChars = 0L
+        var nightLong = 0
+        var dayLong = 0
     }
 
     // ---------------- 本地统计报告（口径与脚本一致） ----------------
@@ -977,6 +1059,19 @@ object ChatAnalysisEngine {
             nickCache = nickCache,
             typeCount = typeCount,
         )
+
+        // 第 17 轮扩展的六个新维度，同样**只追加在最后**：老段的顺序与文本一字未改，
+        // 因此关掉开关就完全退回第 16 轮的篇幅，开着也不会改变任何既有解析结果。
+        if (ChatAnalysisRound17Dims.isEnabled()) {
+            appendRound17Sections(
+                r = r,
+                ex = extra,
+                textN = textN,
+                totalAll = totalAll,
+                hourDist = hourDist,
+                typeCount = typeCount,
+            )
+        }
 
         return r.toString()
     }
@@ -1579,6 +1674,196 @@ object ChatAnalysisEngine {
         ).append("\n")
     }
 
+    // ---------------- 第 17 轮新增：六个扩展维度的报告段 ----------------
+
+    /**
+     * 追加第 17 轮的六个维度：活跃集中度 / 复读与重复 / 提问与回应 /
+     * 特殊消息雷达 / 连续活跃 / 昼夜话量。
+     *
+     * 这六项同样**只从已有数据算**：24 格小时直方图、类型计数表，以及第 17 轮在
+     * [ExtraStats] 里新加的那几个标量（复读 / 提问 / 连续天数 / 昼夜字数）。
+     * 没有新查询、没有新存储、没有第二遍遍历消息。
+     *
+     * 排版语法与第 14/15/16 轮**完全同一套**（两侧的通用解析器不认识新语法，这里不发明写法）：
+     *  - `键：值` 一行一个指标，键 ≤ 20 字、值 ≤ 18 字 → 进 KPI 网格；
+     *  - `标签 数值 ████` → 分布图（24 格小时直方图的标签含数字 → 柱状图）；
+     *  - 结论句与口径说明一律不带全角冒号，免得被误判成指标行。
+     */
+    private fun appendRound17Sections(
+        r: StringBuilder,
+        ex: ExtraStats,
+        textN: Int,
+        totalAll: Int,
+        hourDist: IntArray,
+        typeCount: Map<String, Int>,
+    ) {
+        // ── 19) 活跃集中度 ──────────────────────────────────────────
+        r.append("\n【活跃集中度】\n")
+        if (totalAll > 0) {
+            // 最忙的三个小时：24 格上跑三趟线性扫描（没有排序、没有中间集合）
+            val picked = IntArray(3) { -1 }
+            for (k in 0 until 3) {
+                var best = -1
+                for (h in 0 until 24) {
+                    if (hourDist[h] <= 0) continue
+                    var dup = false
+                    for (p in 0 until k) {
+                        if (picked[p] == h) dup = true
+                    }
+                    if (dup) continue
+                    if (best < 0 || hourDist[h] > hourDist[best]) best = h
+                }
+                if (best < 0) break
+                picked[k] = best
+            }
+            var topSum = 0
+            val topList = mutableListOf<String>()
+            for (p in 0 until 3) {
+                val h = picked[p]
+                if (h < 0) continue
+                topSum += hourDist[h]
+                topList.add(h.toString())
+            }
+            r.append("最忙三小时：").append(topList.joinToString(",")).append(" 点\n")
+            r.append("三小时占比：").append(pct(topSum, totalAll)).append("%\n")
+            r.append("活跃小时数：").append(ex.activeHours).append(" 个\n")
+            r.append("冷清小时数：").append(24 - ex.activeHours).append(" 个\n")
+            var hMax = 0
+            for (h in 0 until 24) {
+                if (hourDist[h] > hMax) hMax = hourDist[h]
+            }
+            for (h in 0 until 24) {
+                r.append(h).append("时 ").append(hourDist[h]).append(" ")
+                    .append(bar(hourDist[h], hMax, 16)).append("\n")
+            }
+            r.append("集中度点评 ").append(
+                when {
+                    pct(topSum, totalAll) >= 50 -> "越聊越集中 一半的话都挤在三个小时里"
+                    ex.activeHours <= 8 -> "窗口很窄 只在固定的几个小时里出现"
+                    else -> "分布均匀 一天里随时都可能说话"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可统计的消息\n")
+        }
+
+        // ── 20) 复读与重复 ──────────────────────────────────────────
+        r.append("\n【复读与重复】\n")
+        if (textN > 0) {
+            r.append("复读次数：").append(ex.repeatMsgs).append(" 次\n")
+            r.append("复读率：").append(pct(ex.repeatMsgs, textN)).append("%\n")
+            r.append("最长复读链：").append(ex.repeatChainMax).append(" 连\n")
+            if (ex.repeatSample.isNotEmpty()) {
+                r.append("复读金句 ").append(excerpt(ex.repeatSample)).append("\n")
+            }
+            r.append("复读点评 ").append(
+                when {
+                    ex.repeatMsgs == 0 -> "零复读 各说各的，没有一句被原样复述"
+                    ex.repeatChainMax >= 5 -> "复读机开动 同一句话被连着刷了五条以上"
+                    pct(ex.repeatMsgs, textN) >= 8 -> "复读成风 隔十几条就有人接上同一句"
+                    else -> "偶尔撞句 基本是巧合"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 21) 提问与回应 ──────────────────────────────────────────
+        r.append("\n【提问与回应】\n")
+        if (textN > 0) {
+            val answered = pct(ex.qAnswered, ex.qAsks)
+            r.append("提问条数：").append(ex.qAsks).append(" 条\n")
+            r.append("被回应条数：").append(ex.qAnswered).append(" 条\n")
+            r.append("回应率：").append(answered).append("%\n")
+            if (ex.waitCount > 0) {
+                r.append("平均等待：").append(humanDuration(ex.waitSum / ex.waitCount)).append("\n")
+            }
+            r.append("自己追问：").append(ex.qSelfFollow).append(" 次\n")
+            r.append("提问点评 ").append(
+                when {
+                    ex.qAsks == 0 -> "全程没有疑问句 一句都没问出口"
+                    answered >= 80 -> "有问必答 问出去的基本都有人接"
+                    answered <= 30 -> "问得多答得少 疑问句常常没人接"
+                    else -> "问与答基本对得上"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 22) 特殊消息雷达 ────────────────────────────────────────
+        r.append("\n【特殊消息雷达】\n")
+        if (totalAll > 0) {
+            val transfer = typeCount["转账"] ?: 0
+            val redPacket = typeCount["红包"] ?: 0
+            val location = typeCount["位置"] ?: 0
+            val recall = typeCount["撤回"] ?: 0
+            val system = typeCount["系统"] ?: 0
+            r.append("转账条数：").append(transfer).append(" 条\n")
+            r.append("红包条数：").append(redPacket).append(" 条\n")
+            r.append("位置条数：").append(location).append(" 条\n")
+            r.append("撤回条数：").append(recall).append(" 条\n")
+            r.append("系统消息：").append(system).append(" 条\n")
+            r.append("特殊占比：")
+                .append(pct(transfer + redPacket + location + recall, totalAll)).append("%\n")
+            r.append("雷达点评 ").append(
+                when {
+                    transfer + redPacket > 0 && recall > 0 -> "有钱也有撤回 红包转账和收回消息都在"
+                    transfer + redPacket > 0 -> "有红包转账来往 关系不算清淡"
+                    recall > 0 -> "有人撤回消息 说出口又收回去"
+                    else -> "纯聊天窗口 没有红包转账，也没人撤回"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可统计的消息\n")
+        }
+
+        // ── 23) 连续活跃 ────────────────────────────────────────────
+        r.append("\n【连续活跃】\n")
+        if (ex.activeDays > 0) {
+            r.append("最长连续：").append(ex.dayRunMax).append(" 天\n")
+            r.append("当前连续：").append(ex.dayRun).append(" 天\n")
+            r.append("断档次数：").append(ex.dayBreak).append(" 次\n")
+            r.append("覆盖天数：").append(ex.activeDays).append(" 天\n")
+            r.append("连续点评 ").append(
+                when {
+                    ex.dayBreak == 0 -> "全程连续 每一条时间线上都有话"
+                    ex.dayRunMax >= 14 -> "半个月不断线 这是习惯而不是聊天"
+                    ex.dayRunMax <= 2 -> "来一阵走一阵 基本没有连着聊的日子"
+                    else -> "断续出现 隔几天冒一次头"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有消息\n")
+        }
+
+        // ── 24) 昼夜话量 ────────────────────────────────────────────
+        r.append("\n【昼夜话量】\n")
+        if (textN > 0) {
+            val nightAvg = if (ex.nightText > 0) ex.nightChars / ex.nightText else 0L
+            val dayAvg = if (ex.dayText > 0) ex.dayChars / ex.dayText else 0L
+            val diff = if (nightAvg >= dayAvg) nightAvg - dayAvg else dayAvg - nightAvg
+            r.append("深夜平均字数：").append(nightAvg).append(" 字\n")
+            r.append("白天平均字数：").append(dayAvg).append(" 字\n")
+            r.append("深夜长句占比：").append(pct(ex.nightLong, ex.nightText)).append("%\n")
+            r.append("白天长句占比：").append(pct(ex.dayLong, ex.dayText)).append("%\n")
+            r.append("昼夜字数差：").append(diff).append(" 字\n")
+            r.append("话量点评 ").append(
+                when {
+                    ex.nightText == 0 -> "只在白天说话 深夜被完全跳过"
+                    ex.dayText == 0 -> "只在深夜说话 白天一句不冒"
+                    nightAvg > 0L && dayAvg > 0L && nightAvg * 2L >= dayAvg * 3L ->
+                        "深夜话更长 夜里一句能顶白天几句"
+                    nightAvg > 0L && dayAvg > 0L && dayAvg * 2L >= nightAvg * 3L ->
+                        "白天话更长 夜里基本是短句收尾"
+                    else -> "昼夜字数接近 说话方式没什么两样"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+    }
+
     /** 热力格下标（周几 × 24 + 小时）→ 「周三 21 点」 */
     private fun heatLabel(idx: Int): String {
         if (idx < 0 || idx >= HEAT_CELLS) return ""
@@ -1832,6 +2117,68 @@ object ChatAnalysisEngine {
         millis < 3_600_000L -> "${millis / 60_000} 分 ${millis % 60_000 / 1000} 秒"
         millis < 86_400_000L -> "${millis / 3_600_000} 小时 ${millis % 3_600_000 / 60_000} 分"
         else -> "${millis / 86_400_000} 天 ${millis % 86_400_000 / 3_600_000} 小时"
+    }
+
+    /**
+     * 第 17 轮：复读判定（消息级，只看上一条）。
+     *
+     * 「复读」= 本条正文与上一条**逐字相同**，且发送者不是同一个人
+     * （同一个人自己说两遍是重复劳动，不算复读）。链长 = 连续命中的次数。
+     *
+     * 状态只有两个字符串引用和三个计数器：不存历史、不建索引，与消息总量无关。
+     */
+    private fun scanRepeat(ex: ExtraStats, senderKey: String, body: String) {
+        if (body.isNotEmpty() && body == ex.prevBody && senderKey != ex.prevBodyFrom) {
+            ex.repeatMsgs++
+            ex.repeatChain++
+            if (ex.repeatChain > ex.repeatChainMax) ex.repeatChainMax = ex.repeatChain
+            if (ex.repeatSample.isEmpty()) {
+                ex.repeatSample =
+                    if (body.length > REPEAT_SAMPLE_MAX) body.substring(0, REPEAT_SAMPLE_MAX) else body
+            }
+        } else {
+            ex.repeatChain = 0
+        }
+        ex.prevBody = body
+        ex.prevBodyFrom = senderKey
+    }
+
+    /**
+     * 第 17 轮：提问与回应（消息级，只看下一条）。
+     *
+     * 上一条是疑问句时，本条就是它的"下一条"：换人发言且在 [ASK_WINDOW_MS] 内 →
+     * 记一次"被回应"并累计等待时长；同一人在窗口内接着说 → 记一次"自己追问"；
+     * 超过窗口 → 什么都不记（无人回应）。判定复用扫描循环里已有的 [gap]，不新增遍历。
+     */
+    private fun scanQuestion(ex: ExtraStats, senderKey: String, body: String, gap: Long) {
+        if (ex.pendingAskFrom.isNotEmpty()) {
+            if (gap > 0L && gap <= ASK_WINDOW_MS) {
+                if (ex.pendingAskFrom == senderKey) {
+                    ex.qSelfFollow++
+                } else {
+                    ex.qAnswered++
+                    ex.waitSum += gap
+                    ex.waitCount++
+                }
+            }
+            ex.pendingAskFrom = ""
+        }
+        if (body.indexOf('?') >= 0 || body.indexOf('？') >= 0) {
+            ex.qAsks++
+            ex.pendingAskFrom = senderKey
+        }
+    }
+
+    /**
+     * 第 17 轮：两个「年 × 1000 + 年内第几天」的键是不是相邻的两天。
+     *
+     * 年内第几天在同年内连续（差值 1 即次日），跨年要单独判一次：
+     * 上一键是年末（≥ 365 天，闰年 366 同样 ≥ 365）且新键是次年 1 月 1 日才算连续。
+     */
+    private fun isNextDay(prevKey: Int, curKey: Int): Boolean {
+        if (prevKey / 1000 == curKey / 1000) return curKey - prevKey == 1
+        if (curKey / 1000 == prevKey / 1000 + 1 && curKey % 1000 == 1) return prevKey % 1000 >= 365
+        return false
     }
 
     /**
