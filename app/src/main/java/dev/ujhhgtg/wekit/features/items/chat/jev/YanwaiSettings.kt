@@ -885,83 +885,86 @@ object YanwaiSettings {
         names: Map<String, String>,
         onTell: (String) -> Unit,
     ) {
+        // 本分区由调用方用 item { } 放进 LazyColumn，自身是一个普通 Column：
+        // 组数最多十几组、每组一行，一次性铺开比再嵌一层懒加载更省事，也不会踩
+        // LazyListScope 的接收者作用域（items 只能在 LazyColumn 的 scope 里调用）。
         val grouped = remember(recent) { recent.groupBy { it.talker } }
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = stringResource(R.string.jev_history_title, grouped.size),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
-        }
-        if (grouped.isEmpty()) {
-            item@ Text(
-                text = stringResource(R.string.jev_history_empty),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            return
-        }
-        items(grouped.entries.toList()) { group ->
-            val entries = group.value
-            val label = names[group.key] ?: group.key.takeLast(10)
-            val ok = entries.count { it.ok }
-            val cached = entries.count { MoodStore.get(it.key) != null }
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerHigh,
-                        RoundedCornerShape(10.dp),
-                    )
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-            ) {
+            if (grouped.isEmpty()) {
                 Text(
-                    text = stringResource(
-                        R.string.jev_history_person_line,
-                        label,
-                        entries.size,
-                        stamp(entries.first().at),
-                    ),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = stringResource(R.string.jev_history_stats, ok, entries.size - ok, cached),
+                    text = stringResource(R.string.jev_history_empty),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                 )
-                entries.filter { !it.ok }.take(3).forEach { entry ->
-                    Text(
-                        text = stringResource(
-                            R.string.jev_history_fail_line,
-                            stamp(entry.at),
-                            entry.note.orEmpty(),
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                TextButton(
-                    onClick = {
-                        copyToClipboard(
-                            context,
-                            JevText.of(context, R.string.jev_clip_label),
-                            exportText(context, entries),
+            } else {
+                grouped.forEach { (talker, entries) ->
+                    val label = names[talker] ?: talker.takeLast(10)
+                    val ok = entries.count { it.ok }
+                    val cached = entries.count { MoodStore.get(it.key) != null }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerHigh,
+                                RoundedCornerShape(10.dp),
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = stringResource(
+                                R.string.jev_history_person_line,
+                                label,
+                                entries.size,
+                                stamp(entries.first().at),
+                            ),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
-                        onTell(JevText.of(context, R.string.jev_history_copied, entries.size))
-                    },
-                    modifier = Modifier.padding(top = 2.dp),
-                ) {
-                    Icon(
-                        MaterialSymbols.Outlined.Content_copy,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.jev_history_copy_person))
+                        Text(
+                            text = stringResource(R.string.jev_history_stats, ok, entries.size - ok, cached),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        entries.filter { !it.ok }.take(3).forEach { entry ->
+                            Text(
+                                text = stringResource(
+                                    R.string.jev_history_fail_line,
+                                    stamp(entry.at),
+                                    entry.note.orEmpty(),
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                copyToClipboard(
+                                    context,
+                                    JevText.of(context, R.string.jev_clip_label),
+                                    exportText(context, entries),
+                                )
+                                onTell(JevText.of(context, R.string.jev_history_copied, entries.size))
+                            },
+                            modifier = Modifier.padding(top = 2.dp),
+                        ) {
+                            Icon(
+                                MaterialSymbols.Outlined.Content_copy,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.jev_history_copy_person))
+                        }
+                    }
                 }
             }
         }

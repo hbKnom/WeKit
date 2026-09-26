@@ -1227,12 +1227,14 @@ object ChatAnalysisPng {
             val headerH = if (title != null) SECTION_HEADER_H else 0
             val lastBottom = rows.lastOrNull()?.let { it.top + it.height } ?: 0
             val height = maxOf(CARD_MIN_H, CARD_PAD_V * 2 + headerH + lastBottom)
-            val index = if (title != null) ++no else 0
+            // title 是被闭包改写的可变局部变量，先取成 val 再做空判断（否则无法智能转换）
+            val header = title
+            val index = if (header != null) ++no else 0
             // 第 17 轮：本地统计的分节按标题取归属色（取不到就沿用分组色，行为不变）；
             // AI 报告不参与取色 —— 它整组共用分组色，这是它的"身份"，不能被标题打散。
             val cardAccent =
-                if (tintBySection && title != null) sectionAccentOf(title) ?: accent else accent
-            cards.add(Item.Card(title, index, cardAccent, rows, height))
+                if (tintBySection && header != null) sectionAccentOf(header) ?: accent else accent
+            cards.add(Item.Card(header, index, cardAccent, rows, height))
         }
 
         for (u in units) {
