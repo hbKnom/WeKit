@@ -618,7 +618,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             }
         // 话题素材 = 前文 + 本条正文（从旧到新）。刻意不含目标行之后的消息：
         // 那些是「还没发生」的话，拿它们给这一条贴标签是错的。
-        return ChatInsights.Screen(flags, context.map { it.text } + selfText)
+        return ChatInsights.Screen(flags, context.map { it.text } + selfText, context)
     }
 
     /**

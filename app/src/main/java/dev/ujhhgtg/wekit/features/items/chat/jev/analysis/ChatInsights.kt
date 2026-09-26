@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat.jev.analysis
 
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.ContextMessage
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
 
 /**
@@ -72,6 +73,14 @@ object ChatInsights {
     data class Screen(
         val speakerFlags: List<Boolean> = emptyList(),
         val texts: List<String> = emptyList(),
+        /**
+         * 本次遍历顺带产出的前文（受 [ModulePrefs.contextLimit] 截断，旧 → 新，不含本条）。
+         *
+         * 放在这里是为了**一次本屏遍历同时喂两处**：模型输入要的 [ContextMessage] 和
+         * 话题标签要的纯文本。第 16 轮之前前文是另一次 `findBoundViews` 全表扫描算的，
+         * 每次绑定都要多走一遍本屏 View。
+         */
+        val context: List<ContextMessage> = emptyList(),
     )
 
     /** 卡片最多展示几个话题标签：再多就把一行挤爆了。 */
