@@ -69,8 +69,14 @@ object SignalAnalyzer {
     /** 每条消息自动重投的次数上限（之后只保留手动重试入口）。 */
     private const val MAX_AUTO_RETRIES = 6
 
-    /** 失败后的冷却：这段时间内同一条消息不重复打模型，但失败原因必须一直可见（可手动重试）。 */
-    private const val RETRY_COOLDOWN_MS = 30_000L
+    /**
+     * 失败后的冷却：这段时间内同一条消息不重复打模型，但失败原因必须一直可见（可手动重试）。
+     *
+     * **公开**是有意的：扫描器的自动重扫延迟必须**严格大于**这个值，否则重扫会被
+     * [submit] 的冷却挡回来、等于白扫一次（第 17 轮踩过：重扫 20s < 冷却 30s）。
+     * 现在扫描器直接用它加一点余量算出重扫延迟，两边不可能再错开。
+     */
+    const val FAIL_COOLDOWN_MS = 30_000L
 
     /** 第 n 次自动重投的等待间隔：15s、30s、60s、120s… 封顶 [AUTO_RETRY_MAX_GAP_MS]。 */
     private fun autoRetryGapMs(attempts: Int): Long =

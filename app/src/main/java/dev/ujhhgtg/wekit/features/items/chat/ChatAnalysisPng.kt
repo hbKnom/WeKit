@@ -373,8 +373,27 @@ object ChatAnalysisPng {
     /** 画布最小高度 */
     private const val MIN_H = 900
 
+    /**
+     * 分页时"尾页"的最小内容高度。
+     *
+     * 贪心装满会在最后剩下一小截内容时收到一张又空又小的图（例如只有一行 KPI + 一大片页脚）。
+     * 低于这个高度就往前退一个条目边界，让最后一张图至少是一整张卡片的量。
+     * 只在"退完之后剩余内容仍装得进一页续页"时才退 —— 因此绝不会为了尾页好看而多分出一页。
+     */
+    private const val MIN_TAIL_CONTENT = 1200
+
     /** 画布高度上限（超过直接拒绝导出，避免 OOM） */
     private const val MAX_HEIGHT = 20000
+
+    /**
+     * 分页的页数硬上限。
+     *
+     * 第 22 轮把分页从「按容量精确推算页数」改成「按条目边界贪心装箱」（见 [paginate]）后，
+     * 页数不再由容量公式直接给出，而是一页一页装出来的 —— 因此必须有一个显式的终点，
+     * 否则一段病态输入（例如某张卡片本身高过一页、且断点又恰好缺失）会让循环失去收敛保证。
+     * 24 页 ≈ 480000px 内容，远超任何真实聊天报告；触顶时按「装满即换页」收尾，不会死循环。
+     */
+    private const val MAX_PAGES = 24
 
     /** 单张 ARGB_8888 画布的像素内存预算（512MB 宿主堆下的安全上限） */
     private const val MEMORY_BUDGET_BYTES = 120 * 1024 * 1024
@@ -1776,23 +1795,41 @@ object ChatAnalysisPng {
             for (row in item.rows) {
                 val rowTop = bodyTop + row.top
                 if (rowTop > 0 && rowTop < contentEnd) cuts.add(rowTop)
+                // 正文块要额外把**块内每一个视觉行**的行首也登记成断点。
+                // 一整块正文（AI 洞察、长段点评）可以换行成几十行、块高远超一页；只给块首
+                // 登记断点的话，分页在 preferred / cuts 里都找不到落点，只能硬切 ——
+                // 结果就是把某一行文字拦腰切断（实机上就是"底部内容溢出去半行"）。
+                // row.lines 是布局阶段就算好的换行结果、绘制阶段原样复用，所以这里按
+                // TEXT_LINE_H 步进是精确的，不会和绘制位置错开。
+                if (row.unit is Block.TextLine) {
+                    val n = row.lines.size
+                    for (k in 1 until n) {
+                        val y = rowTop + k * TEXT_LINE_H
+                        if (y > 0 && y < contentEnd) cuts.add(y)
+                    }
+                }
             }
         }
         return cuts.toIntArray()
     }
 
     /**
-     * 分页：先把内容按「条目边界」切，切不动才退到行首，最后才硬切。
+     * 分页：一页一页地「尽量装满，但只停在整条目边界上」。
      *
-     * 第 20 轮改的一处：断点优先从 [preferred]（条目边界）里选，而不是从全部断点里
-     * 选"最接近理想位置"的那个。原因是旧的策略几乎总挑到**卡片内部**的一行行首，
-     * 于是每张分页图的末页都是"半张卡片"，底边没有圆角、没有收口 —— 观感上就是
-     * 内容溢出了卡片边框。改成优先在整卡片边界断开后，每页都以完整卡片收尾。
+     * 第 22 轮换掉了原来的「先按容量推算页数、再在区间里挑最接近理想位置的断点」策略。
+     * 旧策略的致命问题是：它按容量把页数钉死，于是每一页的切点区间 [minCut, maxCut] 也被钉死；
+     * 当这个区间里**恰好没有条目边界**时（报告越长越常见），切点只能落在**卡片内部**——
+     * 于是每张分页图的页底都是一张被拦腰截断的卡片：没有下边框、没有圆角、KPI 单元只画了半格。
+     * 这在实机上看就是"内容超出 PNG 的框架/组件 UI 边界""每张图片底部都溢出"。
+     * （内容并没有真的画到画布外——最外层裁剪一直兜着底——但页底那张"半截卡片"在视觉上
+     * 就是一次越界，而且它还会从上一页的下边框处直接断开。）
      *
-     * [cuts] 是全部合法断点（含卡片内部行首），只在"某张卡片本身就比一页还高"
-     * （preferred 里找不到可用断点）时才会用到；硬切是最后的兜底，硬切同样不丢内容
-     * （每页都是平移后重放同一套绘制），只是那一段的卡片圆角会跨页 —— 这时会由
-     * [drawContinuedCap] 在页面底部补一句「本节未完 · 见下页」。
+     * 新策略把因果关系倒过来：**先决定切在哪，再看需要几页**——
+     *   在本页容量上限 [limit] 之内取**最靠后的条目边界**（尽量装满、页数最少）；
+     *   容量内没有条目边界，才退到行首断点（卡片内部的行首），再没有才硬切。
+     * 于是每页（除"单张卡片本身就比一页高"这种不可抗情形外）都以**一张完整卡片**收尾，
+     * 页与页之间是干净的卡片边界。
+     * 页数因此不再由公式给出，而是装箱装出来的 —— 所以有 [MAX_PAGES] 作为显式终点。
      */
     private fun paginate(preferred: IntArray, cuts: IntArray, contentEnd: Int): List<Page> {
         val reserved = CARD_GAP + FOOTER_H + BOTTOM_PAD
@@ -1806,49 +1843,65 @@ object ChatAnalysisPng {
         /** 第 k 页（0 基）的内容容量：首页用整页，续页扣掉续页页头 */
         fun capOf(k: Int): Int = if (k == 0) usable else restUsable
 
-        // 页数：第 1 页容量 usable，其后每页 restUsable —— 只按"能不能装下"推页数，不靠估算
-        var count = 1
-        while (contentEnd > usable + (count - 1) * restUsable) count++
-
-        // suffixCap[k] = 第 k 页（含）之后所有页的容量和：用来反推"本页至少要切到哪，后面才放得下"
-        val suffixCap = IntArray(count + 1)
-        for (k in count - 1 downTo 0) suffixCap[k] = suffixCap[k + 1] + capOf(k)
-
-        val target = contentEnd.toDouble() / count
-        val pages = ArrayList<Page>(count)
+        val pages = ArrayList<Page>(4)
         var top = 0
-        for (k in 0 until count - 1) {
+        while (true) {
+            val k = pages.size
             val cap = capOf(k)
-            val minCut = maxOf(top + 1, contentEnd - suffixCap[k + 1])
-            val maxCut = minOf(top + cap, contentEnd - 1)
-            // 兜底：正常不会出现 minCut > maxCut（页数就是按容量推出来的），
-            // 真出现也只退化成"本页装满"，绝不产生 contentBottom < top 的非法页。
-            if (maxCut <= top) break
-            val lo = minOf(minCut, maxCut)
-            val ideal = Math.round(target * (k + 1)).toInt()
-            val cut = nearestCut(preferred, lo, maxCut, ideal)
-                ?: nearestCut(cuts, lo, maxCut, ideal)
-                ?: ideal.coerceIn(lo, maxCut)
-            pages.add(pageOf(top, cut, if (k == 0) 0 else PAGE_HEAD_BAND_H))
-            top = cut
-        }
-        pages.add(pageOf(top, contentEnd, if (pages.isEmpty()) 0 else PAGE_HEAD_BAND_H))
-        return pages
-    }
+            val headBand = if (k == 0) 0 else PAGE_HEAD_BAND_H
+            val limit = top + cap
 
-    /** 在 [lo, hi] 区间内挑离 [ideal] 最近的断点；一个都没有就返回 null（交给下一档断点或硬切）。 */
-    private fun nearestCut(cuts: IntArray, lo: Int, hi: Int, ideal: Int): Int? {
-        var best = Int.MAX_VALUE
-        var hit: Int? = null
-        for (c in cuts) {
-            if (c < lo || c > hi) continue
-            val d = Math.abs(c - ideal)
-            if (d < best) {
-                best = d
-                hit = c
+            // 本页就装得下全部剩余内容 —— 直接收尾，不再制造多余的页
+            if (contentEnd <= limit) {
+                pages.add(pageOf(top, contentEnd, headBand))
+                return pages
+            }
+
+            // 本页最多切到 limit（再多就超出位图高度上限）
+            val hi = minOf(limit, contentEnd - 1)
+
+            // 切点优先级：整条目边界 → 行首断点 → 硬切（满载）。
+            // 这里刻意**不**再要求"剩下的内容必须一页续页装得下"：那个约束会把 [top+1, hi]
+            // 压成一条几十像素宽的窄缝（首页容量 19708、续页 19576，只差一个续页页头的高度），
+            // 窄缝里通常一个条目边界都没有 —— 于是每页仍然从卡片中间断开。
+            // 宁可让内容多分一页，也不要拦腰截断。
+            var cut = lastCutAtMost(preferred, top + 1, hi)
+                ?: lastCutAtMost(cuts, top + 1, hi)
+                ?: hi
+
+            // 尾页保护：切完只剩很矮的一截时往前退一个条目边界，
+            // 免得最后一张图只有一行字 + 一大片页脚。
+            if (contentEnd - cut < MIN_TAIL_CONTENT) {
+                val back = lastCutAtMost(preferred, top + 1, cut - 1)
+                if (back != null && contentEnd - back <= restUsable) cut = back
+            }
+
+            // 防御：hi > top 恒成立、故 cut 必 > top；真出现也只退化成"本页装满"。
+            if (cut <= top) cut = hi
+            pages.add(pageOf(top, cut, headBand))
+            top = cut
+
+            if (pages.size >= MAX_PAGES) {
+                // 触顶：剩余内容并进最后一页，由 [pageOf] 的 require 兜住页高上限
+                pages.add(pageOf(top, contentEnd, PAGE_HEAD_BAND_H))
+                return pages
             }
         }
-        return hit
+    }
+
+    /**
+     * [cuts] 里落在 (top, limit] 区间内、位置最靠后的断点；区间内没有就返回 null。
+     *
+     * [cuts] 由 TreeSet 产出，天然升序 —— 这里顺手用升序做短路，避免整表扫描。
+     */
+    private fun lastCutAtMost(cuts: IntArray, top: Int, limit: Int): Int? {
+        var best: Int? = null
+        for (c in cuts) {
+            if (c <= top) continue
+            if (c > limit) break
+            best = c
+        }
+        return best
     }
 
     /** 落盘（含目录校验与 fsync），失败一律抛异常交给上层提示。 */
@@ -1896,12 +1949,19 @@ object ChatAnalysisPng {
             )
         })
 
-        // 3) 顶部装饰圆（被卡片 clip 限制在卡内），只给单张卡片加，避免整本都是装饰
+        // 3) 顶部装饰圆：必须真的裁在卡片内。
+        //    这里之前只写了注释「被卡片 clip 限制在卡内」，却没有配对 save/clipRect/restore ——
+        //    半径 300 的圆从 (CARD_RIGHT-40, top+40) 铺开，右缘会越过卡片右边线（1368）
+        //    一直压到画布右缘（1440）、下缘压过整张卡片头部；在实机上就是卡片右上角
+        //    那一块"淡淡地糊出边框"的色斑 —— 用户反馈的"内容超出组件 UI 边界"。
         if (glow) {
+            cv.save()
+            cv.clipRect(rect)
             cv.drawCircle(
                 CARD_RIGHT.toFloat() - 40f, top + 40f, HEADER_GLOW_R,
                 shapePaint(blendOnWhite(COLOR_ACCENT2, 0x12)),
             )
+            cv.restore()
         }
 
         // 4) 细描边：分享后被压暗也不糊

@@ -13,6 +13,8 @@ import android.graphics.PixelFormat
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import android.os.Handler
+import android.os.Looper
 import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -40,6 +42,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodStore
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.dominantName
 import dev.ujhhgtg.wekit.utils.monet.MonetColors
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.IdentityHashMap
@@ -173,11 +176,42 @@ object YanwaiBubble {
     /** 卡片与下一条消息之间的留白。 */
     private const val BOTTOM_GAP_DP = 6f
 
+    /** 卡片底边与「预留区底边」之间再留一点，卡片不会贴着下一条消息。 */
+    private const val CARD_EDGE_GAP_DP = 2f
+
+    /** 排版结果缓存条数：一次会话一屏十几张卡，来回滚动靠它免掉重复排版。 */
+    private const val MAX_CACHED_LAYOUTS = 48
+
     /** 行内容器找不到（未知气泡布局）后的放弃阈值，避免每拍重试。 */
     private const val MAX_LANDING_ATTEMPTS = 6
 
+    /** 补预留的延后一拍（约一帧）：等宿主本帧的布局走完再改 padding，避免嵌在布局里再触发一次布局。 */
+    private const val REPAIR_DELAY_MS = 16L
+
+    /** 连续多少帧「位置没就绪」后记一行诊断（约 1 秒；只记一行，不刷屏）。 */
+    private const val MAX_NO_ROOM_FRAMES = 60
+
     /** 行已绑定但还没绘制出来（可重试）的卡片。 */
     private val cards = IdentityHashMap<View, Card>()
+
+    /**
+     * 排版结果缓存：[Fingerprint]（身份 + 一切影响画面的输入）→ 排好版的指令表。
+     *
+     * 一屏卡片会随着滚动反复绑定/解绑，重扫每拍也会重算一次指纹 ——
+     * 没有这层缓存，每次都要重跑 [buildCard]（十几次 StaticLayout + 若干 Path/Shader）。
+     * 有它之后，「同样的身份 + 同样的指纹」直接复用同一份 [CardLayout]：
+     * 滚动来回、重绑、每拍重试，主线程零排版成本。
+     *
+     * 访问序 LRU（[removeEldestEntry]）：容量固定，绝不随会话数/消息数增长。
+     */
+    private val layouts = object : LinkedHashMap<Fingerprint, CardLayout>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Fingerprint, CardLayout>?) =
+            size > MAX_CACHED_LAYOUTS
+    }
+
+    /** 补齐预留用的主线程节拍（一次消息一拍，16ms 后跑）。 */
+    private val main = Handler(Looper.getMainLooper())
+    private var repairPosted = false
 
     /** 宿主列表 -> 挂在它 overlay 上的卡片层（WeakHashMap：列表销毁后自动放手）。 */
     private val layers = WeakHashMap<View, CardLayer>()
@@ -196,7 +230,7 @@ object YanwaiBubble {
      *
      * 宿主侧只保留「我改过什么」以便完整还原：padding 原值、clickable 原值、监听器。
      */
-    private class Card(val row: View, var key: String) {
+    private class Card(val row: View, var key: String, val identity: String) {
         /**
          * 这张卡归属的那条消息的**本地 msgId**（>0 才允许画）。
          *
@@ -220,6 +254,21 @@ object YanwaiBubble {
 
         /** 被预留空间、并接收点击的宿主行内容器。 */
         var container: View? = null
+
+        /**
+         * 卡片纵向落点的锚：容器里**直接装气泡**的那一个子 View。
+         *
+         * 卡片位置以「锚的底边 + 间距」为准，而不是「容器底边 - paddingBottom」：
+         * 后者在「padding 已改、但容器还没按新 padding 重新测量」的那一帧里会算到
+         * 容器内容区里（把卡片压到气泡上），而前者在任何一帧都指向真实的气泡底边。
+         */
+        var anchor: View? = null
+
+        /** 我们要求容器保持的 paddingBottom（[reserve] 写入，绘制前据它校验预留是否还在）。 */
+        var wantPadding: Int = -1
+
+        /** 连续多少帧因为「位置没就绪」跳过绘制（仅用于记一行诊断）。 */
+        var noRoomFrames = 0
 
         /** padding / 监听器是否已由我们装上（[release] 据此还原）。 */
         var hooked = false
@@ -258,9 +307,12 @@ object YanwaiBubble {
      *     而且按 5 取整（见 [queuedBucket]）。
      *  2. **走势版本必须按会话**（[MoodStore.trendVersionOf]）：全局走势版本号同样是
      *     「一条消息出结论 → 全屏卡片重排」，本质上是第 1 条的翻版。
+     *  3. **归属用 [identity]（会话 + 消息 id），不用结论键 `key`**：结论键把上下文一起
+     *     哈希了，旁边一来新消息就整屏换键 —— 卡片会被误判成「换人」而拆掉重建。
      */
-    private class Fingerprint(
-        val key: String,
+    private data class Fingerprint(
+        val identity: String,
+        val createdAt: Long,
         val state: Char,
         val moodId: Int,
         val failure: String?,
@@ -399,7 +451,6 @@ object YanwaiBubble {
             clear(row)
             return false
         }
-        val key = message.key
         // ---------------- 归属闸门（唯一的写入口，所有调用方都被它保护） ----------------
         // 卡片必须按「消息唯一标识」绑定：
         //  1. 拿不到稳定标识（msgId <= 0 的本地暂态消息）：**放弃这一条**，绝不用位置/时间猜；
@@ -411,15 +462,21 @@ object YanwaiBubble {
             return false
         }
         var card = cards[row]
-        if (card != null && card.key != key) {
-            // 宿主行被复用成另一条消息：先还原它对容器的改动，再按新 key 重建
+        // 归属按**会话 + 消息 id**（[AnalysisInput.identity]）判定：
+        // 同一条消息哪怕结论键变了（上下文变了、重试了），卡片与它预留的空间都原地保留，
+        // 不拆不建 —— 拆建一次就是「还原 padding + 再预留一次」，两次改宿主几何、
+        // 两次 requestLayout，全屏卡片一起拆的时候就是肉眼可见的一卡。
+        if (card != null && card.identity != message.identity) {
+            // 宿主行被复用成另一条消息：先还原它对容器的改动，再按新身份重建
             release(card)
             card = null
         }
         if (card == null) {
-            card = Card(row, key)
+            card = Card(row, message.key, message.identity)
             cards[row] = card
         }
+        // 结论键随上下文变，卡片每次都要跟上（结果查询/点击重试都按它取）
+        card.key = message.key
         card.input = message
         card.messageId = message.messageId
         card.talker = message.talker
@@ -472,10 +529,43 @@ object YanwaiBubble {
     fun clearAll() {
         for (card in cards.values) release(card)
         cards.clear()
-        for ((list, layer) in layers.entries.toList()) {
-            runCatching { list.overlay.remove(layer) }
+        detachStaleLayers()
+        runCatching { main.removeCallbacks(repair) }
+        repairPosted = false
+        layouts.clear()
+    }
+
+    /**
+     * 离开会话（当前可见会话换了人）时收摊：**别的会话**的卡片、缓存与已失效的层全清掉。
+     *
+     * 卡片与缓存原来只按行 View / 指纹挂着，换会话后旧会话的东西要等宿主把这些行全部
+     * 回收/复用才逐个消失 —— 中间这段时间里，从旧列表 overlay 上画的卡片就可能被用户
+     * 看成「卡片跑到别的聊天上去了」。这里按会话一次性收干净，代价是 O(卡片数)。
+     */
+    fun endSession(keepTalker: String?) {
+        if (keepTalker == null) {
+            clearAll()
+            return
         }
-        layers.clear()
+        for (row in cards.keys.toList()) {
+            val card = cards[row] ?: continue
+            if (card.talker != keepTalker) clear(row)
+        }
+        val prefix = "$keepTalker#"
+        val iterator = layouts.keys.iterator()
+        while (iterator.hasNext()) {
+            if (!iterator.next().identity.startsWith(prefix)) iterator.remove()
+        }
+        detachStaleLayers()
+    }
+
+    /** 摘掉宿主列表已经不在窗口上的卡片层（同时把 overlay 上那一份也 remove，别留悬挂层）。 */
+    private fun detachStaleLayers() {
+        for ((list, layer) in layers.entries.toList()) {
+            if (list.isAttachedToWindow && cards.values.any { it.list === list }) continue
+            runCatching { list.overlay.remove(layer) }
+            layers.remove(list)
+        }
     }
 
     /**
@@ -488,18 +578,49 @@ object YanwaiBubble {
         for (row in cards.keys.toList()) {
             if (!row.isAttachedToWindow) clear(row)
         }
+        detachStaleLayers()
         if (cards.isEmpty()) return false
         var pending = false
         for (card in cards.values) {
             if (card.blocked || card.ready) continue
             if (!card.row.isAttachedToWindow) continue
-            // 落点/列表宽度可能是刚刚才可用的：清掉指纹强制重排一次，
-            // 否则上一轮「没落点」时存下的指纹会把这一轮的重试挡掉
-            card.fingerprint = null
-            if (prepare(card)) render(card)
+            // 落点/列表宽度/结论可能是刚刚才可用的：这里**强制**重算一次指纹与排版。
+            // （旧实现是把 card.fingerprint 置空来"逼"重排 —— 语义一样，但那样会让
+            //  「缓存命中」这条快路径在每拍重试时也走不到，白付一次 StaticLayout。）
+            if (prepare(card)) render(card, force = true)
             if (!card.ready) pending = true
         }
         return pending
+    }
+
+    /**
+     * 绘制时发现「预留没生效」（宿主把 padding 写回去了、或行还没按新 padding 测量）时，
+     * 延后一帧补一次预留。
+     *
+     * 只发一条主线程消息、只改 padding，**不进宿主布局/绘制调用栈** ——
+     * 绘制路径里改宿主几何是最容易把宿主画崩/画乱的做法，这里刻意避开。
+     */
+    private fun scheduleRepair() {
+        if (repairPosted) return
+        repairPosted = true
+        main.postDelayed(repair, REPAIR_DELAY_MS)
+    }
+
+    private val repair = Runnable {
+        repairPosted = false
+        try {
+            for (card in cards.values) {
+                val container = card.container ?: continue
+                val layout = card.layout ?: continue
+                if (!card.row.isAttachedToWindow || !container.isAttachedToWindow) continue
+                if (card.wantPadding < 0 || container.paddingBottom >= card.wantPadding) continue
+                reserve(card, layout.height)
+                if (card.hooked) hookClicks(card)
+                card.list?.let { runCatching { it.postInvalidateOnAnimation() } }
+            }
+        } catch (t: Throwable) {
+            warnOnce("repair:${t.javaClass.simpleName}", "卡片预留修复异常（已跳过）：${t.javaClass.simpleName} ${t.message}")
+        }
     }
 
     // ------------------------------------------------------------------ 落点：只改 padding，不动子 View
@@ -520,9 +641,10 @@ object YanwaiBubble {
             // 落点失效（行被重建/换绑）：先还原旧容器的改动，再重新找
             if (card.hooked) release(card)
             card.container = null
+            card.anchor = null
             card.list = null
-            container = findContainer(row)
-            if (container == null) {
+            val landing = findLanding(row)
+            if (landing == null) {
                 card.landingAttempts++
                 if (card.landingAttempts >= MAX_LANDING_ATTEMPTS) {
                     card.blocked = true
@@ -535,7 +657,9 @@ object YanwaiBubble {
                 return false
             }
             card.landingAttempts = 0
+            container = landing.container
             card.container = container
+            card.anchor = landing.anchor
         }
         if (card.list == null) {
             // overlay 宿主：从行的父链往上找那个 RecyclerView 类的视图
@@ -557,11 +681,14 @@ object YanwaiBubble {
      */
     private fun attachLayer(list: View) {
         if (layers.containsKey(list)) return
-        val layer = CardLayer { canvas -> drawCards(list, canvas) }
+        // **不能**让绘制层强引用列表：WeakHashMap 的 value 强引用 key 时，key 永远不会被回收，
+        // 条目与它捕获的整棵旧聊天视图会一直活着（聊天进进出出就是一条稳定的泄漏）。
+        val ref = WeakReference(list)
+        val layer = CardLayer { canvas -> ref.get()?.let { drawCards(it, canvas) } }
         val added = runCatching { list.overlay.add(layer) }.isSuccess
         if (!added) return
         layers[list] = layer
-        MoodLog.i("卡片层已挂到宿主列表 ${list.javaClass.simpleName}")
+        if (MoodLog.verbose) MoodLog.i("卡片层已挂到宿主列表 ${list.javaClass.simpleName}")
     }
 
     /**
@@ -597,7 +724,10 @@ object YanwaiBubble {
 
     private val recyclerLookup = HashMap<Class<*>, Boolean>()
 
-    private fun findContainer(row: View): View? {
+    /** 落点：改 padding 的那个容器 + 卡片纵向对齐用的锚（容器里直接装气泡的那个子 View）。 */
+    private class Landing(val container: View, val anchor: View)
+
+    private fun findLanding(row: View): Landing? {
         val root = row as? ViewGroup ?: return null
         val anchor = findBubble(root) ?: return null
         var branch: View = anchor
@@ -606,7 +736,7 @@ object YanwaiBubble {
             if (parent is LinearLayout && parent.orientation == LinearLayout.VERTICAL &&
                 parent.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
             ) {
-                return parent
+                return Landing(parent, branch)
             }
             if (parent === root) break
             branch = parent
@@ -616,7 +746,7 @@ object YanwaiBubble {
         if (root is RelativeLayout && branch.parent === root &&
             root.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
         ) {
-            return root
+            return Landing(root, branch)
         }
         return null
     }
@@ -627,19 +757,24 @@ object YanwaiBubble {
      * 只改这两个属性，**不增删任何子 View**：容器高度是 wrap_content，因此行会像以前
      * （把卡片作为子 View 追加时）一样精确长高相同的量，而宿主的 ViewHolder 构造、
      * 子 View 下标、id、tag、LayoutParams 全都不受影响。
+     *
+     * 写进去的目标值同时记在 [Card.wantPadding] 上：绘制前拿它校验「预留还在不在」——
+     * 宿主自己也在这条内容器上写 padding，被改回去的那一帧绝不能画（见 [drawCards]）。
      */
     private fun reserve(card: Card, height: Int) {
         val container = card.container ?: return
         if (!container.isAttachedToWindow) return
         val gap = dp(container, BOTTOM_GAP_DP).toInt()
-        val want = card.origPaddingBottom + height + gap
+        val edge = dp(container, CARD_EDGE_GAP_DP).toInt()
+        val want = card.origPaddingBottom + height + gap + edge
         if (!card.hooked) {
             card.origPaddingBottom = container.paddingBottom
             card.origClickable = container.isClickable
             card.origLongClickable = container.isLongClickable
             card.hooked = true
         }
-        if (container.paddingBottom != want) {
+        // 只增不减：宿主自己加的留白比我们要的还多时不回退它（回退会动到宿主的间距）
+        if (container.paddingBottom < want) {
             runCatching {
                 container.setPadding(
                     container.paddingLeft,
@@ -651,6 +786,7 @@ object YanwaiBubble {
         }
         // 注意：这里**不动** clickable / 监听器 —— 那是 [hookClicks] 的事，
         // 而且只有在装得上我们自己的监听器时才动（宿主原有的监听器不许被覆盖/抹掉）。
+        card.wantPadding = want
         card.reserved = height
     }
 
@@ -681,6 +817,7 @@ object YanwaiBubble {
         card.hookedClick = false
         card.hookedLongClick = false
         card.reserved = 0
+        card.wantPadding = -1
     }
 
     private fun hookClicks(card: Card) {
@@ -705,7 +842,7 @@ object YanwaiBubble {
 
     // ------------------------------------------------------------------ 内容与指纹
 
-    private fun render(card: Card) {
+    private fun render(card: Card, force: Boolean = false) {
         val row = card.row
         val input = card.input ?: return
         val key = input.key
@@ -724,7 +861,8 @@ object YanwaiBubble {
         val width = cardWidth(row, list)
         if (width <= 0) return
         val fingerprint = Fingerprint(
-            key = key,
+            identity = input.identity,
+            createdAt = input.createdAt,
             state = state,
             moodId = if (mood != null) System.identityHashCode(mood) else 0,
             failure = failure,
@@ -739,7 +877,20 @@ object YanwaiBubble {
             paletteId = System.identityHashCode(MonetColors.applied.value),
             width = width,
         )
-        if (fingerprint == card.fingerprint && card.layout != null) return
+        if (!force && fingerprint == card.fingerprint && card.layout != null) return
+
+        // 指纹之后先查排版缓存：同样的身份 + 同样的指纹 = 同样的画面，直接复用，零成本。
+        // 滚动来回、重绑、每拍重试都走这条路（缓存里没有才真正排版）。
+        val cached = layouts[fingerprint]
+        if (cached != null) {
+            card.width = width
+            card.layout = cached
+            reserve(card, cached.height)
+            if (card.hooked) hookClicks(card)
+            card.fingerprint = fingerprint
+            card.list?.let { runCatching { it.postInvalidateOnAnimation() } }
+            return
+        }
 
         // 指纹通过之后才取色板 / 排版（莫奈取色与 StaticLayout 都有成本，没变化就不该付）
         val layout = runCatching {
@@ -761,11 +912,12 @@ object YanwaiBubble {
         }
         card.width = width
         card.layout = layout
+        layouts[fingerprint] = layout
         reserve(card, layout.height)
         if (card.hooked) hookClicks(card)
         // 指纹只在真正排好版之后才落：排版失败那一拍不该被记成「已经画好了」
         card.fingerprint = fingerprint
-        card.list?.let { runCatching { it.invalidate() } }
+        card.list?.let { runCatching { it.postInvalidateOnAnimation() } }
         if (card.ready) logFirstDraw(card, layout)
     }
 
@@ -773,6 +925,7 @@ object YanwaiBubble {
     private fun logFirstDraw(card: Card, layout: CardLayout) {
         if (drewOnce) return
         drewOnce = true
+        if (!MoodLog.verbose) return
         MoodLog.i(
             "首张卡片已排版并交给宿主绘制：${card.width}x${layout.height}px，" +
                 "ops=${layout.ops.size}，容器=${card.container?.javaClass?.simpleName}，" +
@@ -1570,8 +1723,11 @@ object YanwaiBubble {
 
     private fun drawCardsUnchecked(list: View, canvas: Canvas) {
         val height = list.height
-        val margin = SIDE_MARGIN_DP * list.resources.displayMetrics.density
+        val density = list.resources.displayMetrics.density
+        val margin = SIDE_MARGIN_DP * density
+        val gap = BOTTOM_GAP_DP * density
         val x = list.paddingLeft + margin
+        var staleReserve = false
         for (card in cards.values) {
             val layout = card.layout ?: continue
             val container = card.container ?: continue
@@ -1579,16 +1735,66 @@ object YanwaiBubble {
             if (!container.isAttachedToWindow) continue
             // 归属校验：行已经不是这条消息了就不画（等 handle/clear 把它收走）
             if (card.messageId <= 0L || rowMessageId(card.row) != card.messageId) continue
-            val top = offsetWithin(container, list) ?: continue
-            // 卡片落在内容器 padding 留白的顶端：容器高度 wrap_content，所以这段留白
-            // 就是我们预留出来的空间，位置与行完全同步（不需要任何滚动回调）
-            val bandTop = top + container.height - container.paddingBottom
-            if (bandTop + layout.height < 0f || bandTop > height) continue
+            // 预留校验：宿主把它自己那条内容器的 padding 改回去了（或这一帧还没按新 padding
+            // 测量完）就先不画，交给 [repair] 下一帧补预留 —— **宁可晚一帧，也绝不把卡片
+            // 画到「没有给它留位置」的地方**。用户看到的「卡片压在别的消息上、过一会儿才
+            // 规范」就是少了这道校验：位置按 padding 算，可那一帧的 padding 已经不在了。
+            if (card.wantPadding < 0 || container.paddingBottom < card.wantPadding) {
+                staleReserve = true
+                continue
+            }
+            val containerTop = offsetWithin(container, list) ?: continue
+            // 卡片落在气泡那一列的底边之下（锚 = 容器里直接装气泡的那个子 View）。
+            // 用锚而不是「容器高度 - paddingBottom」：容器还没按新 padding 重新测量的那一帧里，
+            // 后者会把卡片算进内容区（压到气泡上），前者任何一帧都指着真实的气泡底边。
+            val anchor = card.anchor
+            val anchorBottom = if (anchor != null && anchor.parent === container) {
+                offsetWithin(anchor, container)?.let { it + anchor.height }
+            } else {
+                null
+            }
+            val bandTop = if (anchorBottom != null) {
+                containerTop + anchorBottom + gap
+            } else {
+                containerTop + container.height - container.paddingBottom + gap
+            }
+            val bandBottom = bandTop + layout.height
+            if (bandBottom < 0f || bandTop > height) continue
+            // 位置自校验：这条带子里必须真的没有别的消息行 —— 宿主行还没按新 padding 长高时，
+            // 下一条消息的顶边就落在这条带子里，此时不画（几何会在 padding 改动触发的下一次
+            // 布局里跟上，卡片随后自然出现）。这是「卡片绝不串到别的消息上」的最后一道闸门。
+            if (!hasRoomFor(list, card.row, bandTop, bandBottom)) {
+                card.noRoomFrames++
+                if (card.noRoomFrames == MAX_NO_ROOM_FRAMES) {
+                    warnOnce("noroom", "卡片位置未就绪：宿主行没有按预留长高（已跳过绘制，继续等待）")
+                }
+                continue
+            }
+            card.noRoomFrames = 0
             val save = canvas.save()
             canvas.translate(x, bandTop)
             paintLayout(canvas, layout)
             canvas.restoreToCount(save)
         }
+        if (staleReserve) scheduleRepair()
+    }
+
+    /**
+     * 这条带子里是否真的没有别的消息行（自身行除外）。
+     *
+     * 用列表的直接子 View 坐标判定（overlay 的坐标系就是列表自己的坐标系，两者天然一致）：
+     * 卡片带必须落在**属于自己**的行范围里。这样「宿主行还没长高」与「宿主把 padding 写回去了」
+     * 两种时序问题都会表现为「这一帧不画」，而不是「画到别人身上」。
+     */
+    private fun hasRoomFor(list: View, self: View, bandTop: Float, bandBottom: Float): Boolean {
+        val group = list as? ViewGroup ?: return true
+        for (index in 0 until group.childCount) {
+            val child = group.getChildAt(index) ?: continue
+            if (child === self || child.visibility != View.VISIBLE) continue
+            val top = child.top + child.translationY
+            if (top < bandBottom && top + child.height > bandTop) return false
+        }
+        return true
     }
 
     /** 视图在祖先坐标系里的纵向偏移（不含滚动，overlay 的坐标系就是列表自己的坐标系）。 */

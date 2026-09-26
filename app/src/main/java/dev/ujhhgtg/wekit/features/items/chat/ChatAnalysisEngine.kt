@@ -1529,6 +1529,38 @@ object ChatAnalysisEngine {
             topList.add(h.toString())
         }
 
+        // ── 2B) 分享物与链接密度（第 22 轮新增维度）─────────────────
+        // 全部指标都由已有的 typeCount（消息类型计数，在主循环里就地累加）直接推导：
+        // 不额外扫描一遍消息、不查库、不猜字段。每一种类型都对应真实存在过的消息条数，
+        // 该类型一条都没有时就是 0，不做任何补齐或占位。
+        r.append("\n【分享物与链接密度】\n")
+        if (totalAll > 0) {
+            val dCardLinks = typeCount["卡片/链接"] ?: 0
+            val dLocations = typeCount["位置"] ?: 0
+            val dTransfers = typeCount["转账"] ?: 0
+            val dRedPacks = typeCount["红包"] ?: 0
+            val dImages = typeCount["图片"] ?: 0
+            val dVoices = typeCount["语音"] ?: 0
+            val dVideos = typeCount["视频"] ?: 0
+            val dMedia = dImages + dVoices + dVideos
+            val dShare = dCardLinks + dLocations + dTransfers + dRedPacks
+            r.append("链接与卡片：").append(dCardLinks).append(" 条（")
+                .append(pct(dCardLinks, totalAll)).append("%）\n")
+            r.append("位置分享：").append(dLocations).append(" 次\n")
+            r.append("转账 / 红包：").append(dTransfers).append(" / ").append(dRedPacks)
+                .append(" 笔\n")
+            r.append("媒体分享：").append(dMedia).append(" 条（图 ").append(dImages)
+                .append(" · 语音 ").append(dVoices).append(" · 视频 ").append(dVideos)
+                .append("）\n")
+            r.append("媒体占全部消息：").append(pct(dMedia, totalAll)).append("%\n")
+            r.append("分享物总量：").append(dShare + dMedia).append(" 条（")
+                .append(pct(dShare + dMedia, totalAll)).append("%）\n")
+            r.append("分享密度：").append(shareDensityText(pct(dShare + dMedia, totalAll)))
+                .append("\n")
+        } else {
+            r.append("样本区间内没有消息，暂不出具分享密度画像。\n")
+        }
+
         // ── 3) 活跃时段分布 ─────────────────────────────────────────
         r.append("\n【活跃时段与热力】\n")
         if (totalAll > 0) {
@@ -2041,7 +2073,10 @@ object ChatAnalysisEngine {
                 }
             }
         }
-        r.append("\n【互动平衡】\n")
+        // 第 22 轮：把原【互动平衡】收敛进【互动均衡度】—— 原有的占比/条数比/平衡度全部保留，
+        // 另外补一个**基尼系数**（纯由 rank 推导，不额外扫描）来回答"话量到底有多集中"。
+        // 之所以合并成一个维度而不是并列两个：两者读的是同一份数据（rank），分开列只会重复。
+        r.append("\n【互动均衡度】\n")
         val rankTotal = rank.values.sum()
         val mine = rank["我"] ?: 0
         val mineChars = ex.rankChars["我"] ?: 0
@@ -2065,6 +2100,21 @@ object ChatAnalysisEngine {
             r.append("条数比 ").append(ratioText(mine, others)).append("（我 vs 对方）\n")
             r.append("字数比 ").append(ratioText(mineChars, otherChars)).append("（我 vs 对方）\n")
             r.append("平衡度：").append(balanceText(mine, others)).append("\n")
+        }
+        // 基尼系数：发言条数的洛伦兹曲线面积（0 = 人人一样多，1 = 一个人全包）
+        val shares = rank.values.filter { it > 0 }.sorted()
+        val nShare = shares.size
+        val totalShare = shares.sum()
+        if (nShare > 1 && totalShare > 0) {
+            var acc = 0.0
+            for (i in shares.indices) acc += (i + 1).toDouble() * shares[i]
+            val gini = 2.0 * acc / (nShare.toDouble() * totalShare) - (nShare + 1).toDouble() / nShare
+            val g100 = (gini * 100).roundToInt().coerceIn(0, 100)
+            r.append("发言基尼系数：").append(g100 / 100).append(".")
+                .append((g100 % 100).toString().padStart(2, '0'))
+                .append("（").append(giniText(gini)).append("）\n")
+            r.append("发言人数：").append(nShare).append(" 人（人均 ")
+                .append(totalShare / nShare).append(" 条）\n")
         }
 
         // ── 12) 特殊消息与互动 ──────────────────────────────────────
@@ -3012,6 +3062,36 @@ object ChatAnalysisEngine {
         wD >= 0.3 -> "拖音型（波浪号把语气拉长）"
         textN > 0 && ex.emojiMsgs * 2 >= textN -> "活泼型（表情符号撑起半句话）"
         else -> "平铺直叙型（标点很克制）"
+    }
+
+    /**
+     * 分享密度结论（第 22 轮新增）。
+     *
+     * 档位阈值刻意与第 2 段【内容载体与表情】里的「媒体占比」口径保持同一量纲，
+     * 免得同一份数据在两个段落里被描述成两种样子。
+     */
+    private fun shareDensityText(pctText: String): String {
+        val v = pctText.toDoubleOrNull() ?: 0.0
+        return when {
+            v >= 40.0 -> "重度分享（近半消息都是转来的）"
+            v >= 20.0 -> "常分享（链接与图片是主要谈资）"
+            v >= 8.0 -> "适度分享（以聊天为主、分享为辅）"
+            v > 0.0 -> "极少分享（几乎只用文字交流）"
+            else -> "只聊天不分享（没有链接、图片或位置）"
+        }
+    }
+
+    /**
+     * 发言基尼系数的文字结论（第 22 轮新增）。
+     *
+     * 阈值取自「聊天群话量集中度」的常见经验区间：0.25 以下基本人人都在说，
+     * 0.55 以上就属于"少数人撑起整个群"。
+     */
+    private fun giniText(gini: Double): String = when {
+        gini >= 0.55 -> "高度集中（少数人撑起整个群）"
+        gini >= 0.40 -> "偏集中（头部几个人贡献大半）"
+        gini >= 0.25 -> "较均衡（有人多说、有人少说）"
+        else -> "很均衡（几乎人人都在说）"
     }
 
     /** 私聊平衡度结论 */

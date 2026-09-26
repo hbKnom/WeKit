@@ -63,6 +63,7 @@ object MonetRuntimePackageWriter {
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)? = null,
         hostDrawableIsRealFile: ((path: String) -> Boolean)? = null,
+        excludedIds: Set<Int> = emptySet(),
     ): Boolean {
         if (plan.isEmpty) {
             // 一个角色都没解析出来时不该抛异常打断整条流程：调用方会把它当成
@@ -76,7 +77,16 @@ object MonetRuntimePackageWriter {
         )
         val writtenFiles = HashSet<String>()
         try {
-            if (!writeTo(tmp, packageName, plan, hostReference, hostDrawableIsRealFile, writtenFiles)) {
+            if (!writeTo(
+                    tmp,
+                    packageName,
+                    plan,
+                    hostReference,
+                    hostDrawableIsRealFile,
+                    excludedIds,
+                    writtenFiles,
+                )
+            ) {
                 tmp.delete()
                 return false
             }
@@ -139,6 +149,7 @@ object MonetRuntimePackageWriter {
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)?,
         hostDrawableIsRealFile: ((path: String) -> Boolean)?,
+        excludedIds: Set<Int>,
         outFiles: MutableSet<String>,
     ): Boolean {
         val apk = ApkModule()
@@ -152,9 +163,20 @@ object MonetRuntimePackageWriter {
         // 「building resource package 阶段分析失败：Required value was null.」。
         // 改成直接记条目自己的 resourceId：不可能回查为空，且与宿主「按 id 覆盖」的方式一致。
         val specFlags = HashMap<Int, Int>()
+        // 每个 typeId 里我们真正写到过的**最大 entryId + 1**。写包最后用它把 TypeSpec 的
+        // entryCount 补齐（见 freezeCanonicalTable）：AOSP 的 AssetManager2 是拿 TypeSpec 的
+        // flags 数组按 entryId 索引的，spec 声明的范围盖不住条目时，宿主查得到值、却查不到
+        // 资源名 —— 崩溃栈就是 wekit-crash-2026-09-26_13-33-02 的那条。
+        val specEntryCounts = HashMap<Int, Int>()
         fun record(entry: Entry, qualifiers: String) {
             specFlags[entry.resourceId] =
                 specFlags.getOrDefault(entry.resourceId, 0) or qualifierFlags(qualifiers)
+            val entryTypeId = (entry.resourceId ushr 16) and 0xff
+            val entryId = entry.resourceId and 0xffff
+            val wanted = entryId + 1
+            if (wanted > specEntryCounts.getOrDefault(entryTypeId, 0)) {
+                specEntryCounts[entryTypeId] = wanted
+            }
         }
 
         // 同一次计划里自己写的资源（自适应图标图层等）在写 XML 时可能还没建条目，
@@ -180,7 +202,7 @@ object MonetRuntimePackageWriter {
             }
         }
 
-        val aligned = AlignedEntryWriter(pkg)
+        val aligned = AlignedEntryWriter(pkg, excludedIds)
 
         plan.colors.forEach { color ->
             val binding = color.binding
@@ -281,7 +303,7 @@ object MonetRuntimePackageWriter {
             WeLogger.e(TAG, "runtime package rejected: $mismatch")
             return false
         }
-        freezeCanonicalTable(apk, table)
+        freezeCanonicalTable(apk, table, specEntryCounts)
         output.parentFile?.mkdirs()
         apk.writeApk(output)
         apk.close()
@@ -346,7 +368,11 @@ object MonetRuntimePackageWriter {
      * from scratch. Android's readers are not required to repair those fields. Freeze a canonical
      * byte source after the final refresh so a later BlockInputSource refresh cannot erase them.
      */
-    private fun freezeCanonicalTable(apk: ApkModule, table: TableBlock) {
+    private fun freezeCanonicalTable(
+        apk: ApkModule,
+        table: TableBlock,
+        specEntryCounts: Map<Int, Int>,
+    ) {
         val bytes = table.bytes
         val tableStrings = table.stringPool
         if (tableStrings.isEmpty) {
@@ -359,7 +385,27 @@ object MonetRuntimePackageWriter {
             putI32(bytes, packageOffset + 0x118, 0)
             pkg.listSpecTypePairs().forEach { pair ->
                 val specOffset = table.countUpTo(pair.specBlock)
+                val typeId = bytes[specOffset + 8].toInt() and 0xff
+                val current = getI32(bytes, specOffset + 12)
+                val wanted = specEntryCounts[typeId] ?: 0
                 putU16(bytes, specOffset + 10, pair.countTypeBlocks())
+                if (wanted > current) {
+                    // TypeSpec 的 entryCount（结构体偏移 12）必须覆盖它名下 TypeBlock 真正用到
+                    // 的最大 entryId。ARSCLib 从零建表时这一栏不保证跟着条目涨：实机包里有
+                    // typeId 8 写到 0x116c、别的 typeId 的 spec 却只声明很小一段。
+                    // spec 盖不住条目时，宿主的
+                    //   TypedArray.getDrawable -> ResourcesImpl.loadDrawableForCookie
+                    // 会在**取到值之后**再回查一次资源名，回查失败抛
+                    //   Resources$NotFoundException: File res/drawable/ao1.xml from
+                    //   drawable resource ID #0x7f08116c
+                    // 直接崩进程（wekit-crash-2026-09-26_13-33-02 / 13-43-03）。
+                    // 补大不补小：多出来的 flags 全是 0，语义就是「该配置没有差异」，安全。
+                    putI32(bytes, specOffset + 12, wanted)
+                    WeLogger.i(
+                        TAG,
+                        "spec typeId $typeId entryCount $current -> $wanted（写到了高 entryId，spec 同步补大）",
+                    )
+                }
             }
         }
 
@@ -369,6 +415,12 @@ object MonetRuntimePackageWriter {
             sort = 1
         })
     }
+
+    private fun getI32(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
 
     private fun putU16(bytes: ByteArray, offset: Int, value: Int) {
         bytes[offset] = value.toByte()
@@ -405,7 +457,10 @@ object MonetRuntimePackageWriter {
      *
      * 失败的条目一律**跳过并计数**：少替换几个资源只是观感问题，写到错的地方是闪退。
      */
-    private class AlignedEntryWriter(private val pkg: PackageBlock) {
+    private class AlignedEntryWriter(
+        private val pkg: PackageBlock,
+        private val excludedIds: Set<Int>,
+    ) {
 
         private val typeNames = linkedMapOf<Int, String>()
         private var written = 0
@@ -414,6 +469,13 @@ object MonetRuntimePackageWriter {
 
         fun entry(binding: MonetBinding, qualifiers: String): Entry? {
             val id = binding.id
+            // 拉黑表：曾经在实机上「值能取到、但 getResourceTypeName(id) 取不到名字」的 id。
+            // 宿主的 TypedArray -> getDrawable 路径会在取到值之后再回查一次资源名，回查失败
+            // 就抛 Resources$NotFoundException 直接崩进程（实机 wekit-crash-2026-09-26_13-33-02）。
+            // 这些 id 永久不再写进包，是「宁可少莫奈化几个资源，也绝不让微信崩」的兜底。
+            if (id in excludedIds) {
+                return skip(binding, "冒烟校验未通过（已拉黑，见 monet_blacklist.json）")
+            }
             if (id == 0) return skip(binding, "id==0（合成资源必须先用 syntheticId 借槽位）")
             if ((id ushr 24) and 0xff != HOST_PACKAGE_ID) {
                 return skip(binding, "packageId 不是宿主 0x${HOST_PACKAGE_ID.toString(16)}")

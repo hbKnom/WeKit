@@ -160,6 +160,14 @@ object MonetEngine : ClickableFeature() {
     /** 启动后延后这么久才开始资源解析：把最重的一段挪出启动关键路径。 */
     private const val INITIAL_RESOLVE_DELAY_MS = 20_000L
 
+    /**
+     * 「写包 -> 注入 -> 逐条冒烟校验」最多重写几轮。
+     *
+     * 校验不通过的 id 会被拉黑（`monet_blacklist.json`）后重写包，直到整包健康；三轮仍不健康
+     * 说明这批条目宿主根本不认，就放弃本次注入 —— 绝不把坏包留在微信进程里试错。
+     */
+    private const val MAX_PACKAGE_ATTEMPTS = 3
+
     /** 宿主 `res/` 下算作「可覆盖的真实文件」的扩展名（用于过滤别名 drawable）。 */
 
     const val KEY_BUBBLE_STYLE = "monet_bubble_style"
@@ -384,7 +392,19 @@ object MonetEngine : ClickableFeature() {
                             "绑定缓存缺失但运行时包已存在（${packageFile.name}），直接复用、跳过全量解析",
                         )
                     }
-                    applyRuntimePackage(packageFile, cached)
+                    // 复用来的包同样要过冒烟校验：校验不过 = 这个包在**当前**微信上会让宿主
+                    // 取资源时崩，必须就地销毁并拉黑那批 id，绝不能因为「包名里带着 fingerprint」
+                    // 就默认它没问题（上一版就是这样把坏包反复注入的）。
+                    val reused = applyRuntimePackage(packageFile, cached)
+                    if (reused.isNotEmpty()) {
+                        detachLastApplied()
+                        persistBlacklist(fingerprint, loadBlacklist(fingerprint) + reused)
+                        runCatching { if (packageFile.exists()) packageFile.delete() }
+                        error(
+                            "复用的运行时资源包冒烟校验未通过（${reused.size} 条覆盖资源不可用），" +
+                                "已回滚、拉黑并删除该包；下次启动会重新解析",
+                        )
+                    }
                     recordRuntimeApplied(packageFile)
                     publishPalette()
                     if (cached != null) {
@@ -497,22 +517,51 @@ object MonetEngine : ClickableFeature() {
                         ?: return@realFileDrawable true
                     value !is MonetResourceValue.Reference
                 }
-                if (!MonetRuntimePackageWriter.write(
-                        packageFile,
-                        info.packageName,
-                        resolution.plan,
-                        hostReference,
-                        hostDrawableIsRealFile,
+                // 写包 -> 注入 -> 逐条校验 -> 不通过就拉黑重写。
+                //
+                // 为什么不让「一个坏条目」蒙混过关：宿主的 drawable 取值路径会在**取到值之后**
+                // 回查一次资源名，回查失败直接抛 Resources$NotFoundException 崩进程
+                //（wekit-crash-2026-09-26_13-33-02 / 13-43-03：File res/drawable/ao1.xml from
+                // drawable resource ID #0x7f08116c）。所以判据只能是「每一条写进包里的资源，
+                // 注入之后都既能取值、又能按名字解析」，达不到就把那几条剔出去重写。
+                val excluded = loadBlacklist(fingerprint)
+                var attempt = 0
+                while (true) {
+                    attempt++
+                    if (!MonetRuntimePackageWriter.write(
+                            packageFile,
+                            info.packageName,
+                            resolution.plan,
+                            hostReference,
+                            hostDrawableIsRealFile,
+                            excluded,
+                        )
+                    ) {
+                        // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
+                        error(
+                            "运行时资源包构建失败（资源 id 校验未通过），已中止本次注入以免影响微信运行" +
+                                "（可在设置里重新解析）",
+                        )
+                    }
+                    val unhealthy = applyRuntimePackage(packageFile, resolution.bindings)
+                    if (unhealthy.isEmpty()) break
+                    detachLastApplied()
+                    excluded += unhealthy
+                    persistBlacklist(fingerprint, excluded)
+                    runCatching { if (packageFile.exists()) packageFile.delete() }
+                    WeLogger.w(
+                        TAG,
+                        "第 $attempt 轮运行时包有 ${unhealthy.size} 条覆盖资源校验不通过，已拉黑并重写" +
+                            "（累计拉黑 ${excluded.size} 条）",
                     )
-                ) {
-                    // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
-                    error(
-                        "运行时资源包构建失败（资源 id 校验未通过），已中止本次注入以免影响微信运行" +
-                            "（可在设置里重新解析）",
-                    )
+                    if (attempt >= MAX_PACKAGE_ATTEMPTS) {
+                        error(
+                            "运行时资源包连续 $attempt 轮未通过冒烟校验，本次不注入以免影响微信运行" +
+                                "（已拉黑 ${excluded.size} 条不可用覆盖，可在设置里重新解析）",
+                        )
+                    }
                 }
                 persistBindings(resolution.bindings)
-                applyRuntimePackage(packageFile, resolution.bindings)
                 recordRuntimeApplied(packageFile)
                 // 解析成功 → 清零「解析未完成」计数，下次启动照常复用缓存。
                 runCatching {
@@ -562,8 +611,61 @@ object MonetEngine : ClickableFeature() {
         return primary
     }
 
-    private fun applyRuntimePackage(file: File, bindings: MonetBindings?) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    /**
+     * 冒烟校验没通过的覆盖 id（永久拉黑），首行是资源指纹。
+     *
+     * 为什么必须持久化：坏 id 的判据（「值取得到、但 `getResourceTypeName(id)` 取不到」）
+     * 只有把包注入之后才测得出，而注入是不能试错的 —— 试错的那一次就是用户手机上的一次闪退。
+     * 所以第一次踩到的坏 id 记进这里，之后每次写包直接跳过它。微信一升级资源指纹就变了，
+     * 指纹对不上整份作废（旧 id 表没有任何参考价值）。
+     */
+    private val blacklistFile: File by lazy { File(runtimeDir, "monet_blacklist.json") }
+
+    private fun loadBlacklist(fingerprint: String): MutableSet<Int> {
+        val result = LinkedHashSet<Int>()
+        runCatching {
+            if (!blacklistFile.isFile) return@runCatching
+            val lines = blacklistFile.readLines()
+            if (lines.firstOrNull()?.trim() != fingerprint) {
+                WeLogger.i(TAG, "monet blacklist belongs to another WeChat build, ignoring")
+                return@runCatching
+            }
+            lines.drop(1).forEach { line -> line.trim().toIntOrNull()?.let(result::add) }
+        }.onFailure { WeLogger.d(TAG, "cannot read monet blacklist", it) }
+        return result
+    }
+
+    private fun persistBlacklist(fingerprint: String, ids: Set<Int>) {
+        runCatching {
+            runtimeDir.mkdirs()
+            blacklistFile.writeText(
+                buildString {
+                    appendLine(fingerprint)
+                    ids.sorted().forEach { appendLine(it) }
+                },
+            )
+        }.onFailure { WeLogger.w(TAG, "cannot persist monet blacklist", it) }
+    }
+
+    /** 最近一次成功挂上去的 (Resources, loader)，用于「重写包」时把上一轮摘干净。 */
+    private var lastAppliedLoader: Pair<Resources, android.content.res.loader.ResourcesLoader>? = null
+
+    private fun detachLastApplied() {
+        val applied = lastAppliedLoader ?: return
+        lastAppliedLoader = null
+        _runtimePackage.value = null
+        runCatching { applied.first.removeLoaders(applied.second) }
+            .onFailure { WeLogger.w(TAG, "cannot detach runtime loader", it) }
+    }
+
+    /**
+     * 注入运行时包并做冒烟校验。
+     *
+     * @return 校验**不通过**的覆盖资源 id；空集 = 包健康、已生效。拿到非空集合时调用方必须
+     *   [detachLastApplied]，把这些 id 拉黑后重写包（见 [startResolve]）。
+     */
+    private fun applyRuntimePackage(file: File, bindings: MonetBindings?): Set<Int> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptySet()
         val resources = HostInfo.application.resources
         val loader = android.content.res.loader.ResourcesLoader()
         ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
@@ -573,24 +675,21 @@ object MonetEngine : ClickableFeature() {
             loader.addProvider(provider)
         }
         resources.addLoaders(loader)
-        // 冒烟校验：注入之后宿主资源必须还能正常取色。不通过就立刻摘掉 loader ——
-        // 宁可不莫奈化，也不把一个坏包留在微信进程里（实机教训：坏包 = 取资源就崩）。
-        val healthy = runCatching { smokeTestRuntimePackage(resources, bindings) }
+        // 冒烟校验：注入之后宿主资源必须还能正常取用。不通过就立刻摘掉 loader 并把**具体哪些
+        // id**交回调用方 —— 宁可不莫奈化，也不把一个坏包留在微信进程里（实机教训：坏包 = 取资源就崩）。
+        val unhealthy = runCatching { smokeTestRuntimePackage(resources, bindings) }
             .onFailure { WeLogger.w(TAG, "smoke test failed to run", it) }
-            .getOrDefault(true)
-        if (!healthy) {
+            .getOrDefault(emptySet())
+        if (unhealthy.isNotEmpty()) {
             runCatching { resources.removeLoaders(loader) }
                 .onFailure { WeLogger.e(TAG, "cannot roll back runtime loader", it) }
             _runtimePackage.value = null
-            // 坏包必须就地销毁：留着它下次启动还会被「缓存命中」直接注入，反复回滚 = 每次开机
-            // 都要踩一遍 Resources 取用异常。bindings 缓存不动（它只是 id 表），下次会用同样的
-            // bindings 重新生成包。
-            runCatching { if (file.exists()) file.delete() }
-                .onFailure { WeLogger.w(TAG, "cannot delete rejected runtime package", it) }
-            error("运行时资源包冒烟校验未通过（有覆盖资源取不出来），已回滚并删除坏包以免影响微信运行")
+            return unhealthy
         }
+        lastAppliedLoader = resources to loader
         _runtimePackage.value = file
         WeLogger.i(TAG, "applied ${file.name} (${file.length()} bytes)")
+        return emptySet()
     }
 
     /** 已经挂过运行时包的 `Resources`（弱引用，避免把宿主的 Resources 钉在内存里）。 */
@@ -663,20 +762,44 @@ object MonetEngine : ClickableFeature() {
      *
      * 类型分流按 `Resources.getResourceTypeName`：drawable/mipmap 走 `getDrawable`（这条正是
      * 崩溃路径），color 走 `getColor`，string 走 `getString`；其它类型本轮不写入，取不到不算我们写坏。
+     *
+     * 返回「不健康的 id 集合」而不是 Boolean：调用方要拿这批 id 去拉黑 + 重写包。只知道
+     * 「包坏了」是不够的 —— 坏 id 不带回来，下一轮写包还会原样写回去，等于每次开机崩一遍。
      */
-    private fun smokeTestRuntimePackage(resources: Resources, bindings: MonetBindings?): Boolean {
-        val ids = bindings?.roles?.values?.toList() ?: return true
-        if (ids.isEmpty()) return true
-        var checked = 0
+    private fun smokeTestRuntimePackage(resources: Resources, bindings: MonetBindings?): Set<Int> {
+        val ids = bindings?.roles?.values?.toList() ?: return emptySet()
+        if (ids.isEmpty()) return emptySet()
+        var named = 0
+        var valueOk = 0
+        var unnamed = 0
         var failed = 0
-        var unresolvable = 0
-        val samples = StringBuilder()
+        val unhealthy = LinkedHashSet<Int>()
+        val unnamedSamples = StringBuilder()
+        val failedSamples = StringBuilder()
+        fun sample(builder: StringBuilder, type: String, id: Int) {
+            if (builder.length >= 240) return
+            if (builder.isNotEmpty()) builder.append(", ")
+            builder.append(type).append("/0x").append(id.toUInt().toString(16))
+        }
+
         for (id in ids) {
+            // ① 资源名必须先解析得出来。
+            //
+            // 宿主的 drawable 取值路径是「按 id 取出值 -> 值以 .xml 结尾 -> 回查
+            // getResourceTypeName(id) -> 再去包里打开那个文件」。第 ② 步能取到值**不代表**
+            // 第 ③ 步能过：13-33-02 / 13-43-03 两次实机崩溃里，宿主明明已经拿到了我们写的
+            // `res/drawable/ao1.xml`，却在回查名字时抛
+            //   Unable to find resource ID #0x7f08116c
+            // 最后以 Resources$NotFoundException 崩掉整个进程。所以「名字查不出来」与
+            // 「值取不出来」一样是硬门禁，这类 id 必须拉黑。
             val type = runCatching { resources.getResourceTypeName(id) }.getOrNull()
             if (type == null) {
-                unresolvable++
+                unnamed++
+                unhealthy += id
+                sample(unnamedSamples, "?", id)
                 continue
             }
+            named++
             val ok = runCatching {
                 when (type) {
                     "color" -> {
@@ -693,28 +816,26 @@ object MonetEngine : ClickableFeature() {
                     else -> true
                 }
             }.getOrDefault(false)
-            checked++
             if (!ok) {
                 failed++
-                if (samples.length < 240) {
-                    if (samples.isNotEmpty()) samples.append(", ")
-                    samples.append(type).append("/0x").append(id.toUInt().toString(16))
-                }
+                unhealthy += id
+                sample(failedSamples, type, id)
+                continue
             }
+            valueOk++
         }
-        if (failed > 0) {
+
+        if (unhealthy.isNotEmpty()) {
             WeLogger.e(
                 TAG,
-                "冒烟校验不通过：$failed/$checked 条覆盖资源取用异常（$samples）；本次注入已回滚",
+                "冒烟校验不通过：$named 条能按名字解析、其中 $failed 条取用异常（$failedSamples）；" +
+                    "另有 $unnamed 条查不到资源名（$unnamedSamples）；" +
+                    "合计 ${unhealthy.size}/${ids.size} 条将被拉黑并重写包",
             )
-            return false
+            return unhealthy
         }
-        WeLogger.i(
-            TAG,
-            "冒烟校验通过：$checked 条覆盖资源全部可取用；另有 $unresolvable 条角色 id 在宿主资源表里查不到" +
-                "（这些角色不会生效，若数字接近总数说明运行时包没被宿主资源采纳）",
-        )
-        return true
+        WeLogger.i(TAG, "冒烟校验通过：$valueOk 条覆盖资源全部可取用、且都能按名字解析")
+        return emptySet()
     }
 
     /**

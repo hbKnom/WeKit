@@ -112,6 +112,61 @@ object MoodStore {
 
     fun get(key: String): Mood? = cache[key]
 
+    // ------------------------------------------------------------------ 结论复用（不重复分析）
+
+    private const val REUSE_LIMIT = 256
+
+    /**
+     * 结论的**复用索引**，键带前缀区分两种身份：
+     *  - `i:` + 消息身份（会话 + 消息 id）= 同一条消息的结论；
+     *  - `c:` + 内容身份（会话 + 说话人 + 文本 + 上下文，不含消息 id）= 相同文本的结论。
+     *
+     * 为什么必须有它：显示用的 [AnalysisInput.key] 把**上下文**一起哈希了，于是同一条
+     * 消息在「滚动重绑 / 新消息到达导致上下文变化」之后会得到一个全新的键 ——
+     * 旧实现拿不到旧结论，就**重新打一次模型**（同一句话反复分析、额度白烧、还卡）。
+     * 第 22 轮的要求是「每条消息只分析一次、相同文本不重复分析」，所以复用必须按
+     * 「消息身份」和「内容身份」来查，而不是按上下文键。
+     *
+     * 访问序 LRU 限容：只服务于「当前这段会话的反复绑定」，不需要无限历史。
+     */
+    private val reuse = object : LinkedHashMap<String, Mood>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Mood>?) = size > REUSE_LIMIT
+    }
+    private val reused = AtomicInteger()
+
+    /** 记下一次复用命中（设置页/诊断用）。 */
+    fun markReused() { reused.incrementAndGet() }
+
+    /** 复用命中次数（自本次进程启动起算）。 */
+    fun reuseHits(): Int = reused.get()
+
+    /** 记下一条结论的两种身份，供后续同消息/同文本直接复用。 */
+    fun rememberReuse(input: AnalysisInput, mood: Mood) {
+        runCatching {
+            synchronized(reuse) {
+                reuse["i:${input.identity}"] = mood
+                reuse["c:${contentIdentity(input)}"] = mood
+            }
+        }
+    }
+
+    /**
+     * 已经有结论时直接返回（不再打模型），没有则 null。
+     *
+     * 顺序：结论键 → 同一条消息 → 相同文本（相同上下文）。
+     */
+    fun settledMood(input: AnalysisInput): Mood? {
+        cache[input.key]?.let { return it }
+        return runCatching {
+            synchronized(reuse) {
+                reuse["i:${input.identity}"] ?: reuse["c:${contentIdentity(input)}"]
+            }
+        }.getOrNull()
+    }
+
+    private fun contentIdentity(input: AnalysisInput): String =
+        keyOf(input.text, input.talker, input.context, 0L, input.speaker)
+
     /** 尝试认领一次分析任务；已经在跑或已完成返回 false。 */
     fun claim(key: String): Boolean {
         if (cache.containsKey(key)) return false
@@ -244,6 +299,8 @@ object MoodStore {
         trendVersion++
         trendVersions.clear()
         inserted.clear()
+        synchronized(reuse) { reuse.clear() }
+        reused.set(0)
         completed.set(0)
         failed.set(0)
     }
@@ -252,6 +309,7 @@ object MoodStore {
     fun clearResults() {
         cache.clear()
         pending.clear()
+        synchronized(reuse) { reuse.clear() }
     }
 }
 

@@ -446,6 +446,23 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
         val getCount: Method,
         val getItem: Method,
         val getView: Method,
+        /**
+         * `getItemViewType(显示下标)`。
+         *
+         * 过滤之后「显示下标 -> 原始下标」的映射必须**成套**覆盖宿主读下标的每一个入口
+         * （getCount / getItem / getItemViewType / getView）。少任何一个都会错位：宿主
+         * `RecyclerView.createViewHolder` 拿到的 viewType 来自未映射的
+         * `getItemViewType(显示下标)`，而 item 来自已映射的 `getItem(显示下标)` ——
+         * 两者不是同一行，宿主按 viewType 造出来的 holder 再去 `findViewById` 就是 null：
+         *   NullPointerException: Attempt to invoke virtual method
+         *   'int android.view.View.getId()' on a null object reference
+         *     at uk5.n0.onCreateViewHolder(SourceFile:326)
+         *     at com.tencent.mm.pluginsdk.ui.tools.q3.onCreateViewHolder(SourceFile:9)
+         *（实机 wekit-crash-2026-09-26_13-27-42 / 13-44-08，crashActivity=com.tencent.mm.ui.LauncherUI，
+         *  viewType=1070927991 / -1349806852 就是原始行的类型值）。
+         * 拿不到这个方法时退化成 null（不映射）—— 比接错安全，宿主最多多造几个 holder。
+         */
+        val getItemViewType: Method?,
         val storage: AdapterStorage,
     )
     private data class AdapterItemFields(
@@ -659,6 +676,14 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                     superclass()
                 }.self,
                 getView = getView,
+                getItemViewType = runCatching {
+                    owner.firstMethod {
+                        name = "getItemViewType"
+                        parameters(Int::class.java)
+                        returnType = Int::class.java
+                        superclass()
+                    }.self
+                }.getOrNull(),
                 storage = storage,
             )
         }
@@ -710,6 +735,23 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
              *  - 构建快照时用的是原始下标（buildingAdapterCache 标记），同样不能映射。
              */
             methods.getItem.hookBefore(priority = 100) {
+                if (groupingBackend != GroupingBackend.ADAPTER_FILTER) return@hookBefore
+                if (isAllTab(activeAdapterGroup.id)) return@hookBefore
+                val adapter = thisObject!!
+                if (!methods.getView.declaringClass.isInstance(adapter)) return@hookBefore
+                if (bindingAdapter.get() === adapter) return@hookBefore
+                if (buildingAdapterCache.get() == true) return@hookBefore
+                val cache = synchronized(adapterCaches) { adapterCaches[adapter] } ?: return@hookBefore
+                val position = args[0] as Int
+                if (position in cache.visiblePositions.indices) {
+                    args[0] = cache.visiblePositions[position]
+                }
+            }
+            // getItemViewType 与 getItem / getView 必须用**同一套映射**（同样的守卫、
+            // 同样的可见下标表）。宿主是拿 viewType 去选 holder 的布局、拿 item 去填内容的，
+            // 少映射一个就等于「按 A 行的类型去装 B 行的内容」，实机表现就是建 holder 时
+            // NPE 崩进程（wekit-crash-2026-09-26_13-27-42 / 13-44-08）。
+            methods.getItemViewType?.hookBefore(priority = 100) {
                 if (groupingBackend != GroupingBackend.ADAPTER_FILTER) return@hookBefore
                 if (isAllTab(activeAdapterGroup.id)) return@hookBefore
                 val adapter = thisObject!!

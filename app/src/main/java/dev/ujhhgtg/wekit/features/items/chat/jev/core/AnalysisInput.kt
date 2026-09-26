@@ -26,6 +26,24 @@ data class AnalysisInput(
         MoodStore.keyOf(text, talker, context, messageId, speaker)
     }
 
+    /**
+     * **稳定身份键**：会话 + 消息 id（拿不到消息 id 时退回「会话 + 文本哈希」）。
+     *
+     * 与 [key] 的分工必须分清，别再混用：
+     *  - [key] = **结论身份**（内容 + 上下文 + 消息 id 一起哈希）：模型出一条结论就一个键，
+     *    上下文一变就是另一条结论 —— 它适合查结果，**不适合**当卡片/缓存的归属键；
+     *  - [identity] = **归属身份**（会话 + 消息 id，与上下文无关）：同一条消息无论上下文
+     *    怎么变、无论重试多少次，身份都不变。
+     *
+     * 第 22 轮踩的坑：卡片原来拿 [key] 当归属键，于是**上下文一变（旁边来了一条新消息）
+     * 就判定「换人」，把卡片整张拆掉重建** —— 每次重扫（10s 一拍）都会把全屏卡片
+     * 拆一遍再排一遍，用户看到的就是「滚动时一卡一卡的、卡片还会闪一下重新出现」。
+     * 归属用 [identity]、结论用 [key]，这两个问题一起消失。
+     */
+    val identity: String by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        if (messageId > 0L) "$talker#$messageId" else "$talker#t${text.hashCode()}"
+    }
+
     /** 是否是我方发出的消息（回插通道要跳过自己的话，否则等于自己刷自己的屏）。 */
     val isSelf: Boolean get() = speaker == SELF_SPEAKER
 

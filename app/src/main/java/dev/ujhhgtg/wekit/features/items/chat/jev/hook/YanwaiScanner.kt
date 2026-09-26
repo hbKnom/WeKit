@@ -116,9 +116,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      * 重扫会把可见行重新走一遍 `handle` → `submitIfNeeded`。
      *
      * **必须大于 [SignalAnalyzer] 的失败冷却**：冷却期内重扫会被 `submit` 挡回来，
-     * 等于白扫一次（旧值 20s < 冷却 30s，正好踩在这个坑上）。
+     * 等于白扫一次（旧值 20s < 冷却 30s，正好踩在这个坑上）。第 22 轮起这个延迟
+     * **直接由分析器那边的冷却常量推出来**（冷 + 5s）—— 以后谁改了冷却，
+     * 这里的「必须大于冷却」不会因为忘了同步而被破坏。
      */
-    private const val RETRY_SWEEP_DELAY_MS = 35_000L
+    private val RETRY_SWEEP_DELAY_MS = SignalAnalyzer.FAIL_COOLDOWN_MS + 5_000L
 
     /**
      * 一轮自动重扫里的退避上限（35s、70s、105s… 最多排到这里）。

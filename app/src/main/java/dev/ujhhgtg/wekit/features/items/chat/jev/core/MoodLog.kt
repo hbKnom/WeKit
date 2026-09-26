@@ -16,6 +16,16 @@ object MoodLog {
     private val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     var frameworkSink: ((String) -> Unit)? = null
 
+    /**
+     * 「详细日志」门闩：诊断性的 INFO 只在用户打开详细日志时才落盘。
+     *
+     * 每写一行都要同步落一次磁盘，而潜语的热路径（每次 bind / 每次绘制 / 每拍重试）
+     * 到处都可能想记一行 —— 这些诊断必须挂在门闩后面，否则日志本身就是卡顿源。
+     * 异常（W/E）不受门闩约束：它们已经被「同类只记一行」去重，属于必须留下的证据。
+     */
+    val verbose: Boolean
+        get() = runCatching { dev.ujhhgtg.wekit.utils.WeLogger.verboseEnabled }.getOrDefault(false)
+
     @Synchronized fun protect(secret: String) { if (secret.isNotBlank()) secrets.add(secret) }
     @Synchronized fun sanitize(text: String) = DiagnosticText.sanitize(text, secrets)
 
