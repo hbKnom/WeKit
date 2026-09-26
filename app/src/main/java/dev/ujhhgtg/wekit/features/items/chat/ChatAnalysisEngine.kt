@@ -1316,7 +1316,7 @@ object ChatAnalysisEngine {
     ): String {
         val r = StringBuilder()
         appendCoreOverview(r, extra, talker, isGroup, totalAll, textN, typeCount, atMe, rank.size, nickCache)
-        appendCoreTime(r, extra, totalAll, textN, hourDist)
+        appendCoreTime(r, extra, totalAll, textN, hourDist, typeCount)
         appendCoreRhythm(
             r = r,
             ex = extra,
@@ -1485,6 +1485,10 @@ object ChatAnalysisEngine {
         totalAll: Int,
         textN: Int,
         hourDist: IntArray,
+        // 第 22 轮：2B)「分享物与链接密度」并进这一段讲「聊什么」的地方，用到的
+        // typeCount 必须显式传进来 —— 它在上层是构造统计时就地累加好的 map，
+        // 不在这里重新扫一遍消息，也不查库。
+        typeCount: Map<String, Int>,
     ) {
         var hMax = 0
         var hPeak = 0

@@ -137,7 +137,7 @@ object SignalAnalyzer {
      *
      * 本轮补上另外半边：自动重投要有**冷却 + 次数上限**（[autoRetryGapMs] /
      * [MAX_AUTO_RETRIES]），否则一条永远失败的消息会被无限重投。
-     * 真正的配额判断仍在 [submit] 里：未配置、超出字数上限、仍在 [RETRY_COOLDOWN_MS]
+     * 真正的配额判断仍在 [submit] 里：未配置、超出字数上限、仍在 [FAIL_COOLDOWN_MS]
      * 冷却内的消息即使被重投也会被挡下并立刻返回 null。
      */
     fun tryConsumeAutoRetry(key: String): RetryVerdict {
@@ -162,13 +162,13 @@ object SignalAnalyzer {
     fun mayRetryFailed(key: String): Boolean = tryConsumeAutoRetry(key) == RetryVerdict.READY
 
     /**
-     * 这一条是否还在 [RETRY_COOLDOWN_MS] 失败冷却里。
+     * 这一条是否还在 [FAIL_COOLDOWN_MS] 失败冷却里。
      *
      * 扫描器据此把「还在冷却」与「额度用尽」分开：前者等下一轮重扫就行，
      * 后者再排也是白排 —— 而且**冷却检查必须先于额度消耗**，否则冷却是白等的。
      */
     fun coolingDown(key: String): Boolean =
-        System.currentTimeMillis() - (failures[key] ?: 0L) < RETRY_COOLDOWN_MS
+        System.currentTimeMillis() - (failures[key] ?: 0L) < FAIL_COOLDOWN_MS
 
     /** 已发出的请求数（含重试），设置页显示运行状态用。 */
     val requestCount: Int get() = client.requestCount
@@ -262,7 +262,7 @@ object SignalAnalyzer {
         if (!ModulePrefs.inScope(input.talker)) return null
         if (MessagePolicy.textOrNull(input.text) == null) return null
         val key = input.key
-        if (System.currentTimeMillis() - (failures[key] ?: 0L) < RETRY_COOLDOWN_MS) return null
+        if (System.currentTimeMillis() - (failures[key] ?: 0L) < FAIL_COOLDOWN_MS) return null
         if (!MoodStore.claim(key)) return key
         failureMessages.remove(key)
         pendingInputs[key] = input
