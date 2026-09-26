@@ -138,7 +138,7 @@ object FeaturesLoader {
     /** 延后批次每片最多占用主线程多久，超过就让出一次消息循环（保证首帧之后的 UI 不抖）。 */
     private const val DEFERRED_SLICE_BUDGET_MS = 120L
 
-    private fun runFeatureStartup(feature: BaseFeature, allBrokenItems: List<BaseFeature>) {
+    private fun runFeatureStartup(feature: BaseFeature, allBrokenItems: List<IResolveDex>) {
         val isBroken = feature is IResolveDex && allBrokenItems.contains(feature)
 
         if (isBroken) {
@@ -158,7 +158,7 @@ object FeaturesLoader {
 
     private fun scheduleDeferredStartup(
         features: List<BaseFeature>,
-        allBrokenItems: List<BaseFeature>,
+        allBrokenItems: List<IResolveDex>,
     ) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             // 不在主线程（理论上不会发生）就直接跑完，保持行为可预期。
@@ -184,7 +184,7 @@ object FeaturesLoader {
 
     private fun drainDeferredStartup(
         pending: MutableList<BaseFeature>,
-        allBrokenItems: List<BaseFeature>,
+        allBrokenItems: List<IResolveDex>,
         totalStartedAt: Long,
     ) {
         val sliceStartedAt = SystemClock.uptimeMillis()
