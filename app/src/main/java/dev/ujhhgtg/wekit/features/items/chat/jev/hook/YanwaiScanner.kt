@@ -4,12 +4,15 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
+import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageViewApi
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.ChatInsights
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.SignalAnalyzer
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.AnalysisInput
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ContextMessage
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.JevText
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.Mood
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
@@ -28,7 +31,7 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessagePolicy
  *  - 去掉 DexKit 与 Adapter 搜索，绑定关系直接由 API 给出；
  *  - 去掉 ListView 遍历，可见行通过 [WeChatMessageViewApi.findBoundViews] 获取。
  *
- * ## 本轮（第 15 轮）重构：把节拍从「结果通道」降级成「兜底」
+ * ## 第 15 轮：节拍从「结果通道」降级成「兜底」
  *
  * 用户实测「决策分析造成卡顿」的直接原因是这里：600ms 节拍会对**屏幕里每一行**重新
  * 扫描一遍，每扫一次都可能触发渲染。现在改成：
@@ -44,6 +47,31 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.MessagePolicy
  *  5. **补扫**（[rescan]）：功能是开启时才装上钩子，此前已经绑好的行不会再有回调 ——
  *     以前这些行永远不分析（用户实测「选定的聊天有些行没有结果」）。现在开启/保存配置后
  *     主动补扫一次可见行并提交。
+ *
+ * ## 第 16 轮：彻底修卡顿 + 每条文本消息都不放过
+ *
+ * 卡顿这边（量化见下），本文件改了两处、都不改变行为语义：
+ *
+ *  1. **本屏可见行快照带 TTL**（[screenSnapshot]）：每次绑定都要「列出这个会话的所有
+ *     已绑定行 + 按 top 排序」才能取前文。一屏 N 行、滚动时每秒几十次绑定，
+ *     这条路径是 O(N log N) × 绑定次数 ≈ 每屏 20 次整表扫描 + 20 次排序。
+ *     现在 250ms 内复用一份快照：快速滑动时从「每次绑定都扫+排」降到「每 250ms 一次」，
+ *     **一屏绑定 20 次的代价从 20 次扫描/排序降到 1 次**。
+ *  2. **一次扫描同时产出三样东西**（前文、双方发言序列、话题素材）：以前前文和
+ *     「谁在说话」要各来一遍。顺带把绑定路径里的偏好读取全部换成
+ *     [dev.ujhhgtg.wekit.preferences.HotPrefs] 内存命中（见 [ModulePrefs] 的注释，
+ *     每次绑定少掉约 12 次 SQLite 查询）。
+ *
+ * 覆盖完整性这边：
+ *
+ *  3. **队列上限不再是「丢」，而是「等」**（[capacityWaiting]）：队列满时这一条不提交，
+ *     但登记下来，队列一有空位下一拍自动补投；卡片期间明确显示
+ *     「分析队列已满（N 条排队中）」。上一版没有上限（堆到几百条、排到十几分钟），
+ *     再上一版则是直接静默丢弃 —— 两种都不是用户要的。
+ *  4. **自己发的消息默认一起分析**（[ModulePrefs.analyzeSelf] 默认已翻转为开）：
+ *     「被选定会话的每一条文本消息都要被分析」。
+ *  5. **超长消息给出可操作提示**：文案里带上当前上限（[MessagePolicy.maxCharacters]，
+ *     可在设置里改），不再是一句固定的「超过 2000 字」。
  *
  * 硬约束（不变）：每条已经提交的分析都必须在有限时间内变成「有结果」或「可见失败」，
  * 绝不允许「既没结果也没失败、节拍却一直空转」。
@@ -71,12 +99,29 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     /** 行还没测量好时卡片挂不上，最多重试这么多拍再放弃（避免无限重试）。 */
     private const val MAX_DEFER_ATTEMPTS = 12
 
+    /**
+     * 本屏可见行快照的有效期。
+     *
+     * 250ms 足够覆盖「一次滑动里连续触发的十几个 onBindView」，又短到不会让
+     * 「前文/双方发言」明显过期。取前文本来就有 [ModulePrefs.contextLimit] 条的截断，
+     * 差几行不影响结论。
+     */
+    private const val SCREEN_SNAPSHOT_TTL_MS = 250L
+
     private val main = Handler(Looper.getMainLooper())
     private var installed = false
     private var tickScheduled = false
 
     /** 正在等待结果的行（主线程私有），避免对同一行重复 show。 */
     private val awaiting = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /**
+     * 因为队列已满而**还没提交**的行。
+     *
+     * 这是「不丢消息」的关键：不提交 ≠ 放弃 —— 队列一有空位，下一拍就自动补投，
+     * 期间卡片显示「队列已满，会在有空位时自动开始」。
+     */
+    private val capacityWaiting = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
 
     /** 已经画好内容、但因为行还没测量而没能挂上视图的行，等布局就绪后重试。 */
     private val deferred = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
@@ -91,14 +136,57 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      */
     private val inputs = java.util.Collections.synchronizedMap(java.util.WeakHashMap<View, Row>())
 
-    /** 一行消息的分析输入与「不分析的原因」（过长/非文本时为非空）。 */
-    private class Row(val input: AnalysisInput, val note: String?)
+    /**
+     * 一行消息的分析输入、跳过原因，以及扩展洞察需要的「本屏素材」。
+     *
+     * [screen] 里装着本屏同一会话的「谁在说话」序列与原文，用于互动均衡 / 话题标签；
+     * 在绑定那一刻算好，节拍与渲染都不再重新扫屏幕。
+     */
+    private class Row(
+        val input: AnalysisInput,
+        val note: String?,
+        val screen: ChatInsights.Screen,
+    )
 
     /** key -> 提交时刻（elapsedRealtime）。用于看门狗判定，与系统时间跳变无关。 */
     private val submittedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** 已经记过的异常签名：同一类绘制异常只落一行日志，不刷屏。 */
     private val loggedSignatures = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    // ------------------------------------------------------------------ 本屏快照（主线程私有）
+
+    /** 会话 -> 本屏已绑定行（按纵向顺序），带生成时刻。只在主线程读写。 */
+    private val snapshotAt = HashMap<String, Long>()
+    private val snapshotRows = HashMap<String, List<Pair<View, MessageInfo>>>()
+
+    /**
+     * 取本屏快照（同一会话、按纵向顺序），250ms 内复用。
+     *
+     * 主线程专用：`view.top` 是 View 的字段，非主线程读它既没意义也不安全。
+     * 所有调用点（[handle] / [tick] / [fill]）都已经被 [onMain] 或 Handler 包住。
+     */
+    private fun screenSnapshot(talker: String): List<Pair<View, MessageInfo>> {
+        val now = SystemClock.elapsedRealtime()
+        val at = snapshotAt[talker]
+        if (at != null && now - at <= SCREEN_SNAPSHOT_TTL_MS) {
+            snapshotRows[talker]?.let { return it }
+        }
+        val fresh = WeChatMessageViewApi.findBoundViews { it.talker == talker }
+            .sortedBy { (view, _) -> view.top }
+        if (snapshotAt.size > 8) {
+            snapshotAt.clear()
+            snapshotRows.clear()
+        }
+        snapshotAt[talker] = now
+        snapshotRows[talker] = fresh
+        return fresh
+    }
+
+    private fun invalidateScreenSnapshot() {
+        snapshotAt.clear()
+        snapshotRows.clear()
+    }
 
     private var tickCount = 0
 
@@ -110,12 +198,25 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             if (!installed) return
             if (!ModulePrefs.enabled) {
                 awaiting.clear()
+                capacityWaiting.clear()
                 deferred.clear()
                 deferredAttempts.clear()
                 return
             }
             val now = SystemClock.elapsedRealtime()
             var keep = false
+            // 队列空出位置后，把「等空位」的行补投出去（不丢消息的关键路径）。
+            if (capacityWaiting.isNotEmpty() && !SignalAnalyzer.atCapacity()) {
+                for (view in capacityWaiting.toList()) {
+                    val row = rowFor(view)
+                    if (row == null) {
+                        capacityWaiting.remove(view)
+                        continue
+                    }
+                    capacityWaiting.remove(view)
+                    if (row.note == null) submitIfNeeded(row.input.key, row.input)
+                }
+            }
             for (view in awaiting.toList()) {
                 val row = rowFor(view)
                 if (row == null) {
@@ -151,6 +252,16 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
                 keep = true
                 // 排队中的卡片要跟着队列缩短更新「前面还有几条」
                 showCard(view, row)
+            }
+            for (view in capacityWaiting.toList()) {
+                val row = rowFor(view)
+                if (row == null) {
+                    capacityWaiting.remove(view)
+                    continue
+                }
+                // 等空位的卡片也要刷新「队列已满（N 条）」这一行
+                showCard(view, row)
+                keep = true
             }
             keep = retryDeferred() || keep
             YanwaiBubble.prune()
@@ -220,7 +331,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         runCatching { ModulePrefs.migrateInsertOffOnce() }
         MoodLog.i(
             "$TAG 已挂载（气泡=${ModulePrefs.displayBubble}，回插会话=${ModulePrefs.displayMessage}，" +
-                "范围=${ModulePrefs.scopeSummary()}）"
+                "范围=${ModulePrefs.scopeSummary()}，分析自己=${ModulePrefs.analyzeSelf}）"
         )
         // 装上钩子时屏幕上可能已经有绑好的消息，补扫一次
         onMain { rescan() }
@@ -231,10 +342,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         main.removeCallbacks(tick)
         tickScheduled = false
         awaiting.clear()
+        capacityWaiting.clear()
         deferred.clear()
         deferredAttempts.clear()
         submittedAt.clear()
         inputs.clear()
+        invalidateScreenSnapshot()
         runCatching {
             WeChatMessageViewApi.removeLifecycleListener(this)
             WeChatMessageViewApi.removeListener(this)
@@ -250,8 +363,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         tickScheduled = false
         if (!installed) return
         onMain {
+            invalidateScreenSnapshot()
             rescan()
-            if (awaiting.isNotEmpty() || deferred.isNotEmpty()) scheduleTick()
+            if (awaiting.isNotEmpty() || capacityWaiting.isNotEmpty() || deferred.isNotEmpty()) {
+                scheduleTick()
+            }
         }
     }
 
@@ -264,12 +380,15 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     fun rescan() {
         if (!installed) return
         if (!ModulePrefs.enabled) return
+        invalidateScreenSnapshot()
         var bound = 0
         for ((view, message) in WeChatMessageViewApi.findBoundViews { true }) {
             bound++
             handle(view, message)
         }
-        if (bound > 0 && (awaiting.isNotEmpty() || deferred.isNotEmpty())) scheduleTick()
+        if (bound > 0 && (awaiting.isNotEmpty() || capacityWaiting.isNotEmpty() || deferred.isNotEmpty())) {
+            scheduleTick()
+        }
     }
 
     override fun onCreateView(param: HookParam, view: View) {
@@ -328,8 +447,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         if (row.note == null) submitIfNeeded(key, input)
         val settled = isSettled(key)
         if (!settled && (submittedAt.containsKey(key) || MoodStore.isPending(key))) awaiting.add(view)
+        if (row.note == null && !settled && capacityWaiting.contains(view)) {
+            // 还在等队列空位：由节拍负责补投与刷新
+        }
         if (!showCard(view, row)) deferred.add(view)
-        if (awaiting.isNotEmpty() || deferred.isNotEmpty()) scheduleTick()
+        if (awaiting.isNotEmpty() || capacityWaiting.isNotEmpty() || deferred.isNotEmpty()) scheduleTick()
     }
 
     /**
@@ -337,11 +459,14 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      *
      * 「没有任何进度」时才提交 —— 有结果、有失败（冷却中）、正在排队/在跑的都不重复提交。
      * 这条路径也是「功能开启前就已经绑好的行」被补扫时唯一会走到的提交入口。
+     *
+     * 队列满时**不提交也不放弃**：登记到 [capacityWaiting]，队列一有空位由节拍自动补投。
      */
     private fun submitIfNeeded(key: String, input: AnalysisInput) {
         if (submittedAt.containsKey(key) || MoodStore.isPending(key)) return
         if (MoodStore.get(key) != null) return
         if (SignalAnalyzer.failure(key) != null) return
+        if (SignalAnalyzer.atCapacity()) return
         if (SignalAnalyzer.submit(input) != null) {
             submittedAt.putIfAbsent(key, SystemClock.elapsedRealtime())
         }
@@ -353,7 +478,14 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
     /** 画/刷新卡片；返回 true 表示这张卡已经就绪。 */
     private fun showCard(view: View, row: Row): Boolean {
         if (!ModulePrefs.displayBubble) return true
-        return runCatching { YanwaiBubble.show(view, row.input, row.note) }
+        if (row.note == null && !isSettled(row.input.key) && SignalAnalyzer.atCapacity() &&
+            !MoodStore.isPending(row.input.key) && !submittedAt.containsKey(row.input.key)
+        ) {
+            // 队列满、这一条还没排上：登记下来，等空位自动补投（下一拍开始就会一直刷新它）
+            capacityWaiting.add(view)
+        }
+        val capacityPending = capacityWaiting.contains(view)
+        return runCatching { YanwaiBubble.show(view, row.input, row.note, row.screen, capacityPending) }
             .getOrElse {
                 logOnce("bubble", "气泡绘制失败：${it.javaClass.simpleName} ${it.message}")
                 true
@@ -373,12 +505,13 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             if (row.input.key == key) targets[view] = row
         }
         if (targets.isEmpty()) {
-            for ((view, row) in snapshotRows()) {
+            for ((view, row) in allRows()) {
                 if (row.input.key == key) targets[view] = row
             }
         }
         if (targets.isEmpty()) return
         awaiting.removeAll(targets.keys)
+        capacityWaiting.removeAll(targets.keys)
         deferred.removeAll(targets.keys)
         for ((view, row) in targets) {
             if (!showCard(view, row)) deferred.add(view)
@@ -387,6 +520,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
 
     private fun forget(view: View) {
         awaiting.remove(view)
+        capacityWaiting.remove(view)
         deferred.remove(view)
         deferredAttempts.remove(view)
         val row = inputs.remove(view)
@@ -417,7 +551,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         return fresh
     }
 
-    private fun snapshotRows(): List<Pair<View, Row>> =
+    private fun allRows(): List<Pair<View, Row>> =
         synchronized(inputs) { inputs.entries.map { it.key to it.value } }
 
     /**
@@ -425,48 +559,66 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
      *
      * 非文本消息返回 null（不画卡）；文本过长时返回带 [Row.note] 的行 ——
      * 以前这种消息既不提交也不画卡，用户看到的是「这一条什么都没有」，
-     * 现在明确写清「本条内容过长，未分析」，不会让人以为是功能漏掉了一条。
+     * 现在明确写清「本条内容过长，未分析」，而且文案里带上当前上限（可配置）。
+     *
+     * 「也分析我发的消息」默认**开**（[ModulePrefs.analyzeSelf]）：用户要求被选定会话的
+     * 每一条文本消息都要被分析，自己发的也算。
      */
     private fun buildRow(view: View, message: MessageInfo): Row? {
-        // 「也分析我发的消息」为开时才把我方消息纳入（默认只分析对方，与上游一致）。
         val text = MessageMetadata.analyzeText(message, ModulePrefs.analyzeSelf) ?: return null
         val talker = message.talker
         if (talker.isBlank()) return null
+        val screen = screenOf(view, message, text)
         val input = AnalysisInput(
             text = text,
             talker = talker,
-            context = collectContext(view, message),
+            context = screen.context,
             messageId = message.id,
             speaker = MessageMetadata.speaker(message),
             createdAt = runCatching { message.createTime }.getOrDefault(0L),
         )
         val note = if (MessagePolicy.textOrNull(text) == null) {
-            "本条内容超过 ${MessagePolicy.MAX_CHARACTERS} 字，为避免把长文整段发给模型，本条不分析。"
+            JevText.get(R.string.jev_note_too_long, MessagePolicy.maxCharacters)
         } else {
             null
         }
-        return Row(input, note)
+        return Row(input, note, screen)
     }
 
     /**
-     * 只从**当前已绑定**的可见行里取前文，与上游一致（不读数据库、不扫历史）。
-     * 命中不了 10 条时有多少给多少，不做补造。
+     * 一次遍历本屏已绑定行，同时产出三样东西：
+     *  - 目标消息**之前**的前文（受 [ModulePrefs.contextLimit] 限制）；
+     *  - 本屏同一会话的「谁在说话」序列（互动均衡用，含非文本行——图片/表情也代表发言）；
+     *  - 本屏同一会话的原文（话题标签用，只取文本次）。
+     *
+     * 只从**当前已绑定**的可见行里取，与上游一致（不读数据库、不扫历史）。
+     * 命中不了 limit 条时有多少给多少，不做补造。
      *
      * 注意：这里用行在列表里的纵向顺序（而不是 getLocationOnScreen），
      * 既避免在非主线程碰 View 的屏幕坐标，也不受状态栏/输入法偏移影响。
+     *
+     * 第 16 轮：本屏行列表来自带 TTL 的 [screenSnapshot]，不再每次绑定都重扫整表。
      */
-    private fun collectContext(target: View, message: MessageInfo): List<ContextMessage> {
+    private fun screenOf(target: View, message: MessageInfo, selfText: String): ChatInsights.Screen {
         val limit = ModulePrefs.contextLimit
-        if (limit <= 0) return emptyList()
-        val rows = WeChatMessageViewApi.findBoundViews { it.talker == message.talker }
-        val ordered = rows.sortedBy { (view, _) -> view.top }
-        val index = ordered.indexOfFirst { it.first === target }
-        if (index <= 0) return emptyList()
-        return ordered.subList(maxOf(0, index - limit), index)
+        val ordered = screenSnapshot(message.talker)
+        val flags = ArrayList<Boolean>(ordered.size)
+        var targetIndex = -1
+        for ((index, entry) in ordered.withIndex()) {
+            flags += entry.second.isSend == 1
+            if (entry.first === target) targetIndex = index
+        }
+        if (limit <= 0 || targetIndex <= 0) {
+            return ChatInsights.Screen(flags, listOf(selfText))
+        }
+        val context = ordered.subList(maxOf(0, targetIndex - limit), targetIndex)
             .mapNotNull { (_, previous) ->
                 val previousText = MessageMetadata.plainText(previous) ?: return@mapNotNull null
                 ContextMessage(MessageMetadata.speaker(previous), previousText)
             }
+        // 话题素材 = 前文 + 本条正文（从旧到新）。刻意不含目标行之后的消息：
+        // 那些是「还没发生」的话，拿它们给这一条贴标签是错的。
+        return ChatInsights.Screen(flags, context.map { it.text } + selfText)
     }
 
     /**
@@ -484,6 +636,7 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
             SignalAnalyzer.retryFailure(row.input.key)
             MoodStore.release(row.input.key)
             submittedAt.remove(row.input.key)
+            capacityWaiting.remove(view)
             deferred.remove(view)
             deferredAttempts.remove(view)
             // 失败/超时的行重新真的提交一次：结果要么回填，要么再给一条可见失败。
@@ -500,9 +653,11 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         onMain {
             submittedAt.clear()
             awaiting.clear()
+            capacityWaiting.clear()
             deferred.clear()
             deferredAttempts.clear()
             inputs.clear()
+            invalidateScreenSnapshot()
             SignalAnalyzer.clearResults()
             YanwaiBubble.clearAll()
             var count = 0
@@ -539,7 +694,12 @@ object YanwaiScanner : WeChatMessageViewApi.IMessageViewLifecycleListener,
         submittedAt.clear()
         inputs.clear()
         awaiting.clear()
+        capacityWaiting.clear()
         deferred.clear()
         deferredAttempts.clear()
+        invalidateScreenSnapshot()
     }
+
+    /** 正在等队列空位的条数（设置页与诊断用）。 */
+    val capacityWaitingCount: Int get() = capacityWaiting.size
 }

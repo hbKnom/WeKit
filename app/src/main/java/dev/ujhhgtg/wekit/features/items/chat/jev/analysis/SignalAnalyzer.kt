@@ -87,6 +87,23 @@ object SignalAnalyzer {
     /** 队列积压（还没开跑的分析条数），设置页与卡片的排队提示用。 */
     val queuedDepth: Int get() = queue.size
 
+    /** 在跑 + 在排队的总数（[pendingInputs]），看门狗与设置页展示用。 */
+    val pendingDepth: Int get() = pendingInputs.size
+
+    /** 当前生效的请求间隔（毫秒，含自适应倍率），设置页展示用。 */
+    val currentIntervalMs: Long get() = client.currentIntervalMs
+
+    /**
+     * 队列是否已达上限。
+     *
+     * 第 16 轮新增：上限**可配置**（[ModulePrefs.KEY_QUEUE_CAP]），而且达到上限时
+     * **不丢消息** —— 扫描器会把这一条登记到「等空位」集合，队列一有位置就自动补投，
+     * 期间卡片明确显示「分析队列已满（N 条排队中），本条会在有空位时自动开始分析」。
+     * 上一版没有任何上限：用户连续翻几屏会话，队列能堆到几百条，
+     * 每条都要两轮请求，后面的消息要等十几分钟才轮到（看起来就是「分析不出来」）。
+     */
+    fun atCapacity(): Boolean = queue.size >= ModulePrefs.queueCap
+
     /** 是否已经在跑（不是「排在队里」）。看门狗据此选用宽松/严格的等待上限。 */
     fun startedAt(key: String): Long? = startTimes[key]
 
@@ -186,8 +203,10 @@ object SignalAnalyzer {
         try {
             ModulePrefs.reload()
             if (!ModulePrefs.canAnalyze) {
-                MoodStore.release(key)
-                pendingInputs.remove(key)
+                // 第 16 轮：这里以前是静默 release —— 用户看到的就是「这一条永远在转圈」，
+                // 要等 180 秒看门狗才变成失败。现在立刻给出可见状态，而且**不进冷却**：
+                // 用户去设置页填好 Key 回来，这一条下一拍就会自动重投。
+                abort(key, input, "尚未配置模型渠道或 API Key，配置后本卡会自动重新分析")
                 return
             }
             // 刻意不再用「这一行还在不在屏幕上」当作继续条件：
@@ -205,6 +224,22 @@ object SignalAnalyzer {
         } catch (e: Exception) {
             fail(key, input, e.message ?: "分析失败，请稍后重试", report = "分析失败：${e.message}")
         }
+    }
+
+    /**
+     * 「这一条这次不会出结论」——可见、可自动重投、**不进失败冷却**。
+     *
+     * 与 [fail] 的区别只在冷却：配置类原因（没填 Key、内容超限、被上层放弃）不应该让
+     * 用户在修好配置之后还要干等 30 秒，所以这里只写失败文案 + 释放认领。
+     */
+    private fun abort(key: String, input: AnalysisInput, reason: String) {
+        failures.remove(key)
+        failureMessages[key] = reason
+        MoodStore.release(key)
+        startTimes.remove(key)
+        pendingInputs.remove(key)
+        MoodStore.markFailed()
+        notifySettled(input, null, reason)
     }
 
     private fun succeed(key: String, input: AnalysisInput, mood: Mood) {

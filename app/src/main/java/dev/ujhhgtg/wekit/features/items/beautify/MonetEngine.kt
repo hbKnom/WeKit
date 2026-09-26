@@ -4,8 +4,8 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Resources
 import android.content.res.loader.ResourcesProvider
-import android.graphics.Paint
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -124,6 +124,23 @@ object MonetEngine : ClickableFeature() {
     /** 连续这么多次疑似崩溃就自动停用注入（等用户重新解析再放行）。 */
     private const val MAX_FAIL_STREAK = 2
 
+    /**
+     * 连续这么多次「解析没跑完就退出」就跳过解析（等用户重新解析再放行）。
+     *
+     * 取 1：解析期崩溃是**每次启动必现**的（实机 2026-09-26 四分钟内四次原生崩溃），
+     * 多试一次只是多闪退一次。用户随时可以在设置里点「重新解析」放行。
+     */
+    private const val MAX_RESOLVE_FAIL_STREAK = 1
+
+    /** 超过这个窗口的「解析进行中」标记视为陈旧（例如解析期被手动强杀），不再累计。 */
+    private const val RESOLVE_INTERRUPT_WINDOW_MS = 30 * 60 * 1000L
+
+    /** 启动后延后这么久才开始资源解析：把最重的一段挪出启动关键路径。 */
+    private const val INITIAL_RESOLVE_DELAY_MS = 20_000L
+
+    /** 冒烟校验抽查的颜色绑定个数。 */
+    private const val SMOKE_TEST_SAMPLES = 8
+
     const val KEY_BUBBLE_STYLE = "monet_bubble_style"
     const val KEY_MULTI_SCENE_CORNERS = "monet_multi_scene_corners"
     const val KEY_ERROR_COLORS = "monet_error_colors"
@@ -146,7 +163,19 @@ object MonetEngine : ClickableFeature() {
     }
 
     private val bindingsFile: File by lazy { (KnownPaths.moduleData / "monet_bindings.json").toFile() }
-    private val runtimeDir: File by lazy { (KnownPaths.moduleCache / "monet").toFile() }
+
+    /**
+     * 运行时资源包 / 缓存目录。
+     *
+     * 用 `moduleData`（`Android/data/<宿主>/<TAG>`）而**不是** `moduleCache`（`.../cache/<TAG>`）：
+     * 后者落在宿主的**外部缓存**目录里，既会被本模块自己的 AutoCleanCache 扫到（现已单独保护），
+     * 也会被系统在存储紧张时整体清理。实机日志（2026-09-26）里「缓存未命中…包存在=false」
+     * 每次启动都出现，正是「缓存被清 → 全量重解析（分钟级）→ 卡顿 + 反复进入易出错路径」的来源。
+     */
+    private val runtimeDir: File by lazy { (KnownPaths.moduleData / "monet").toFile() }
+
+    /** 旧版（外部缓存目录）的落点：只用于兼容读取与迁移，不再写入。 */
+    private val legacyRuntimeDir: File by lazy { (KnownPaths.moduleCache / "monet").toFile() }
 
     /**
      * 绑定缓存的第二份副本，和运行时包放在同一个目录。
@@ -156,6 +185,9 @@ object MonetEngine : ClickableFeature() {
      * 运行时包写在 `runtimeDir` 里是能被写成功的，所以缓存也放这里，两边都写、任一份都能读。
      */
     private val bindingsCacheFile: File by lazy { File(runtimeDir, "monet_bindings.json") }
+
+    /** 旧版绑定缓存（外部缓存目录），仅用于兼容读取。 */
+    private val legacyBindingsCacheFile: File by lazy { File(legacyRuntimeDir, "monet_bindings.json") }
 
     /** 注入自保状态：见 [MonetRuntimeState]。 */
     private val runtimeStateFile: File by lazy { File(runtimeDir, "monet_runtime_state.json") }
@@ -226,7 +258,31 @@ object MonetEngine : ClickableFeature() {
         )
         runCatching { installBrandColorHooks() }
             .onFailure { WeLogger.w(TAG, "brand-colour fallback hooks unavailable", it) }
-        startResolve(force = false)
+        // ① 先把色板发给「WeKit 自己注入进微信界面」的组件。这一步只读系统的 Material You
+        //    token（android.R.color.system_*），**不依赖宿主资源解析**，所以即使解析失败、
+        //    被熔断跳过、或用户在解析期间还在用微信，注入界面也能拿到莫奈色 ——
+        //    不会再出现「微信原生取色了、WeKit 改过的底栏/标题栏还是旧配色」的割裂。
+        thread(name = "MonetPalette") { publishPalette() }
+        // ② 资源解析是整条链最贵的一步（实机 11000+ 个二进制 XML），落在启动瞬间会直接
+        //    和微信首帧/首屏抢 CPU（实机反馈的卡顿来源之一），延后到启动稳定之后再跑。
+        scheduleInitialResolve()
+    }
+
+    /** 启动后延后 [INITIAL_RESOLVE_DELAY_MS] 再解析；调度失败就立刻解析，绝不因此不解析。 */
+    private fun scheduleInitialResolve() {
+        runCatching {
+            Handler(Looper.getMainLooper()).postDelayed(
+                {
+                    runCatching {
+                        if (isActive && isSupported) startResolve(force = false)
+                    }.onFailure { WeLogger.w(TAG, "delayed initial resolve failed", it) }
+                },
+                INITIAL_RESOLVE_DELAY_MS,
+            )
+        }.onFailure { error ->
+            WeLogger.w(TAG, "cannot schedule initial resolve, resolving immediately", error)
+            startResolve(force = false)
+        }
     }
 
     override fun onDisable() {
@@ -283,13 +339,15 @@ object MonetEngine : ClickableFeature() {
                 )
                 val cached = cachedBindings()?.takeIf { !force && it.fingerprint == fingerprint }
                 val packageFile = runtimeFile(fingerprint)
+                // 解析前先过「解析期熔断」：上次解析没跑完就退出过，本次不再拿微信去试。
+                if (!guardResolveAttempt(force)) return@thread
                 if (!guardRuntimeInjection(force, packageFile)) return@thread
                 if (cached != null && packageFile.isFile) {
                     WeLogger.i(
                         TAG,
                         "reusing cached bindings ${cached.roles.size} roles (unresolved ${cached.unresolved.size})",
                     )
-                    applyRuntimePackage(packageFile)
+                    applyRuntimePackage(packageFile, cached)
                     recordRuntimeApplied(packageFile)
                     publishPalette()
                     _result.value = MonetResolveResult.Success(cached, packageFile)
@@ -303,6 +361,9 @@ object MonetEngine : ClickableFeature() {
                     TAG,
                     "缓存未命中（bindings=${cached?.fingerprint ?: "无"} 期望=$fingerprint，包存在=${packageFile.isFile}），开始解析",
                 )
+                // 落一个「解析进行中」标记：进程若在解析期间崩掉，标记会留到下次启动，
+                // 由 guardResolveAttempt 记一次「解析没跑完」，从而打破闪退死循环。
+                writeRuntimeState(readRuntimeState().copy(resolveStartedAt = System.currentTimeMillis()))
 
                 _progress.value = MonetResolveProgress(
                     MonetResolveStage.LOADING_APKS,
@@ -376,8 +437,14 @@ object MonetEngine : ClickableFeature() {
                     )
                 }
                 persistBindings(resolution.bindings)
-                applyRuntimePackage(packageFile)
+                applyRuntimePackage(packageFile, resolution.bindings)
                 recordRuntimeApplied(packageFile)
+                // 解析成功 → 清零「解析未完成」计数，下次启动照常复用缓存。
+                runCatching {
+                    writeRuntimeState(
+                        readRuntimeState().copy(resolveStartedAt = 0L, resolveFailStreak = 0),
+                    )
+                }
                 publishPalette()
                 _progress.value = null
                 _result.value = MonetResolveResult.Success(resolution.bindings, packageFile)
@@ -394,6 +461,9 @@ object MonetEngine : ClickableFeature() {
                     error.message ?: error.toString(),
                 )
             } finally {
+                // 能走到这里说明解析线程正常收尾（没把微信带崩）：清掉「解析进行中」标记。
+                // 进程若在解析期被杀，finally 不会执行，标记留到下次启动触发熔断。
+                runCatching { writeRuntimeState(readRuntimeState().copy(resolveStartedAt = 0L)) }
                 resolving = false
             }
         }
@@ -402,21 +472,58 @@ object MonetEngine : ClickableFeature() {
     private fun runtimeFile(fingerprint: String): File {
         val options = "${bubbleStyle.name}-$multiSceneCorners-$errorColors"
         val hash = options.hashCode().toUInt().toString(16)
-        return File(runtimeDir, "runtime-$fingerprint-$hash.apk")
+        val name = "runtime-$fingerprint-$hash.apk"
+        val primary = File(runtimeDir, name)
+        if (primary.isFile) return primary
+        // 旧位置（外部缓存目录）里已经有可用包就别重解析：能搬到新位置最好，搬不动就继续用旧的。
+        val legacy = File(legacyRuntimeDir, name)
+        if (legacy.isFile) {
+            val migrated = runCatching {
+                runtimeDir.mkdirs()
+                legacy.renameTo(primary)
+            }.onFailure { WeLogger.d(TAG, "cannot migrate legacy runtime package", it) }.getOrDefault(false)
+            return if (migrated) primary else legacy
+        }
+        return primary
     }
 
-    private fun applyRuntimePackage(file: File) {
+    private fun applyRuntimePackage(file: File, bindings: MonetBindings?) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         val resources = HostInfo.application.resources
+        val loader = android.content.res.loader.ResourcesLoader()
         ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
             // 运行时包是「resources.arsc + res/*.xml」打出来的 APK（无 AndroidManifest、不安装），
             // 必须走 loadFromApk：loadFromTable 期望的是**裸 .arsc** fd，且要额外传 AssetsProvider。
             val provider = ResourcesProvider.loadFromApk(descriptor)
-            val loader = android.content.res.loader.ResourcesLoader().apply { addProvider(provider) }
-            resources.addLoaders(loader)
+            loader.addProvider(provider)
+        }
+        resources.addLoaders(loader)
+        // 冒烟校验：注入之后宿主资源必须还能正常取色。不通过就立刻摘掉 loader ——
+        // 宁可不莫奈化，也不把一个坏包留在微信进程里（实机教训：坏包 = 取资源就崩）。
+        val healthy = runCatching { smokeTestRuntimePackage(resources, bindings) }
+            .onFailure { WeLogger.w(TAG, "smoke test failed to run", it) }
+            .getOrDefault(true)
+        if (!healthy) {
+            runCatching { resources.removeLoaders(loader) }
+                .onFailure { WeLogger.e(TAG, "cannot roll back runtime loader", it) }
+            _runtimePackage.value = null
+            error("运行时资源包冒烟校验未通过（取色异常），已回滚本次注入以免影响微信运行")
         }
         _runtimePackage.value = file
         WeLogger.i(TAG, "applied ${file.name} (${file.length()} bytes)")
+    }
+
+    /**
+     * 冒烟校验：抽查 [SMOKE_TEST_SAMPLES] 个已解析的颜色绑定去取色。
+     *
+     * 判据刻意宽松（**至少一个能取到就算通过**）：不同微信版本上个别条目缺失是正常的，
+     * 要拦的是「整个包让 Resources 取色全废」这种会立刻影响微信的情况。抽不到绑定
+     * （例如只有 drawable 角色 / 缓存来自更早版本）时视为通过，绝不用校验挡住功能。
+     */
+    private fun smokeTestRuntimePackage(resources: Resources, bindings: MonetBindings?): Boolean {
+        val ids = bindings?.roles?.values?.take(SMOKE_TEST_SAMPLES) ?: return true
+        if (ids.isEmpty()) return true
+        return ids.any { id -> runCatching { resources.getColor(id, null) }.isSuccess }
     }
 
     /**
@@ -437,7 +544,7 @@ object MonetEngine : ClickableFeature() {
     }
 
     private fun cachedBindings(): MonetBindings? {
-        val candidates = listOf(bindingsCacheFile, bindingsFile).filter { it.isFile }
+        val candidates = listOf(bindingsCacheFile, bindingsFile, legacyBindingsCacheFile).filter { it.isFile }
         if (candidates.isEmpty()) {
             WeLogger.d(
                 TAG,
@@ -497,6 +604,45 @@ object MonetEngine : ClickableFeature() {
         return false
     }
 
+    /**
+     * 解析期熔断：**解析自己把微信搞崩过，就不许再解析。**
+     *
+     * 实机 2026-09-26 的日志链：每次出现「缓存未命中…开始解析」后 1–10 秒内微信必崩原生
+     * （SIGBUS/SIGSEGV，故障帧在 libhwui / libcso.so 这些与解析无关的库里，故障地址是
+     * UTF-16 片段）→ 进程重启 → 缓存仍然没有 → 又解析 → 又崩，四分钟四次。
+     * 而 [guardRuntimeInjection] 只统计「应用后很快重启」，崩溃在应用之前，统计永远为空，
+     * 于是死循环没有任何刹车。[resolveStartedAt] 标记 + 本函数就是这个刹车：
+     * 连续 [MAX_RESOLVE_FAIL_STREAK] 次未跑完 → 本次启动直接跳过解析（微信照常可用），
+     * 用户在设置里点「重新解析」（force）才重新放行。
+     */
+    private fun guardResolveAttempt(force: Boolean): Boolean {
+        val state = readRuntimeState()
+        if (force) {
+            writeRuntimeState(state.copy(resolveStartedAt = 0L, resolveFailStreak = 0))
+            return true
+        }
+        val now = System.currentTimeMillis()
+        val interrupted = state.resolveStartedAt > 0 &&
+            (now - state.resolveStartedAt) in 0..RESOLVE_INTERRUPT_WINDOW_MS
+        val streak = if (interrupted) state.resolveFailStreak + 1 else state.resolveFailStreak
+        if (interrupted) {
+            WeLogger.w(
+                TAG,
+                "上次资源解析没有跑完就退出了（$streak/$MAX_RESOLVE_FAIL_STREAK）",
+            )
+            writeRuntimeState(state.copy(resolveFailStreak = streak, resolveStartedAt = 0L))
+        }
+        if (streak < MAX_RESOLVE_FAIL_STREAK) return true
+        WeLogger.e(TAG, "资源解析连续 $streak 次未能跑完（疑似影响微信稳定性），本次跳过解析")
+        _progress.value = null
+        _result.value = MonetResolveResult.Failure(
+            MonetResolveProgress(MonetResolveStage.LOADING_APKS, "resolve suspended"),
+            "莫奈资源解析已连续 $streak 次未能跑完（疑似影响微信稳定性），本次启动已跳过解析，" +
+                "微信可正常使用。需要重试请在设置里点「重新解析」。",
+        )
+        return false
+    }
+
     /** 记录「刚应用了哪个包」，作为下次启动判断是否疑似崩溃的依据。 */
     private fun recordRuntimeApplied(packageFile: File) {
         writeRuntimeState(
@@ -520,10 +666,12 @@ object MonetEngine : ClickableFeature() {
     }
 
     private fun readRuntimeState(): MonetRuntimeState = runCatching {
-        if (runtimeStateFile.isFile) {
-            DefaultJson.decodeFromString(MonetRuntimeState.serializer(), runtimeStateFile.readText())
-        } else {
+        val file = runtimeStateFile.takeIf { it.isFile }
+            ?: File(legacyRuntimeDir, "monet_runtime_state.json").takeIf { it.isFile }
+        if (file == null) {
             MonetRuntimeState()
+        } else {
+            DefaultJson.decodeFromString(MonetRuntimeState.serializer(), file.readText())
         }
     }.getOrElse { MonetRuntimeState() }
 
@@ -562,17 +710,39 @@ object MonetEngine : ClickableFeature() {
             }
         }.onFailure { WeLogger.w(TAG, "hook MMSwitchBtn failed", it) }
 
-        // GradientDrawable/PaintDrawable fills (incl. WeChat's green button shapes) go through
-        // Paint.setColor, so the brand green can be swapped centrally here.
+        // 【注意：这里**故意不** hook Paint.setColor】
+        //
+        // 第 13 轮曾把 Paint.setColor 当作「一处换掉所有编译进代码的品牌绿」的万能入口，代价是
+        // 它在**每一帧每一次文字绘制**都会被调用（TextView.onDraw 里就有 mTextPaint.setColor(...)）。
+        // 而本项目 hook 桥接的单次调用成本不低：Long 装箱查表 + MutableHookParam（含 IdentityHashMap）
+        // + callbacks.toList() + 反射 Method.invoke —— 每帧几百上千次 = 全局卡顿、UI 线程抖动。
+        // 实机反馈的「整个微信和 WeKit 都有一点点卡顿、打开聊天卡顿」正是这条热路径的典型症状。
+        //
+        // 换成三个**调用频率低得多、覆盖面等价**的入口：
+        //  ① PaintDrawable.setColor —— 代码里造的纯色 shape 底（原本走 Paint.setColor 的正是它）；
+        //  ② TextView.setTextColor —— 文字颜色（每次绑定设一次，不是每帧）；
+        //  ③ 上面/下面的 ColorDrawable / GradientDrawable（每次绑定设一次）。
+        // 资源里的颜色由覆盖包负责，编译进代码的绿由这三处负责。
         runCatching {
-            Paint::class.java.reflekt().firstMethod {
+            android.graphics.drawable.PaintDrawable::class.java.reflekt().firstMethod {
                 name = "setColor"
                 parameters(Int::class)
             }.hookBefore {
                 val color = args.getOrNull(0) as? Int ?: return@hookBefore
                 if (color == DEFAULT_COLOR) args[0] = accentColor
             }
-        }.onFailure { WeLogger.w(TAG, "hook Paint.setColor failed", it) }
+        }.onFailure { WeLogger.w(TAG, "hook PaintDrawable.setColor failed", it) }
+
+        // 文字：只拦「显式设置颜色」这一层，绝不拦每帧的绘制调用。
+        runCatching {
+            android.widget.TextView::class.java.reflekt().firstMethod {
+                name = "setTextColor"
+                parameters(Int::class)
+            }.hookBefore {
+                val color = args.getOrNull(0) as? Int ?: return@hookBefore
+                if (color == DEFAULT_COLOR) args[0] = accentColor
+            }
+        }.onFailure { WeLogger.w(TAG, "hook TextView.setTextColor failed", it) }
 
         // ColorDrawable paints through Canvas.drawColor, so Paint.setColor never sees it.
         runCatching {

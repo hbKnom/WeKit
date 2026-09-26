@@ -87,6 +87,51 @@ object ChatAnalysisEngine {
      */
     private const val TOPIC_BODY_MAX = 300
 
+    // ---------------- 第 16 轮：六个扩展维度的口径常量 ----------------
+
+    /**
+     * 第 16 轮：趋势图的分桶上限（= 定长数组长度）。
+     *
+     * 实际桶数按时间跨度在 12 / 10 / 7 里选（见 [analyze] 里的 `trendBuckets`），
+     * 这里只钉死"最多 12 个 int"这个上限 —— 与第 14/15 轮同一套内存纪律：
+     * 新维度的状态**不随消息条数增长**，大群扫描的内存与耗时不会因为多六个维度出现阶跃。
+     */
+    private const val TREND_MAX_BUCKETS = 12
+
+    /** 第 16 轮：细粒度回复间隔档数（5 秒 / 15 秒 / 30 秒 / 1 分 / 3 分 / 10 分 / 30 分） */
+    private const val LATENCY_FINE_BANDS = 7
+
+    /**
+     * 第 16 轮：深夜口径（23:00 之后、05:00 之前）。
+     *
+     * 与【昼夜结构】的「深夜 0-5 点」刻意错开一格：那边回答"整体作息偏不偏晚"，
+     * 这边回答"深夜聊的话题和白天有什么不同"，含 23 点才符合"睡前那一段"的直觉。
+     */
+    private const val NIGHT_FROM_HOUR = 23
+    private const val NIGHT_TO_HOUR = 5
+
+    /**
+     * 第 16 轮：回复速度分档标签与上界（一一对应）。
+     *
+     * 标签里**不含空格**（分布行的标签列按最后一个空格切分值）也不含全角冒号（会被当成指标行），
+     * 且必须含中文：零值的档位没有 █，弹窗与 PNG 两侧的 PLAIN_COUNT 分支靠"标签含中文"才认得出。
+     */
+    private val LATENCY_FINE_LABELS = listOf("5秒内", "15秒内", "30秒内", "1分内", "3分内", "10分内", "30分内")
+
+    /** 深夜时段判定：只需一次整数比较，热路径零分配 */
+    private fun isNightHour(hour: Int): Boolean = hour >= NIGHT_FROM_HOUR || hour < NIGHT_TO_HOUR
+
+    /** 回复间隔 → 细档下标（越界一律归最后一档，绝不返回非法下标） */
+    private fun fineBand(gap: Long): Int = when {
+        gap <= 5_000L -> 0
+        gap <= 15_000L -> 1
+        gap <= 30_000L -> 2
+        gap <= 60_000L -> 3
+        gap <= 180_000L -> 4
+        gap <= 600_000L -> 5
+        else -> 6
+    }
+
     /**
      * 第 15 轮：话题词表（固定 28 个，**不随消息内容增长**）。
      *
@@ -228,6 +273,18 @@ object ChatAnalysisEngine {
         val hc = Calendar.getInstance()
         var offset = 0
         var fetchedTotal = 0
+
+        // ---- 第 16 轮：趋势分桶（只在这里算一次，循环里仅一次整数除法取下标）----
+        // 桶数按时间跨度自适应，既保证"每根柱都有区分度"，又保证标签不重复：
+        // 今天/昨天（≤2 天）按 2 小时切 12 桶；本周/上周（≤8 天）按天切 7 桶；本月/上月按 ~3 天切 10 桶。
+        val rangeSpanMs = (end - start).coerceAtLeast(1L)
+        val trendBuckets = when {
+            rangeSpanMs <= 2L * 86_400_000L -> 12
+            rangeSpanMs <= 8L * 86_400_000L -> 7
+            else -> 10
+        }
+        val bucketMs = (rangeSpanMs / trendBuckets).coerceAtLeast(1L)
+        ex.trendBuckets = trendBuckets
         while (true) {
             val page = queryPage(talker, start, end, PAGE_SIZE, offset, maxCount)
             if (page.isEmpty()) break
@@ -262,6 +319,35 @@ object ChatAnalysisEngine {
                     ex.heatPeak = heatV
                     ex.heatPeakIdx = heatIdx
                 }
+                // ---- 第 16 轮：趋势分桶 / 活跃密度 / 日画像 / 早晚期 ----
+                // 六项全是 O(1) 整数运算与比较：没有新的集合、没有新的字符串、没有第二次查库。
+                val bIdx = ((ct - start) / bucketMs).toInt().coerceIn(0, trendBuckets - 1)
+                val bv = ex.trend[bIdx]
+                if (bv < Int.MAX_VALUE) ex.trend[bIdx] = bv + 1
+                if (hourDist[hour] == 1) ex.activeHours++
+                if (dow < 5) ex.workdayMsgs++ else ex.weekendMsgs++
+                val night = isNightHour(hour)
+                val minuteOfDay = hour * 60 + hc.get(Calendar.MINUTE)
+                if (ex.earliestMinute < 0 || minuteOfDay < ex.earliestMinute) {
+                    ex.earliestMinute = minuteOfDay
+                }
+                if (minuteOfDay > ex.latestMinute) ex.latestMinute = minuteOfDay
+                val dayKey = hc.get(Calendar.YEAR) * 1000 + hc.get(Calendar.DAY_OF_YEAR)
+                if (dayKey != ex.curDayKey) {
+                    // 跨天：收尾上一天（把它的活跃跨度并进日画像），再开新的一天
+                    closeDay(ex)
+                    ex.curDayKey = dayKey
+                    ex.curDayFirst = ct
+                    ex.curDayCount = 0
+                    ex.activeDays++
+                    if (dow >= 5) ex.weekendDays++ else ex.workdayDays++
+                }
+                ex.curDayLast = ct
+                ex.curDayCount++
+                if (ex.curDayCount > ex.dayMaxCount) {
+                    ex.dayMaxCount = ex.curDayCount
+                    ex.dayMaxStart = ex.curDayFirst
+                }
                 lastReplyGap = 0L
                 if (prevCt > 0L) {
                     val gap = ct - prevCt
@@ -283,6 +369,8 @@ object ChatAnalysisEngine {
                                 else -> ex.latency[3]++
                             }
                             if (ex.fastestGapMs == 0L || gap < ex.fastestGapMs) ex.fastestGapMs = gap
+                            // ---- 第 16 轮：细粒度 7 档（中位数与"半数回复在多快以内"都靠它）----
+                            ex.latencyFine[fineBand(gap)]++
                         } else {
                             // 沉默 ≥30 分钟：记一次沉默、切开一个话题段，并把下一条消息的作者
                             // 记为这一段的「发起人」（pending 标记在下面 rank 统计处消费）
@@ -375,6 +463,15 @@ object ChatAnalysisEngine {
                         // ---- 第 15 轮：换人 = 一个「回合」结束；长连击被换人才算「打断」----
                         if (streak >= INTERRUPT_MIN_STREAK) ex.interrupts++
                         ex.turns++
+                        // ---- 第 16 轮：接话归因（谁的话被接上 / 谁最爱接别人的话）----
+                        // 换人发言 = 上一个人的话"被接上"了：双方各记一次，纯 map 自增。
+                        // streakKey 为空表示这是本时段第一条文字消息（无前文可接），跳过。
+                        if (streakKey.isNotEmpty()) {
+                            ex.turnsAttributed++
+                            ex.replyFetch[streakKey] = (ex.replyFetch[streakKey] ?: 0) + 1
+                            ex.replyGive[senderKey] = (ex.replyGive[senderKey] ?: 0) + 1
+                            if (streakKey == "我") ex.myFetched++
+                        }
                         streakKey = senderKey
                         streak = 1
                     }
@@ -390,9 +487,12 @@ object ChatAnalysisEngine {
                     // ---- 第 14 轮：长度 / 标点 / 口头禅 / 摘录（同一次扫描内增量）----
                     ex.lenSum += body.length
                     ex.rankChars[senderKey] = (ex.rankChars[senderKey] ?: 0) + body.length
+                    // ---- 第 16 轮：我的文字消息数（被接话率的分母）与深夜/白天文字基数 ----
+                    if (senderKey == "我") ex.myTexts++
+                    if (night) ex.nightText++ else ex.dayText++
                     scanPunctuation(body, ex)
                     if (body.length <= CLICHE_BODY_MAX) scanCliches(body, ex)
-                    if (body.length <= TOPIC_BODY_MAX) scanTopics(body, ex)
+                    if (body.length <= TOPIC_BODY_MAX) scanTopics(body, ex, night)
                     rememberExcerpt(ex, senderKey, body)
                     textSenders.add(senderKey)
                     textBodies.add(body)
@@ -406,6 +506,13 @@ object ChatAnalysisEngine {
         }
         // 收尾最后一个话题段（段时长 = 段内最后一条 - 段内第一条）
         closeTopic(ex, prevCt)
+        // ---- 第 16 轮：收尾当天 + 一次性生成趋势桶的 x 轴标签（≤12 次，不进入消息循环）----
+        closeDay(ex)
+        val hourAxis = rangeSpanMs <= 2L * 86_400_000L
+        ex.trendLabels = Array(trendBuckets) { i ->
+            val at = start + bucketMs * i
+            if (hourAxis) hourTickLabel(at) else dayTickLabel(at)
+        }
 
         val textN = textSenders.size
         if (textN == 0) {
@@ -620,6 +727,73 @@ object ChatAnalysisEngine {
         /** 话题词命中（消息级）与命中任意话题词的消息条数 */
         val topic = mutableMapOf<String, Int>()
         var topicMsgs = 0
+
+        // ---------------- 第 16 轮：六个扩展维度共用的定长状态 ----------------
+
+        /**
+         * 趋势分桶计数。数组定长 [TREND_MAX_BUCKETS]，实际用前 [trendBuckets] 个；
+         * 桶宽在扫描前算一次（整数除法），循环里只有一次除法取下标。
+         */
+        val trend = IntArray(TREND_MAX_BUCKETS)
+
+        /** 本次扫描实际使用的桶数（按时间跨度在 7 / 10 / 12 里选；1 表示不画趋势） */
+        var trendBuckets = 0
+
+        /** 趋势桶的 x 轴标签（扫描结束后一次性生成，≤12 次，不进入消息循环） */
+        var trendLabels: Array<String> = emptyArray()
+
+        /** 细粒度回复间隔直方图（7 档），用于中位数与"半数回复在多快以内" */
+        val latencyFine = IntArray(LATENCY_FINE_BANDS)
+
+        /** 谁的话被接上的次数（换人发言 = 前一个人的话被接上）；键是 [rankKey] 口径 */
+        val replyFetch = mutableMapOf<String, Int>()
+
+        /** 谁最常接别人的话（换人发言时的发言人） */
+        val replyGive = mutableMapOf<String, Int>()
+
+        /** 被归因的换人次数（= 双方都有名字的回合数，用来判样本够不够） */
+        var turnsAttributed = 0
+
+        /** 我发出的文字消息条数与"我的话被接上"的次数 → 我的被接话率 */
+        var myTexts = 0
+        var myFetched = 0
+
+        /** 有消息的天数，以及工作日 / 周末各自的天数（日均要用"该类型的活跃天数"当分母） */
+        var activeDays = 0
+        var workdayDays = 0
+        var weekendDays = 0
+
+        /** 工作日 / 周末各自的消息总量 */
+        var workdayMsgs = 0
+        var weekendMsgs = 0
+
+        /** 有消息的小时数（hourDist 首次变 1 时累计）与单日峰值条数 */
+        var activeHours = 0
+        var dayMaxCount = 0
+
+        /** 峰值日的首条消息时间（用来给"最忙的一天"配日期） */
+        var dayMaxStart = 0L
+
+        /** 日画像：当前这一天的键（年*1000+年内第几天）/首条/末条，以及已收尾天的跨度累计 */
+        var curDayKey = 0
+        var curDayFirst = 0L
+        var curDayLast = 0L
+        var curDayCount = 0
+        var daySpanSum = 0L
+        var daySpanCount = 0
+        var daySpanMax = 0L
+
+        /** 全天最早 / 最晚活动时刻（当天分钟数 0-1439；-1 表示尚无样本） */
+        var earliestMinute = -1
+        var latestMinute = -1
+
+        /** 话题命中的时段拆分：深夜 / 白天各自的命中条数，以及对应时段的文字消息基数 */
+        val topicNight = mutableMapOf<String, Int>()
+        val topicDay = mutableMapOf<String, Int>()
+        var topicNightMsgs = 0
+        var topicDayMsgs = 0
+        var nightText = 0
+        var dayText = 0
     }
 
     // ---------------- 本地统计报告（口径与脚本一致） ----------------
@@ -1143,6 +1317,266 @@ object ChatAnalysisEngine {
         } else {
             r.append("统计口径 该时段没有文字消息\n")
         }
+
+        // ── 第 16 轮：六个扩展维度（同样追加在老段之后，老报告的每一行文本都没动）──
+        // 开关默认开启（见 ChatAnalysisExtraDims）：关掉时这六段完全不生成，报告回到第 15 轮的样子，
+        // 因此「不破坏已实现能力」在数据层就是成立的 —— 旧段落一字未改。
+        if (ChatAnalysisExtraDims.isEnabled()) {
+            appendRound16Sections(
+                r = r,
+                ex = ex,
+                talker = talker,
+                isGroup = isGroup,
+                textN = textN,
+                totalAll = totalAll,
+                nickCache = nickCache,
+            )
+        }
+    }
+
+    // ---------------- 第 16 轮新增：六个扩展维度的报告段 ----------------
+
+    /**
+     * 追加第 16 轮的六个维度：发言密度 / 每日趋势 / 回应速度画像 / 被接话榜 /
+     * 话题时段偏好 / 作息画像。
+     *
+     * 排版规则与第 14/15 轮**完全同一套**（两侧的通用解析器不认识新语法，所以这里不发明新写法）：
+     *  - `键：值` 一行一个指标，键 ≤ 20 字、值 ≤ 18 字、整行 ≤ 40 字 → 进 KPI 网格；
+     *  - `标签 数值 ████` → 分布图（标签含数字 → 柱状图；标签不含数字且全正 → 环形图）；
+     *  - 结论句一律不带全角冒号，免得被误判成指标行；
+     *  - 零值的分布行没有 █，所以分档 / 分桶标签**必须含中文**（两侧的 PLAIN_COUNT 分支靠这一点
+     *    认出它是分布行，而不是普通正文）。
+     *
+     * 六项全部复用同一次扫描里 [ExtraStats] 累出来的定长容器（趋势 12 个 int、延迟 7 个 int、
+     * 日画像几个标量、接话与话题的两三张小表），这里只做字符串拼接：
+     * **不查库、不遍历消息、不物化全量**。
+     */
+    private fun appendRound16Sections(
+        r: StringBuilder,
+        ex: ExtraStats,
+        talker: String,
+        isGroup: Boolean,
+        textN: Int,
+        totalAll: Int,
+        nickCache: MutableMap<String, String>,
+    ) {
+        // ── 13) 发言密度 ────────────────────────────────────────────
+        r.append("\n【发言密度】\n")
+        if (ex.activeDays > 0) {
+            val perDay = totalAll / ex.activeDays
+            r.append("日均条数：").append(perDay).append(" 条\n")
+            r.append("峰值日条数：").append(ex.dayMaxCount).append(" 条\n")
+            r.append("活跃天数：").append(ex.activeDays).append(" 天\n")
+            if (ex.workdayDays > 0) {
+                r.append("工作日日均：").append(ex.workdayMsgs / ex.workdayDays).append(" 条\n")
+            }
+            if (ex.weekendDays > 0) {
+                r.append("周末日均：").append(ex.weekendMsgs / ex.weekendDays).append(" 条\n")
+            }
+            r.append("活跃小时数：").append(ex.activeHours).append(" 个\n")
+            if (ex.activeHours > 0) {
+                r.append("每小时条数：").append(oneDecimal(totalAll.toDouble() / ex.activeHours)).append(" 条\n")
+            }
+            if (ex.dayMaxStart > 0L) r.append("最忙的一天 ").append(dayTickLabel(ex.dayMaxStart)).append("\n")
+            r.append("密度点评 ").append(
+                when {
+                    perDay >= 200 -> "高频轰炸 手机基本没停过"
+                    perDay >= 60 -> "聊天很密 一天能刷好几屏"
+                    perDay >= 15 -> "日常挂机 想起来就聊两句"
+                    else -> "轻度联络 几天才冒一次头"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有消息\n")
+        }
+
+        // ── 14) 每日趋势 ────────────────────────────────────────────
+        r.append("\n【每日趋势】\n")
+        val tn = ex.trendBuckets
+        if (tn >= 2) {
+            var peak = 0
+            var lowest = Int.MAX_VALUE
+            var filled = 0
+            for (i in 0 until tn) {
+                val v = ex.trend[i]
+                if (v > peak) peak = v
+                if (v < lowest) lowest = v
+                if (v > 0) filled++
+            }
+            if (peak > 0) {
+                r.append("峰值段条数：").append(peak).append(" 条\n")
+                r.append("谷值段条数：").append(lowest).append(" 条\n")
+                r.append("有消息的段：").append(filled).append(" 个\n")
+                // 每根柱一行（标签含中文 + 数字 → 两侧都当柱状图；零值的桶没有 █ 也仍然认得出）
+                for (i in 0 until tn) {
+                    val v = ex.trend[i]
+                    val label = ex.trendLabels.getOrNull(i).orEmpty().ifEmpty { "第 ${i + 1} 段" }
+                    r.append(label).append(' ').append(v).append(' ').append(bar(v, peak, 16)).append('\n')
+                }
+                // 趋势读法：前三分之一与后三分之一的总量对比（段数少时第三段至少 1 段）
+                val third = (tn / 3).coerceAtLeast(1)
+                var head = 0
+                var tail = 0
+                for (i in 0 until third) head += ex.trend[i]
+                for (i in tn - third until tn) tail += ex.trend[i]
+                r.append("趋势点评 ").append(
+                    when {
+                        tail * 2 > head * 3 -> "越聊越热 后段明显比前段活跃"
+                        head * 2 > tail * 3 -> "渐渐冷清 后段不如前段活跃"
+                        else -> "热度平稳 前后段相差不大"
+                    }
+                ).append("\n")
+            } else {
+                r.append("统计口径 该时段没有消息\n")
+            }
+        } else {
+            r.append("统计口径 时间跨度太短，不足以分段\n")
+        }
+
+        // ── 15) 回应速度画像 ────────────────────────────────────────
+        r.append("\n【回应速度画像】\n")
+        if (ex.replyGapCount > 0) {
+            // 中位档位：累计到"样本数的一半"落在哪一档（档位是上界，所以读作"半数回复快于这一档"）
+            val half = (ex.replyGapCount + 1) / 2
+            var acc = 0
+            var median = LATENCY_FINE_BANDS - 1
+            for (i in 0 until LATENCY_FINE_BANDS) {
+                acc += ex.latencyFine[i]
+                if (acc >= half) {
+                    median = i
+                    break
+                }
+            }
+            var fineMax = 0
+            for (v in ex.latencyFine) if (v > fineMax) fineMax = v
+            r.append("中位速度：").append(LATENCY_FINE_LABELS[median]).append("\n")
+            r.append("回复样本：").append(ex.replyGapCount).append(" 次\n")
+            r.append("秒回次数：").append(ex.latencyFine[0]).append(" 次\n")
+            r.append("慢回复数：").append(ex.latencyFine[5] + ex.latencyFine[6]).append(" 次\n")
+            for (i in 0 until LATENCY_FINE_BANDS) {
+                r.append(LATENCY_FINE_LABELS[i]).append(' ')
+                    .append(ex.latencyFine[i]).append(' ')
+                    .append(bar(ex.latencyFine[i], fineMax, 16)).append('\n')
+            }
+            val fastPct = pct(ex.latencyFine[0] + ex.latencyFine[1], ex.replyGapCount)
+            r.append("速度点评 ").append(
+                when {
+                    fastPct >= 60 -> "秒回成风 多半在一分钟内就接上"
+                    fastPct >= 30 -> "回应利索 大部分消息有及时回音"
+                    ex.latencyFine[6] * 2 >= ex.replyGapCount -> "慢热型 一半以上拖到十分钟开外"
+                    else -> "节奏正常 快慢分布均匀"
+                }
+            ).append("\n")
+        } else {
+            r.append("样本不足 该时段没有 30 分钟以内的连续对话\n")
+        }
+
+        // ── 16) 被接话榜 ────────────────────────────────────────────
+        r.append("\n【被接话榜】\n")
+        if (ex.turnsAttributed > 0) {
+            r.append("接话次数：").append(ex.turnsAttributed).append(" 次\n")
+            r.append("我的被接话：").append(ex.myFetched).append(" 次\n")
+            if (ex.myTexts > 0) {
+                r.append("我的被接话率：").append(pct(ex.myFetched, ex.myTexts)).append("%\n")
+            }
+            val fetchKeys = topKeys(ex.replyFetch, 6)
+            if (fetchKeys.isNotEmpty()) {
+                r.append("被接话榜 谁的话最容易被别人接上\n")
+                val fetchMax = (ex.replyFetch[fetchKeys[0]] ?: 1).coerceAtLeast(1)
+                for (k in fetchKeys) {
+                    val v = ex.replyFetch[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(textSafe(speakerDisplayName(k, talker, isGroup, nickCache)))
+                        .append(' ').append(v).append(' ').append(bar(v, fetchMax, 16)).append('\n')
+                }
+            }
+            val giveKeys = topKeys(ex.replyGive, 1)
+            if (giveKeys.isNotEmpty()) {
+                val v = ex.replyGive[giveKeys[0]] ?: 0
+                r.append("接话王 ").append(textSafe(speakerDisplayName(giveKeys[0], talker, isGroup, nickCache))).append("\n")
+                r.append("接话王次数：").append(v).append(" 次\n")
+            }
+            r.append("接话点评 ").append(
+                when {
+                    ex.myTexts > 0 && ex.myFetched * 2 >= ex.myTexts -> "我说的话最容易被接上"
+                    ex.replyFetch.size <= 1 -> "话题基本只由一两个人接着"
+                    else -> "接话比较分散 没有固定搭子"
+                }
+            ).append("\n")
+        } else {
+            r.append("样本不足 该时段没有换人接话的文字消息\n")
+        }
+
+        // ── 17) 话题时段偏好 ────────────────────────────────────────
+        r.append("\n【话题时段偏好】\n")
+        if (textN > 0) {
+            r.append("深夜话题数：").append(ex.topicNightMsgs).append(" 条\n")
+            r.append("白天话题数：").append(ex.topicDayMsgs).append(" 条\n")
+            if (ex.nightText > 0) {
+                r.append("深夜话题率：").append(pct(ex.topicNightMsgs, ex.nightText)).append("%\n")
+            }
+            if (ex.dayText > 0) {
+                r.append("白天话题率：").append(pct(ex.topicDayMsgs, ex.dayText)).append("%\n")
+            }
+            val nightKeys = topKeys(ex.topicNight, 6)
+            if (nightKeys.size >= 2) {
+                r.append("深夜最常聊\n")
+                val nightMax = (ex.topicNight[nightKeys[0]] ?: 1).coerceAtLeast(1)
+                for (k in nightKeys) {
+                    val v = ex.topicNight[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(k).append(' ').append(v).append(' ').append(bar(v, nightMax, 16)).append('\n')
+                }
+            }
+            val dayKeys = topKeys(ex.topicDay, 6)
+            if (dayKeys.size >= 2) {
+                r.append("白天最常聊\n")
+                val dayMax = (ex.topicDay[dayKeys[0]] ?: 1).coerceAtLeast(1)
+                for (k in dayKeys) {
+                    val v = ex.topicDay[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(k).append(' ').append(v).append(' ').append(bar(v, dayMax, 16)).append('\n')
+                }
+            }
+            val nightRate = if (ex.nightText > 0) pct(ex.topicNightMsgs, ex.nightText) else 0
+            val dayRate = if (ex.dayText > 0) pct(ex.topicDayMsgs, ex.dayText) else 0
+            r.append("时段点评 ").append(
+                when {
+                    nightRate > dayRate + 5 -> "深夜更好聊 夜里的话题密度反而更高"
+                    ex.topicNightMsgs == 0 -> "夜聊不聊正题 深夜基本只是闲聊"
+                    ex.topicDayMsgs == 0 -> "白天不聊正题 话题都堆在夜里"
+                    else -> "昼夜话题密度接近 什么时候都能聊到点子上"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 18) 作息画像 ────────────────────────────────────────────
+        r.append("\n【作息画像】\n")
+        if (ex.daySpanCount > 0) {
+            r.append("平均活跃时长：").append(humanDuration(ex.daySpanSum / ex.daySpanCount)).append("\n")
+            r.append("最长一天跨度：").append(humanDuration(ex.daySpanMax)).append("\n")
+        }
+        val earliest = clockShort(ex.earliestMinute)
+        val latest = clockShort(ex.latestMinute)
+        if (earliest.isNotEmpty()) r.append("最早活动：").append(earliest).append("\n")
+        if (latest.isNotEmpty()) r.append("最晚活动：").append(latest).append("\n")
+        if (earliest.isNotEmpty() && latest.isNotEmpty() && ex.latestMinute > ex.earliestMinute) {
+            r.append("活跃窗口：").append(earliest).append(" → ").append(latest).append("\n")
+            r.append("窗口宽度：")
+                .append(humanDuration((ex.latestMinute - ex.earliestMinute).toLong() * 60_000L))
+                .append("\n")
+        }
+        r.append("作息点评 ").append(
+            when {
+                ex.latestMinute >= 23 * 60 || (ex.earliestMinute in 0 until 5 * 60) -> "夜猫子作息 深夜还在线上"
+                ex.earliestMinute in 0 until 7 * 60 -> "早起型作息 天亮就开始聊"
+                ex.daySpanCount > 0 && ex.daySpanSum / ex.daySpanCount >= 12L * 3_600_000L ->
+                    "全天候在线 一天能拉满十来个小时"
+                else -> "作息正常 集中在白天与晚间"
+            }
+        ).append("\n")
     }
 
     /** 热力格下标（周几 × 24 + 小时）→ 「周三 21 点」 */
@@ -1214,15 +1648,27 @@ object ChatAnalysisEngine {
     }
 
     /** 话题词：固定词表逐个 `contains`（消息级口径，与【口头禅】同一套判定） */
-    private fun scanTopics(body: String, ex: ExtraStats) {
+    /**
+     * 话题词扫描（消息级）。
+     *
+     * 第 16 轮加了 [night] 参数：同一遍 `contains` 循环里顺带把命中分流到"深夜 / 白天"
+     * 两张小表（词表固定 28 个 → 两张表最多 56 个键，不随消息条数增长），
+     * 于是「话题时段偏好」不需要第二次遍历，也不需要留下任何正文。
+     */
+    private fun scanTopics(body: String, ex: ExtraStats, night: Boolean) {
         var hit = false
         for (w in TOPIC_WORDS) {
             if (body.contains(w)) {
                 ex.topic[w] = (ex.topic[w] ?: 0) + 1
+                if (night) ex.topicNight[w] = (ex.topicNight[w] ?: 0) + 1
+                else ex.topicDay[w] = (ex.topicDay[w] ?: 0) + 1
                 hit = true
             }
         }
-        if (hit) ex.topicMsgs++
+        if (hit) {
+            ex.topicMsgs++
+            if (night) ex.topicNightMsgs++ else ex.topicDayMsgs++
+        }
     }
 
     /**
@@ -1386,6 +1832,50 @@ object ChatAnalysisEngine {
         millis < 3_600_000L -> "${millis / 60_000} 分 ${millis % 60_000 / 1000} 秒"
         millis < 86_400_000L -> "${millis / 3_600_000} 小时 ${millis % 3_600_000 / 60_000} 分"
         else -> "${millis / 86_400_000} 天 ${millis % 86_400_000 / 3_600_000} 小时"
+    }
+
+    /**
+     * 收尾「当前这一天」：把它的活跃跨度（当天末条 - 当天首条）并进日画像。
+     *
+     * 只在日期切换与扫描结束时调用（每天一次），纯整数减法。没有开着的天
+     * （curDayFirst / curDayLast 仍为 0）时直接返回，所以首次调用是安全的。
+     */
+    private fun closeDay(ex: ExtraStats) {
+        if (ex.curDayFirst <= 0L || ex.curDayLast <= 0L) return
+        val span = ex.curDayLast - ex.curDayFirst
+        if (span < 0L) return
+        ex.daySpanSum += span
+        ex.daySpanCount++
+        if (span > ex.daySpanMax) ex.daySpanMax = span
+    }
+
+    /**
+     * 毫秒 → "3月2日"：趋势柱的日期刻度。
+     *
+     * 为什么不写成 "03-02"：零值的桶没有 █ 块，弹窗与 PNG 的 PLAIN_COUNT 分支要求
+     * **标签里含中文**才认得出这是分布行；含数字则是为了让整段被当成柱状图（而不是环形图）。
+     */
+    private fun dayTickLabel(ms: Long): String {
+        if (ms <= 0L) return "第 1 段"
+        val c = Calendar.getInstance()
+        c.timeInMillis = ms
+        return (c.get(Calendar.MONTH) + 1).toString() + "月" + c.get(Calendar.DAY_OF_MONTH) + "日"
+    }
+
+    /** 毫秒 → "14时"：今天 / 昨天（≤2 天跨度）用的小时刻度 */
+    private fun hourTickLabel(ms: Long): String {
+        if (ms <= 0L) return "第 1 段"
+        val c = Calendar.getInstance()
+        c.timeInMillis = ms
+        return c.get(Calendar.HOUR_OF_DAY).toString() + "时"
+    }
+
+    /** 当天分钟数（0-1439）→ "7:12"；-1（尚无样本）返回空串，调用处用长度判空 */
+    private fun clockShort(minuteOfDay: Int): String {
+        if (minuteOfDay < 0) return ""
+        val h = minuteOfDay / 60
+        val m = minuteOfDay % 60
+        return h.toString() + ":" + (if (m < 10) "0$m" else m.toString())
     }
 
     /** 词频：中文按 2-4 字窗口切分，跳过纯数字（脚本语义） */

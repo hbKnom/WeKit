@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 聊天记录分析（chat analysis）第 16 轮的文案：扩展维度包与六个新维度的名称。
+     由三语同表生成，key 必须三份一致；报告正文本身不走资源（它是数据，
+     由引擎生成、被弹窗与 PNG 两侧的解析器按字形识别，不能本地化）。 -->
+<resources>
+    <string name="chat_analysis_extra_dims_card">Extended analysis</string>
+    <string name="chat_analysis_extra_dims_badge">%1$d new</string>
+    <string name="chat_analysis_extra_dims_title">Extended dimension pack</string>
+    <string name="chat_analysis_extra_dims_desc">Appends 6 extra dimensions to the report: speech density, daily trend, reply-speed profile, who gets replied to, topic time-of-day and daily rhythm. Turning it off returns the report to its previous length.</string>
+    <string name="chat_analysis_extra_dims_list_title">Dimensions in this pack</string>
+
+    <string name="chat_analysis_dim_density">Speech density</string>
+    <string name="chat_analysis_dim_trend">Daily trend</string>
+    <string name="chat_analysis_dim_latency">Reply-speed profile</string>
+    <string name="chat_analysis_dim_reply_fetch">Who gets replied to</string>
+    <string name="chat_analysis_dim_topic_period">Topic time-of-day</string>
+    <string name="chat_analysis_dim_rhythm">Daily rhythm</string>
+</resources>

@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +95,7 @@ import com.composables.icons.materialsymbols.outlined.Sunny
 import com.composables.icons.materialsymbols.outlined.Tune
 import com.composables.icons.materialsymbols.outlined.Visibility
 import com.composables.icons.materialsymbols.outlined.Visibility_off
+import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.IconButton
@@ -291,6 +293,16 @@ internal object ChatAnalysisUi {
     private val ToneTrack: Color
         @Composable
         get() = MaterialTheme.colorScheme.surfaceVariant
+
+    /**
+     * 图表底轨（第 16 轮）：比 [ToneTrack] 再淡一档，专门给柱状图的"每列满高轨道"用。
+     *
+     * 为什么要单独一档：轨道铺满整列高度，若用和进度条同一个不透明度，
+     * 空柱的轨道会比瘦高的柱子更抢眼，反而干扰读数；淡一档后它退成背景参照。
+     */
+    private val ToneTrackLow: Color
+        @Composable
+        get() = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
 
     /**
      * 强调色底上的前景色。
@@ -1037,6 +1049,8 @@ internal object ChatAnalysisUi {
         val rankOn = ChatAnalysisEngine.FEATURE_RANK in features
         val enabledCount = listOf(aiOn, statsOn, rankOn).count { it }
         val modelReady = selectedModelName.isNotBlank()
+        // 第 16 轮：扩展维度包的开关状态（自己是唯一写者，改动即时落盘，下一次分析生效）
+        var extraDimsOn by remember { mutableStateOf(ChatAnalysisExtraDims.isEnabled()) }
 
         BudgetedDialog(
             title = {
@@ -1167,6 +1181,56 @@ internal object ChatAnalysisUi {
                         )
                     }
                 }
+                // 第 16 轮：扩展维度包（默认开启，纯追加；关掉报告就回到第 15 轮的篇幅）
+                item(key = "extra_dims") {
+                    GroupCard(
+                        title = stringResource(R.string.chat_analysis_extra_dims_card),
+                        index = 4,
+                        badge = stringResource(
+                            R.string.chat_analysis_extra_dims_badge,
+                            ChatAnalysisExtraDims.EXTRA_DIM_COUNT,
+                        ),
+                    ) {
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Star,
+                            iconPlaceholder = true,
+                            title = stringResource(R.string.chat_analysis_extra_dims_title),
+                            description = stringResource(R.string.chat_analysis_extra_dims_desc),
+                            checked = extraDimsOn,
+                            onCheckedChange = { on ->
+                                extraDimsOn = on
+                                ChatAnalysisExtraDims.setEnabled(on)
+                            },
+                        )
+                        InCardDivider()
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space16, vertical = Space12)
+                        ) {
+                            Text(
+                                stringResource(R.string.chat_analysis_extra_dims_list_title),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ToneText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(Space8))
+                            FlowRow(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                                verticalArrangement = Arrangement.spacedBy(ChipGap),
+                            ) {
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_density))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_trend))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_latency))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_reply_fetch))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_topic_period))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_rhythm))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1254,9 +1318,36 @@ internal object ChatAnalysisUi {
         }
     }
 
+    /**
+     * 只读维度芯片（第 16 轮）：列出"这一包新增了哪几个维度"。
+     *
+     * 与 [ModuleChip] 的区别：那些是开/关状态芯片（带 ✓/✕ 图标），这里是纯标签，
+     * 所以用无图标 + 强调色低透明底的写法，避免用户误以为它可以单独点。
+     * 文字一律走三语资源（本文件不再新增硬编码中文 UI 文案）。
+     */
+    @Composable
+    private fun DimensionChip(label: String) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(ToneAccent.copy(alpha = 0.10f))
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = ToneAccent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
     /** 参数行：BaseWidget + 统一的编辑图标（四处参数行共用，避免图标/描述风格漂移） */
     @Composable
     private fun ParamRow(title: String, description: String, onClick: () -> Unit) {
+
         BaseWidget(
             icon = MaterialSymbols.Outlined.Tune,
             iconPlaceholder = true,
@@ -1627,6 +1718,13 @@ internal object ChatAnalysisUi {
 
     /** 键值行的判定阈值：与 PNG 导出（ChatAnalysisPng）同一套规则，弹窗与导图观感一致 */
     private const val KvMaxLineLen = 40
+
+    /** 第 16 轮：零值分布行 `标签 0`（与 PNG 的 PLAIN_COUNT_LINE 同一判据） */
+    private val PlainCountLine = Regex("^(\\S+)\\s+(\\d+)$")
+
+    /** 汉字码点区间（U+4E00–U+9FFF）：分布行的标签必须含汉字，否则退回普通正文行 */
+    private const val CjkFirstCode = 0x4E00
+    private const val CjkLastCode = 0x9FFF
     private const val KvMaxKeyLen = 20
     private const val KvMaxValueLen = 18
 
@@ -1684,10 +1782,35 @@ internal object ChatAnalysisUi {
                         out.add(ReportUnit.TextLine(t))
                     }
                 }
-                else -> out.add(ReportUnit.TextLine(t))
+                else -> {
+                    // 第 16 轮：**没有条形的分布行**（值恰好为 0 的桶 / 档位）。
+                    // 引擎画条形时"值为 0 就不给块"，于是零值桶在文本里只剩 `标签 0`。
+                    // 判据与 PNG 的 parsePlainCount 逐字一致，保证同一份报告在弹窗里和
+                    // 导出图里被切成的块类型相同 —— 不会出现"图上一根空柱、弹窗一行裸文本"。
+                    val plain = parsePlainCountRow(t)
+                    out.add(plain ?: ReportUnit.TextLine(t))
+                }
             }
         }
         return collapseHeat(out)
+    }
+
+    /**
+     * 第 16 轮：**没有条形的分布行**（`标签 0`，即值为 0 的桶 / 档位）。
+     *
+     * 引擎对分布行的条形是"值 > 0 才给块"，零值桶于是只剩 `标签 0` 两个词。
+     * 判据与 PNG 的 `parsePlainCount` **逐字一致**：标签不含（全/半角）冒号、
+     * 标签里必须含汉字、行尾是纯数字。三条约束合起来，普通正文行几乎不可能被误判
+     * （正文里带数字的句子通常在行尾还有别的字），而 `3月2日 0`、`30秒内 0`
+     * 这类零值刻度行会稳稳落进条形行。
+     */
+    private fun parsePlainCountRow(t: String): ReportUnit.BarRow? {
+        val m = PlainCountLine.find(t) ?: return null
+        val label = m.groupValues[1]
+        val value = m.groupValues[2]
+        if (label.contains("：") || label.contains(":")) return null
+        if (!label.any { it.code in CjkFirstCode..CjkLastCode }) return null
+        return ReportUnit.BarRow(label, value, 0f)
     }
 
     /** 解析一行热力数据：格式不对、或数字个数不是 [HeatColumns] 个，一律返回 null */
@@ -2560,17 +2683,30 @@ internal object ChatAnalysisUi {
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(Space2))
+                        // 第 16 轮：柱底加一条与柱等宽的浅色轨道。
+                        // 小数值的柱子只有一两毫米高，"很矮"和"根本没有"肉眼分不清；
+                        // 轨道给出每一列的位置参照，配合柱顶的数值标签，量级一眼可读。
+                        // 轨道用固定满高（不随 ratio 变），柱高按 ratio 从底部生长 —— 两者共用同一条 0 轴。
                         Box(
                             Modifier
                                 .fillMaxWidth(0.62f)
-                                .height(ColumnChartBarMaxH * fs * ratio)
+                                .height(ColumnChartBarMaxH * fs)
                                 .clip(barShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(accent.copy(alpha = 0.7f), accent)
+                                .background(ToneTrackLow),
+                            contentAlignment = Alignment.BottomCenter,
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(ratio)
+                                    .clip(barShape)
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(accent.copy(alpha = 0.7f), accent)
+                                        )
                                     )
-                                )
-                        )
+                            )
+                        }
                     }
                 }
             }

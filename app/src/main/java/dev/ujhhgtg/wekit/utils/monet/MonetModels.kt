@@ -62,6 +62,17 @@ data class MonetRuntimeState(
     val appliedAt: Long = 0L,
     val confirmedAt: Long = 0L,
     val failStreak: Int = 0,
+    /**
+     * 「本次全量解析开始」的时间戳，解析正常收尾（成功或抛错）时清零。
+     *
+     * 进程若在解析期间被杀/崩溃，这个标记会留到下一次启动 —— 这是唯一能识别
+     * 「解析把微信搞崩了」的信号：崩溃发生在应用运行时包**之前**，旧的
+     * [failStreak]（应用后没确认就重启）永远统计不到。实机 2026-09-26 因此陷入
+     * 「启动→解析→原生崩溃→重启」死循环。
+     */
+    val resolveStartedAt: Long = 0L,
+    /** 连续「解析没跑完就退出」的次数；达到上限后本次启动跳过解析（用户可手动重试）。 */
+    val resolveFailStreak: Int = 0,
 ) {
     /** 应用后没等到确认就重启 = 疑似是被这个包搞崩的。 */
     fun suspiciousRestart(now: Long, restartWindowMs: Long, expectedPackage: String): Boolean =

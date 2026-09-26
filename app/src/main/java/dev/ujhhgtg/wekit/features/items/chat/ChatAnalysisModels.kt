@@ -141,3 +141,25 @@ object ChatAnalysisModelStore {
         saveModels(models)
     }
 }
+
+/**
+ * 第 16 轮「扩展维度包」开关。
+ *
+ * 第 16 轮往报告末尾追加了六个新维度（发言密度 / 每日趋势 / 回应速度画像 / 被接话榜 /
+ * 话题时段偏好 / 作息画像）。它们全部是**追加**，旧段落的文本一字未改，所以默认开启
+ * 不会改变任何既有解析结果；但报告变长是真的，于是给一个开关：关掉就退回第 15 轮的篇幅。
+ *
+ * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
+ */
+object ChatAnalysisExtraDims {
+    private const val KEY_EXTRA_DIMS = "chat_analysis_extra_dims"
+
+    /** 第 16 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
+    const val EXTRA_DIM_COUNT = 6
+
+    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_EXTRA_DIMS, true) }.getOrDefault(true)
+
+    fun setEnabled(on: Boolean) {
+        runCatching { WePrefs.putBool(KEY_EXTRA_DIMS, on) }
+    }
+}

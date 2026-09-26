@@ -12,8 +12,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
 import java.util.zip.InflaterInputStream
 
 object MonetApkResourceGraphLoader {
@@ -75,13 +73,20 @@ object MonetApkResourceGraphLoader {
                         .toList()
                     if (owners.isEmpty() || !resFile.isBinaryXml) null else resFile to owners
                 }
-                val xmlFailures = hostPackage?.let { parseXmlInto(candidates, it, xmlDocuments) } ?: 0
+                val stats = hostPackage?.let { parseXmlInto(candidates, it, xmlDocuments) } ?: XmlParseStats()
                 WeLogger.i(
                     TAG,
-                    "${apk.name}: $binaryXmlCount 个二进制 XML（候选 ${candidates.size}），读取 " +
+                    "${apk.name}: $binaryXmlCount 个二进制 XML（候选 ${candidates.size}），" +
+                        "解析 ${stats.parsed} 个、" +
                         "${(System.nanoTime() - xmlStart) / 1_000_000} ms" +
                         "，文件结构按需读了 ${structures.readCount} 个" +
-                        if (xmlFailures > 0) "，XML 解析失败 $xmlFailures 个" else "",
+                        if (stats.problems > 0) {
+                            "，跳过非二进制 ${stats.nonBinary} 个/读取失败 ${stats.readFailed} 个/解析失败 ${stats.failures} 个"
+                        } else {
+                            ""
+                        } +
+                        if (stats.budgetExhausted) "，已达 ${XML_MAX_MILLIS} ms 预算上限（其余本次跳过）" else "" +
+                        if (stats.lowMemory) "，剩余堆不足提前收工（其余本次跳过）" else "",
                 )
             }
             onProgress("完成 ${apk.name}", index + 1, apkPaths.size)
@@ -109,62 +114,137 @@ object MonetApkResourceGraphLoader {
     }
 
     /**
-     * 解析二进制 XML：实机冷启动这一步 75 s、热态 11 s（11000+ 个文件），是整条解析链最贵的一步。
+     * 解析二进制 XML：整条解析链最贵的一步（实机 11000+ 个文件）。
      *
-     * 按批并行：一批内先顺序读出字节（zip 解压本身便宜），再在固定大小线程池里解析成本地模型。
-     * 线程数固定（≤4）、线程为守护线程，配合调用方的后台线程优先级，避免和微信主线程抢 CPU；
-     * 峰值内存受批大小约束。单个文件解析失败只丢它自己（返回失败计数），
-     * 不再让整个「莫奈解析」因为一个坏 XML 而失败。
+     * **必须串行 —— 这是 2026-09-26 实机原生崩溃的根因。**
+     *
+     * 第 14/15 轮把这一步改成 4 线程并行之后，实机日志表现为：每次「开始解析」后 1–10 秒内
+     * 微信必崩原生 SIGBUS/SIGSEGV，故障帧落在 libhwui / libcso.so 这些**与解析毫无关系**的
+     * 原生库里，故障地址里是 UTF-16 片段（`apk/res`、`Size`）＝ 典型的原生内存被写坏；
+     * 同一批解析还报出大量 `ucnv_toUnicode failed: U_ILLEGAL_ARGUMENT_ERROR`
+     * （ICURT 的 UTF-16 解码接口，同样的并发误用）。原因就是 ARSCLib 的 `PackageBlock` /
+     * `ResXmlDocument` 会在**首次访问时惰性建缓存**（`getResource()` 的映射、字符串池解码），
+     * 多个线程共享同一个 `hostPackage` 触发并发惰性初始化，内部结构被并发破坏。
+     * 串行化之后既不再崩，解析失败数也回落到 0 量级。
+     *
+     * 另外三条保护（都是「解析出问题也绝不许影响微信」）：
+     *  - **先校验二进制 XML 头**：明文 XML / 空流 / 截断流直接跳过，不喂给解析器；
+     *  - **整个阶段有硬时间预算**：超预算就带着已完成的部分继续（缺席的角色如实统计、
+     *    由调用方降级处理），不再无界地占用宿主进程；
+     *  - **每 N 个文件让出一次 CPU**：长时间独占后台线程同样会被用户看成卡顿。
      */
     private fun parseXmlInto(
         candidates: List<Pair<ResFile, List<XmlIdentity>>>,
         hostPackage: PackageBlock,
         out: MutableList<OwnedXml>,
-    ): Int {
-        if (candidates.isEmpty()) return 0
+    ): XmlParseStats {
+        if (candidates.isEmpty()) return XmlParseStats()
+        val deadline = System.nanoTime() + XML_MAX_MILLIS * 1_000_000L
+        var sliceStart = System.nanoTime()
+        var parsed = 0
+        var nonBinary = 0
+        var readFailed = 0
         var failures = 0
-        val workers = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
-        val pool = Executors.newFixedThreadPool(workers) { runnable ->
-            Thread(runnable, "wekit-monet-xml").apply { isDaemon = true }
-        }
-        try {
-            candidates.chunked(XML_BATCH_SIZE).forEach { batch ->
-                val payloads = batch.map { (file, _) ->
-                    runCatching { file.inputSource.openStream().use { it.readBytes() } }.getOrNull()
-                }
-                val tasks = batch.indices.map { i ->
-                    val bytes = payloads[i]
-                    pool.submit(
-                        Callable {
-                            if (bytes == null) return@Callable null
-                            runCatching {
-                                // apply 的接收者是 ResXmlDocument，这里的 packageBlock 是它的
-                                // 属性（ARSCLib 的 setPackageBlock）；右边的 hostPackage 才是参数。
-                                val document = ResXmlDocument().apply { packageBlock = hostPackage }
-                                document.readBytes(ByteArrayInputStream(bytes))
-                                MonetBinaryXmlReader.read(document)
-                            }.getOrElse { t ->
-                                failures++
-                                if (failures <= 5) {
-                                    WeLogger.w(TAG, "二进制 XML 解析失败，已跳过：${t.message}")
-                                }
-                                null
-                            }
-                        },
-                    )
-                }
-                tasks.forEachIndexed { i, task ->
-                    val xml = runCatching { task.get() }.getOrNull() ?: return@forEachIndexed
-                    batch[i].second.forEach { identity -> out += OwnedXml(identity, xml) }
-                }
+        var exhausted = false
+        var lowMemory = false
+        var yields = 0
+        for ((index, candidate) in candidates.withIndex()) {
+            if (System.nanoTime() >= deadline) {
+                exhausted = true
+                break
             }
-        } finally {
-            pool.shutdown()
+            // 内存护栏：解析结果（每个 XML 一棵树）全部留在宿主堆里，微信的堆上限是有限的。
+            // 剩余堆不足就带着已完成的部分收工 —— 宁可少解析几个 XML，也不能把宿主搞 OOM。
+            if (index % XML_HEAP_CHECK_EVERY == 0 && freeHeapBytes() < XML_MIN_FREE_HEAP_BYTES) {
+                lowMemory = true
+                break
+            }
+            // 占空比分片：连续跑 XML_SLICE_MILLIS 就让出 XML_REST_MILLIS。
+            // 解析在宿主进程里跑，长时间 100% 占一个核同样会被用户看成卡顿；
+            // 分片之后总耗时略长，但峰值占用明显更低，也不再和微信主线程抢 CPU。
+            if (System.nanoTime() - sliceStart >= XML_SLICE_NANOS) {
+                yields++
+                runCatching { Thread.sleep(XML_REST_MILLIS) }
+                sliceStart = System.nanoTime()
+            }
+            if (index % XML_YIELD_EVERY == 0) runCatching { Thread.sleep(XML_YIELD_MILLIS) }
+            val (file, owners) = candidate
+            val bytes = runCatching { file.inputSource.openStream().use { it.readBytes() } }.getOrNull()
+            if (bytes == null || bytes.isEmpty()) {
+                readFailed++
+                continue
+            }
+            if (!isBinaryXml(bytes)) {
+                nonBinary++
+                continue
+            }
+            val xml = runCatching {
+                // apply 的接收者是 ResXmlDocument，这里的 packageBlock 是它的属性
+                //（ARSCLib 的 setPackageBlock）；右边的 hostPackage 才是参数。
+                val document = ResXmlDocument().apply { packageBlock = hostPackage }
+                document.readBytes(ByteArrayInputStream(bytes))
+                MonetBinaryXmlReader.read(document)
+            }.getOrElse { t ->
+                failures++
+                if (failures <= XML_FAILURE_LOG_LIMIT) {
+                    WeLogger.w(TAG, "二进制 XML 解析失败，已跳过：${t.message?.take(120)}")
+                }
+                null
+            } ?: continue
+            parsed++
+            owners.forEach { identity -> out += OwnedXml(identity, xml) }
         }
-        return failures
+        if (yields > 0) WeLogger.d(TAG, "XML 解析分片让出 $yields 次，避免长时间占用 CPU")
+        if (lowMemory) WeLogger.w(TAG, "剩余堆不足，XML 解析提前收工（已解析 $parsed 个）")
+        return XmlParseStats(parsed, failures, nonBinary, readFailed, exhausted, lowMemory)
     }
 
-    private const val XML_BATCH_SIZE = 192
+    /**
+     * 二进制 XML 头校验：RES_XML_TYPE(0x0003) + headerSize 8 + chunkSize 落在缓冲区内。
+     * 宿主 `res/` 里混着明文 XML 与截断条目，喂给二进制解析器只会制造异常噪声。
+     */
+    private fun isBinaryXml(bytes: ByteArray): Boolean {
+        if (bytes.size < 8) return false
+        val type = (bytes[0].toInt() and 0xff) or ((bytes[1].toInt() and 0xff) shl 8)
+        if (type != 0x0003) return false
+        val headerSize = (bytes[2].toInt() and 0xff) or ((bytes[3].toInt() and 0xff) shl 8)
+        if (headerSize != 8) return false
+        val chunkSize = (bytes[4].toInt() and 0xff) or ((bytes[5].toInt() and 0xff) shl 8) or
+            ((bytes[6].toInt() and 0xff) shl 16) or ((bytes[7].toInt() and 0xff) shl 24)
+        return chunkSize in 8..bytes.size
+    }
+
+    private data class XmlParseStats(
+        val parsed: Int = 0,
+        val failures: Int = 0,
+        val nonBinary: Int = 0,
+        val readFailed: Int = 0,
+        val budgetExhausted: Boolean = false,
+        val lowMemory: Boolean = false,
+    ) {
+        val problems: Int get() = failures + nonBinary + readFailed
+    }
+
+    /** 当前可用堆（宿主微信进程的 Java 堆）。 */
+    private fun freeHeapBytes(): Long {
+        val runtime = Runtime.getRuntime()
+        return runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+    }
+
+    /** XML 阶段总预算：超时就用已完成的部分继续解析角色，绝不影响微信。 */
+    private const val XML_MAX_MILLIS = 120_000L
+
+    /** 占空比分片：连续解析 [XML_SLICE_NANOS] 后让出 [XML_REST_MILLIS]。 */
+    private const val XML_SLICE_NANOS = 2_500_000_000L
+    private const val XML_REST_MILLIS = 1_500L
+
+    /** 内存护栏：剩余堆低于这个值就停止解析（宿主堆有限，别把微信搞 OOM）。 */
+    private const val XML_MIN_FREE_HEAP_BYTES = 64L * 1024 * 1024
+    private const val XML_HEAP_CHECK_EVERY = 64
+
+    private const val XML_YIELD_EVERY = 32
+    private const val XML_YIELD_MILLIS = 1L
+    private const val XML_FAILURE_LOG_LIMIT = 3
 
     private fun MutableMap<Int, MutableResource>.merge(
         resource: ResourceEntry,

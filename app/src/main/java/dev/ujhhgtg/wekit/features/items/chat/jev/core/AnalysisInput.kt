@@ -36,17 +36,23 @@ data class AnalysisInput(
 
 object MessagePolicy {
     /**
-     * 单条消息的字符上限。
+     * 单条消息的字符上限的**默认值**（第 14 轮从 1000 抬到 2000）。
      *
-     * 第 14 轮从 1000 抬到 2000：超过上限的消息以前既不分析、也不画卡 ——
-     * 用户看到的就是「这一条什么都没有」，被当成功能漏掉了。现在上限放宽，
-     * 真正超限的极少，而且会明确显示「本条内容过长，未分析」。
+     * 第 16 轮起真正的上限由设置项 [ModulePrefs.KEY_MAX_CHARS] 决定（[maxCharacters]）：
+     * 用户要「上限可配置 + 超限有明确提示」，所以这里保留常量只作为默认值与兼容引用，
+     * 判定一律走 [maxCharacters]。
      */
-    const val MAX_CHARACTERS = 2000
+    const val MAX_CHARACTERS = ModulePrefs.DEFAULT_MAX_CHARS
     const val MAX_CONTEXT_MESSAGES = 10
 
+    /** 当前生效的单条字符上限（热路径：命中 [dev.ujhhgtg.wekit.preferences.HotPrefs] 内存缓存，无 SQLite）。 */
+    val maxCharacters: Int get() = ModulePrefs.maxChars
+
+    /** 是否超过当前上限。抽出来给渲染侧用（要单独判断「是超限还是内容为空」）。 */
+    fun tooLong(text: String): Boolean = text.codePointCount(0, text.length) > maxCharacters
+
     fun textOrNull(text: String): String? {
-        if (text.codePointCount(0, text.length) > MAX_CHARACTERS) return null
+        if (tooLong(text)) return null
         return text.trim().takeIf { it.isNotEmpty() }
     }
 }

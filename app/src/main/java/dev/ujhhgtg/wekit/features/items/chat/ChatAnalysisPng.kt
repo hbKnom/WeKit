@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -314,6 +315,24 @@ object ChatAnalysisPng {
     private const val CHART_AVG_LABEL_GAP = 34f
     private const val CHART_AVG_LABEL_H = 30f
 
+    /**
+     * 第 16 轮：柱状图的「底轨 + 趋势折线」。
+     *
+     * 底轨 = 每列一条满高的极淡竖条（柱体叠在它上面），让"这一列几乎没消息"与
+     * "漏画了一列"可区分，同时给柱体提供列位参照；
+     * 趋势折线把各柱顶点连起来，回答"整体在涨还是在跌"这个柱高本身读不出太快的问题。
+     * 两者都刻意做得比柱体轻：轨道用淡化后的 [COLOR_TRACK]，折线用淡化的主色，
+     * 节点只点非零柱 —— 加的是信息，不是噪声。
+     */
+    private const val CHART_TREND_LINE_W = 3f
+    private const val CHART_TREND_NODE_R = 4f
+
+    /** 柱底轨的淡化强度（与 [COLOR_TRACK] 混白后使用，绝不直接用半透明色叠背景） */
+    private const val CHART_RAIL_ALPHA = 0x8C
+
+    /** 趋势折线主色的淡化强度（同上，先混白再画） */
+    private const val CHART_TREND_ALPHA = 0xCC
+
     // ---- 标签云（词频）----
 
     /** 标签高度 / 标签内水平内边距 / 标签间距 / 行间距 */
@@ -532,6 +551,10 @@ object ChatAnalysisPng {
         require(CHART_BAR_AREA_H >= 200) { "PNG 柱状图柱区高度过矮" }
         require(CHART_TOP_PAD >= CHART_DASH_H * 4f) { "PNG 柱状图顶部留白放不下峰值标注" }
         require(CHART_BAR_MAX_W > CHART_BAR_MIN_W) { "PNG 柱状图柱宽上下限非法" }
+        // 第 16 轮：底轨与趋势折线都必须比柱体"轻"，线宽 / 节点半径一旦接近柱宽就会盖住柱体
+        require(CHART_TREND_LINE_W < CHART_BAR_MAX_W / 4f) { "PNG 柱状图趋势折线线宽过大" }
+        require(CHART_TREND_NODE_R < CHART_BAR_MAX_W / 4f) { "PNG 柱状图趋势节点半径过大" }
+        require(CHART_RAIL_ALPHA in 0..255 && CHART_TREND_ALPHA in 0..255) { "PNG 柱状图附加图层透明度非法" }
         require(COLUMN_CHART_H == CHART_TOP_PAD + CHART_BAR_AREA_H + CHART_AXIS_H) {
             "PNG 柱状图高度定义不一致"
         }
@@ -2200,6 +2223,22 @@ object ChatAnalysisPng {
         val slot = (plotRight - plotLeft) / n
         val barW = (slot * 0.62f).coerceIn(CHART_BAR_MIN_W, CHART_BAR_MAX_W)
         val peakIndex = bars.indexOfFirst { it.count == maxV }.coerceAtLeast(0)
+
+        // ---- 每列底轨（第 16 轮）----
+        // 没有消息的列以前"什么都没有"，和图顶部留白混在一起；铺一条极淡的满高轨道后，
+        // 列位是连续的：哪一段是空的、哪一段只是矮，一眼分得开。轨道永远画（含 0 值列），
+        // 且固定从绘图区顶部到 0 轴，不随数值变化 —— 它只是参照线，不是数据。
+        val railP = shapePaint(blendOnWhite(COLOR_TRACK, CHART_RAIL_ALPHA))
+        for (i in 0 until n) {
+            val cx = plotLeft + slot * i + slot / 2f
+            cv.drawRoundRect(
+                RectF(cx - barW / 2f, plotTop, cx + barW / 2f, baseY - CHART_BAR_BASE_GAP),
+                barW / 2f,
+                barW / 2f,
+                railP,
+            )
+        }
+
         bars.forEachIndexed { i, b ->
             if (b.count <= 0L) return@forEachIndexed
             val h = areaH * (b.count.toFloat() / maxV.toFloat())
@@ -2218,6 +2257,31 @@ object ChatAnalysisPng {
                     style = Paint.Style.STROKE
                     strokeWidth = 2f
                 })
+            }
+        }
+
+        // ---- 趋势折线（第 16 轮）----
+        // 柱子回答"每一段各有多少"，折线回答"整体在往上还是往下"，两者共用同一套
+        // x 槽位与 y 比例，所以线天然穿过柱顶，不会出现"线和柱对不上"的错觉。
+        // 柱数 < 3 不画（两点连线不构成趋势）；0 值的柱仍然落在折线上（它是一站），但不点节点。
+        if (n >= 3) {
+            val cxList = FloatArray(n)
+            val cyList = FloatArray(n)
+            for (i in 0 until n) {
+                cxList[i] = plotLeft + slot * i + slot / 2f
+                cyList[i] = baseY - areaH * (bars[i].count.toFloat() / maxV.toFloat())
+            }
+            val path = Path()
+            path.moveTo(cxList[0], cyList[0])
+            for (i in 1 until n) path.lineTo(cxList[i], cyList[i])
+            cv.drawPath(
+                path,
+                shapePaint(blendOnWhite(accent, CHART_TREND_ALPHA), stroke = true, strokeWidth = CHART_TREND_LINE_W),
+            )
+            val nodeP = shapePaint(lighten(accent))
+            for (i in 0 until n) {
+                if (bars[i].count <= 0L) continue
+                cv.drawCircle(cxList[i], cyList[i], CHART_TREND_NODE_R, nodeP)
             }
         }
 

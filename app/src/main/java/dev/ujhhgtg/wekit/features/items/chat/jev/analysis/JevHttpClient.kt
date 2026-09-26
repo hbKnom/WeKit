@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat.jev.analysis
 
 import android.os.SystemClock
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.ApiSettings
+import dev.ujhhgtg.wekit.features.items.chat.jev.core.ModulePrefs
 import dev.ujhhgtg.wekit.features.items.chat.jev.core.MoodLog
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -25,18 +26,45 @@ import java.util.concurrent.atomic.AtomicInteger
  *     用户能区分「额度/限流」和「配置错误」。
  */
 class JevHttpClient {
-    private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(false).followSslRedirects(false).build()
+    /**
+     * OkHttp 客户端**懒创建**。
+     *
+     * 第 16 轮改动：原来写成构造期 `val client = OkHttpClient.Builder()...build()`，
+     * 而 [SignalAnalyzer] 这个 object 是在 `YanwaiScanner.install()` 里第一次被访问的 ——
+     * 也就是**在宿主 UI 线程的 feature 挂载路径上**。构造 OkHttpClient 要建 ConnectionPool、
+     * Dispatcher、连接池清理线程，实测在主线程上是几十毫秒级别的固定开销（冷启动首帧更明显）。
+     * 改成 lazy 后，真正的构造推迟到工作线程第一次发请求时，主线程代价 0。
+     */
+    private val client by lazy {
+        OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(false).followSslRedirects(false).build()
+    }
 
     private val calls = AtomicInteger()
+
+    @Volatile
     private var lastCallAt = 0L
+
+    /**
+     * 自适应限速倍率：命中 429 就 ×2（上限 [MAX_ADAPTIVE_FACTOR]），成功后减半回落。
+     *
+     * 为什么要自适应：用户填的额度/渠道差别很大，固定间隔要么太慢（一屏消息排很久，
+     * 看起来像「分析不出来」），要么还是被打回 429（丢一批消息）。命中限流时自动放慢，
+     * 限流过去了自动恢复，配合 [ModulePrefs.KEY_REQUEST_INTERVAL] 让用户能自己定基准。
+     */
+    @Volatile
+    private var adaptiveFactor = 1
 
     /** 本次进程已经发出的请求数（含重试）。设置页用它解释额度与限流。 */
     val requestCount: Int get() = calls.get()
 
-    /** 「等一下就好了」的失败：交给 [exchange] 退避重试。 */
-    private class Retryable(reason: String) : IllegalStateException(reason)
+    /** 当前生效的请求间隔（毫秒），设置页展示用。 */
+    val currentIntervalMs: Long get() = MIN_INTERVAL_MS * adaptiveFactor
+
+    /** 「等一下就好了」的失败：交给 [exchange] 退避重试。[rateLimited] 用于自适应放慢。 */
+    private class Retryable(reason: String, val rateLimited: Boolean = false) :
+        IllegalStateException(reason)
 
     fun exchange(payload: JSONObject, settings: ApiSettings): String {
         check(settings.isConfigured) { "请先填写并保存 API Key" }
@@ -44,8 +72,15 @@ class JevHttpClient {
         while (true) {
             throttle()
             try {
-                return post(payload, settings)
+                val body = post(payload, settings)
+                // 成功后逐步把自适应倍率降回去，最终回到用户设定的基准间隔。
+                if (adaptiveFactor > 1) adaptiveFactor /= 2
+                return body
             } catch (e: Retryable) {
+                if (e.rateLimited && adaptiveFactor < MAX_ADAPTIVE_FACTOR) {
+                    adaptiveFactor *= 2
+                    MoodLog.w("命中限流，请求间隔自适应放慢到 ${MIN_INTERVAL_MS * adaptiveFactor}ms")
+                }
                 if (attempt >= MAX_RETRIES) {
                     throw IllegalStateException("${e.message}（已自动重试 $MAX_RETRIES 次仍未成功）")
                 }
@@ -60,8 +95,9 @@ class JevHttpClient {
     /** 全局限速：串行 + 最小间隔，避免一屏消息把额度一次打光。 */
     @Synchronized
     private fun throttle() {
+        val interval = MIN_INTERVAL_MS * adaptiveFactor
         val now = SystemClock.elapsedRealtime()
-        val wait = MIN_INTERVAL_MS - (now - lastCallAt)
+        val wait = interval - (now - lastCallAt)
         if (wait > 0) runCatching { Thread.sleep(wait) }
         lastCallAt = SystemClock.elapsedRealtime()
     }
@@ -97,7 +133,9 @@ class JevHttpClient {
                     else -> "模型服务暂不可用，请稍后重试"
                 }
                 // 429 / 408 / 5xx 是「等一下再来」；其余是配置问题，重试没有意义。
-                if (code == 429 || code == 408 || response.code >= 500) throw Retryable(reason)
+                if (code == 429 || code == 408 || response.code >= 500) {
+                    throw Retryable(reason, rateLimited = code == 429)
+                }
                 throw IllegalStateException("$reason（HTTP ${response.code}）")
             }
         } catch (e: java.io.IOException) {
@@ -107,14 +145,21 @@ class JevHttpClient {
 
     private companion object {
         /**
-         * 请求之间的最小间隔：把「一屏多条同时分析」的突发摊平到额度允许的速率。
+         * 请求之间的最小间隔的默认值（毫秒）。真正的取值是
+         * [ModulePrefs.KEY_REQUEST_INTERVAL]（用户可调，0..5000），再乘以自适应倍率。
          *
          * 第 14 轮从 1200ms 收到 700ms：每条消息要两轮请求（[JevProtocol.payload] +
          * [JevProtocol.detailPayload]），1.2s 的间隔让一屏 12 条消息要等两分钟，
          * 用户看到的就是「有的行半天不出结果」。700ms 仍能把突发摊平，
-         * 真被限流时 [exchange] 还有退避重试兜着。
+         * 真被限流时 [exchange] 还有退避重试 + 自适应放慢兜着。
+         *
+         * 读设置走的是 [ModulePrefs] 的 [dev.ujhhgtg.wekit.preferences.HotPrefs] 内存缓存
+         * （工作线程上调用，无主线程开销、无 SQLite 查询）。
          */
-        const val MIN_INTERVAL_MS = 700L
+        val MIN_INTERVAL_MS: Long get() = ModulePrefs.requestIntervalMs.toLong()
+
+        /** 自适应放慢的上限倍数：最慢 = 基准间隔 × 8。 */
+        const val MAX_ADAPTIVE_FACTOR = 8
 
         /** 可重试失败的最大重试次数。 */
         const val MAX_RETRIES = 2
