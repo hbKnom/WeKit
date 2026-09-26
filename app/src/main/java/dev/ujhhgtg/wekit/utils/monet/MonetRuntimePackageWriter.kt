@@ -62,6 +62,7 @@ object MonetRuntimePackageWriter {
         packageName: String,
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)? = null,
+        hostFileExists: ((path: String) -> Boolean)? = null,
     ): Boolean {
         if (plan.isEmpty) {
             // 一个角色都没解析出来时不该抛异常打断整条流程：调用方会把它当成
@@ -73,8 +74,9 @@ object MonetRuntimePackageWriter {
             output.parentFile,
             ".${output.name}.tmp-${Thread.currentThread().id}-${System.nanoTime()}",
         )
+        val writtenFiles = HashSet<String>()
         try {
-            if (!writeTo(tmp, packageName, plan, hostReference)) {
+            if (!writeTo(tmp, packageName, plan, hostReference, hostFileExists, writtenFiles)) {
                 tmp.delete()
                 return false
             }
@@ -83,6 +85,20 @@ object MonetRuntimePackageWriter {
                 // idempotent for our own file, so fall back to it.
                 tmp.copyTo(output, overwrite = true)
                 tmp.delete()
+            }
+            // 写包之后逐条复核「条目里引用的资源文件真的在包里」。
+            //
+            // 宿主取 drawable 的方式是：读条目值 -> 得到 `res/xxx/yyy.xml` 路径 -> 去（合并后的）
+            // 资源包里找这个文件。只要文件缺失，宿主就抛
+            //   Resources$NotFoundException: File res/drawable/ao1.xml from drawable resource ID #0x7f08116c
+            // 并**直接崩进程**（实机 wekit-crash-2026-09-26_13-33-02 / 13-43-03 就是这条）。
+            // ARSCLib 写包时是否真的落地这些非资源表文件不由我们掌控，所以这里不信它，
+            // 用 zip 清单自己查一遍：任何一条缺文件就整包放弃（宁可不莫奈化，也不能喂坏包）。
+            val missing = missingResourceFiles(output, writtenFiles)
+            if (missing != null) {
+                WeLogger.e(TAG, "runtime package rejected: $missing")
+                output.delete()
+                return false
             }
         } catch (t: Throwable) {
             tmp.delete()
@@ -102,11 +118,28 @@ object MonetRuntimePackageWriter {
         return (HOST_PACKAGE_ID shl 24) or ((typeId and 0xff) shl 16) or (entryId and 0xffff)
     }
 
+    /**
+     * 复核 [expected] 里的每个路径都真的存在于刚写出的包 [apk] 中。
+     *
+     * 返回非 null = 必须放弃这个包（缺文件 = 宿主取资源必崩）。
+     */
+    private fun missingResourceFiles(apk: File, expected: Set<String>): String? {
+        if (expected.isEmpty()) return null
+        val absent = runCatching {
+            java.util.zip.ZipFile(apk).use { zip ->
+                expected.firstOrNull { zip.getEntry(it) == null }
+            }
+        }.getOrElse { t -> return "cannot inspect written package: ${t.message}" }
+        return absent?.let { "resource file missing in package: $it" }
+    }
+
     private fun writeTo(
         output: File,
         packageName: String,
         plan: MonetOverlayPlan,
         hostReference: ((type: String, name: String) -> Int?)?,
+        hostFileExists: ((path: String) -> Boolean)?,
+        outFiles: MutableSet<String>,
     ): Boolean {
         val apk = ApkModule()
         val table = TableBlock()
@@ -186,38 +219,58 @@ object MonetRuntimePackageWriter {
         }
         // drawable 条目的值必须是「我们刚写进去的那个 XML 的路径」：宿主按 id 取 drawable 时
         // 走的是 value=字符串路径 -> 文件，类型名保持不变，所以既能替换又不改变宿主的取用方式。
-        plan.drawables.forEach { drawable ->
-            val binding = drawable.binding
-            aligned.entry(binding, drawable.lightQualifiers)?.let { entry ->
-                val path = xmlPath(binding.type, drawable.lightQualifiers, binding.name)
-                val document = try {
-                    buildXmlResource(pkg, drawable.light, hostReference, plannedIds)
-                } catch (t: Throwable) {
-                    onFailure("${binding.type}/${binding.name} xml", t)
-                    null
-                }
-                if (document != null) {
-                    entry.setValueAsString(path)
-                    apk.add(BlockInputSource(path, document))
-                    record(entry, drawable.lightQualifiers)
-                }
-            }
-            drawable.night?.let { node ->
-                aligned.entry(binding, drawable.nightQualifiers)?.let { entry ->
-                    val path = xmlPath(binding.type, drawable.nightQualifiers, binding.name)
-                    val document = try {
-                        buildXmlResource(pkg, node, hostReference, plannedIds)
-                    } catch (t: Throwable) {
-                        onFailure("${binding.type}/${binding.name} xml(night)", t)
-                        null
+        //
+        // 【2026-09-26 实机后默认关闭】见 [WRITE_DRAWABLE_OVERLAYS]：这些 XML 会让全局资源查找
+        // 变慢，并且一旦文件没落地就是宿主必崩的 Resources$NotFoundException。
+        if (WRITE_DRAWABLE_OVERLAYS) {
+            var aliasSkipped = 0
+            plan.drawables.forEach { drawable ->
+                val binding = drawable.binding
+                fun emit(node: XmlNode, qualifiers: String) {
+                    val path = xmlPath(binding.type, qualifiers, binding.name)
+                    // 别名 / 引用型 drawable：宿主这个 id 只是一条「指向别的资源」的别名，base.apk
+                    // 里并不存在同名文件。把它的值改写成路径，等于让宿主去打开一个不存在的文件 ——
+                    // 实机崩溃
+                    //   Resources$NotFoundException: File res/drawable/ao1.xml from drawable
+                    //   resource ID #0x7f08116c  /  Unable to find resource ID #0x7f08116c
+                    // （wekit-crash-2026-09-26_13-33-02 与 13-43-03，宿主 MoreTabUI 取 drawable
+                    // 时崩）就是这条：解析阶段只认得「角色 -> id」，不知道这个 id 是真实文件还是
+                    // 别名，于是给别名也拼了一个并不存在的文件路径。只有宿主**真的自带该文件**的
+                    // 条目才允许覆盖 —— 那是「原文件 + 换色版」的关系，路径必然可打开。
+                    if (hostFileExists != null && !hostFileExists(path)) {
+                        aliasSkipped++
+                        return
                     }
-                    if (document != null) {
-                        entry.setValueAsString(path)
-                        apk.add(BlockInputSource(path, document))
-                        record(entry, drawable.nightQualifiers)
+                    aligned.entry(binding, qualifiers)?.let { entry ->
+                        val document = try {
+                            buildXmlResource(pkg, node, hostReference, plannedIds)
+                        } catch (t: Throwable) {
+                            onFailure("${binding.type}/${binding.name} xml", t)
+                            null
+                        }
+                        if (document != null) {
+                            entry.setValueAsString(path)
+                            apk.add(BlockInputSource(path, document))
+                            outFiles += path
+                            record(entry, qualifiers)
+                        }
                     }
                 }
+                emit(drawable.light, drawable.lightQualifiers)
+                drawable.night?.let { emit(it, drawable.nightQualifiers) }
             }
+            if (aliasSkipped > 0) {
+                WeLogger.i(
+                    TAG,
+                    "drawable overlays skipped: $aliasSkipped 条别名 drawable" +
+                        "（宿主 base.apk 内无同名文件，改写会变成「打开不存在的文件」而崩）",
+                )
+            }
+        } else if (plan.drawables.isNotEmpty()) {
+            WeLogger.i(
+                TAG,
+                "drawable/mipmap overlays skipped: ${plan.drawables.size} 个角色（开关已关闭）",
+            )
         }
 
         table.refreshFull()
@@ -437,6 +490,27 @@ object MonetRuntimePackageWriter {
     private const val HOST_PACKAGE_ID = 0x7f
     private const val NIGHT_QUALIFIERS = "-night"
 
+    /**
+     * 是否把 drawable / mipmap 角色写成「XML 文件 + 条目值=文件路径」。
+     *
+     * **保持开启，但必须配合 [write] 的 `hostFileExists` 过滤。** 这条路径同时带来最大的观感收益
+     * （聊天气泡、输入框、引用框这些「纯色 shape 底」全在 drawable 里，颜色角色碰不到它们）与最大
+     * 的崩溃风险，所以两道闸门缺一不可：
+     *
+     *  1. **别名过滤**（`hostFileExists`）：改写前先问「宿主 base.apk 里真有这个文件吗」。别名 /
+     *     引用型 drawable 没有同名文件，改写 = 宿主打开不存在的文件 = 必崩
+     *     （`Resources$NotFoundException: File res/drawable/ao1.xml from drawable resource ID
+     *     #0x7f08116c`，实机 wekit-crash-2026-09-26_13-33-02 / 13-43-03）。
+     *  2. **写包后 zip 复核**（[missingResourceFiles]）+ **注入后冒烟取用**（`MonetEngine`）：
+     *     前者保证 XML 文件真的落进包里，后者让宿主真的加载一次我们写的每个 drawable，
+     *     任何一条取不出来就整体回滚并删除坏包。
+     *
+     * 历史对照：真正稳定生效的那版运行时包只有 36261 字节；上一轮未经过滤地写入 drawable 后
+     * 涨到 143701 字节，随之出现「取资源就崩 + 全局变卡」—— 差额 ~107KB 全是这些 XML 文件。
+     * 现在改的是「只写真实文件对应的 XML」，条目数与文件数都会显著收敛。
+     */
+    private const val WRITE_DRAWABLE_OVERLAYS = true
+
     private fun ResXmlElement.write(
         node: XmlNode,
         pkg: PackageBlock,
@@ -463,6 +537,18 @@ object MonetRuntimePackageWriter {
             createAndroidAttribute(attribute.name, attribute.id).apply {
                 when (value) {
                     is XmlValue.Reference -> {
+                        // 悬空引用（id==0）写进 XML 就是 `@0x0`：宿主解析这张图时直接失败
+                        // （旧版实机 `IllegalArgumentException: launcher.splash.background`），
+                        // 或者退化成透明/全黑 —— 而设置页借宿主的 WeChatSplashActivity 当壳、
+                        // 窗口底就是这个 drawable，于是「打开 WeKit 设置直接黑屏」。
+                        // 与具名引用一致：**少一个属性也不要写一个坏引用**。
+                        if (value.id == 0) {
+                            WeLogger.w(
+                                TAG,
+                                "<${node.name}> 属性 ${attribute.name} 的引用 id 为 0（悬空），已跳过",
+                            )
+                            return@forEach
+                        }
                         valueType = ValueType.REFERENCE
                         data = value.id
                     }

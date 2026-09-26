@@ -1272,6 +1272,15 @@ object ChatAnalysisPng {
         title.contains("活跃集中度") || title.contains("特殊消息") -> COLOR_ACCENT
         title.contains("复读") || title.contains("昼夜话量") -> COLOR_ACCENT2
         title.contains("提问与回应") || title.contains("连续活跃") -> COLOR_ACCENT3
+        // 第 18 轮新增的七个段位：与弹窗（ChatAnalysisUi.sectionAccent）逐条对齐，
+        // 保证同一份报告在弹窗里和导出的图片里是同一个颜色。
+        title.contains("撤回与系统事件") -> COLOR_ACCENT3
+        title.contains("对话轮次") -> COLOR_ACCENT
+        title.contains("沉默间隔") -> COLOR_ACCENT2
+        title.contains("每人说话") -> COLOR_ACCENT3
+        title.contains("表情符号") -> COLOR_ACCENT
+        title.contains("默契搭档") -> COLOR_ACCENT2
+        title.contains("每日开场") -> COLOR_ACCENT3
         else -> null
     }
 

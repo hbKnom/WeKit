@@ -7,6 +7,36 @@ object MonetStructureMatcher {
 
     private const val TAG = "MonetStructureMatcher"
 
+    /** 匹配阶段占空比：连续跑满这么久就让出一次 CPU。 */
+    private const val MATCH_SLICE_NANOS = 2_000_000_000L
+    private const val MATCH_REST_MILLIS = 500L
+
+    /**
+     * 匹配阶段的「占空比让出」。
+     *
+     * 为什么必须要有：微信 base.apk 有 7 万个资源、同类型节点可达 2 万个，而 231 个语义角色
+     * 每个都要遍历同类型节点做特征计算 —— 实机日志
+     * `resolved 231 roles (27 drawables, 186 colors, 0 unresolved)，匹配用时 145544 ms`。
+     * 这 145 秒里如果一直吃满一个核，用户在前台看到的就是「生成莫奈解析资源的过程很卡/闪退」
+     * （本次实机反馈的卡顿之一）。每连续跑满 [MATCH_SLICE_NANOS] 就 `Thread.sleep` 让出
+     * [MATCH_REST_MILLIS]，把 CPU 还给前台；代价是总时长增加约 25%，换前台不抖。
+     */
+    private class CpuYielder {
+        private var sliceStart = System.nanoTime()
+        private var yields = 0
+
+        fun maybeYield() {
+            if (System.nanoTime() - sliceStart < MATCH_SLICE_NANOS) return
+            yields++
+            runCatching { Thread.sleep(MATCH_REST_MILLIS) }
+            sliceStart = System.nanoTime()
+        }
+
+        fun report(label: String) {
+            if (yields > 0) WeLogger.d(TAG, "$label 分片让出 $yields 次，避免长时间占用 CPU")
+        }
+    }
+
     val roleIds: Set<String> = MONET_RULES.mapTo(linkedSetOf(), MonetSemanticRule::id)
 
     fun resolveAll(
@@ -167,6 +197,8 @@ object MonetStructureMatcher {
         val nodesByType = requiredByType.keys.associateWith(graph::nodes)
         val resourceTotal = nodesByType.values.sumOf { it.size }
         var scanned = 0
+        // 这两段循环实机合计要跑 ~145 秒，全程让出 CPU 给前台的见 [CpuYielder]。
+        val yielder = CpuYielder()
         if (resourceTotal > 0) onProgress(0, resourceTotal, "扫描资源特征与引用关系")
         requiredByType.forEach { (type, required) ->
             nodesByType.getValue(type).forEach { node ->
@@ -174,12 +206,14 @@ object MonetStructureMatcher {
                     idsByToken.getOrPut(token, ::linkedSetOf).add(node.id)
                 }
                 scanned++
+                yielder.maybeYield()
                 // Resource scans can be large; avoid flooding the main-thread event queue.
                 if (scanned % 32 == 0 || scanned == resourceTotal) {
                     onProgress(scanned, resourceTotal, "扫描资源特征与引用关系（$type）")
                 }
             }
         }
+        yielder.report("资源特征扫描")
         var matched = 0
         // 公告卡片（notice card）的颜色只在部分版本的布局里存在，探测里有 `single()` /
         // `require` 这类硬断言。旧实现把它放在**逐角色的 runCatching 之外**，于是
@@ -190,6 +224,7 @@ object MonetStructureMatcher {
             .onFailure { WeLogger.w(TAG, "公告卡片颜色特征不可用，相关角色跳过", it) }
             .getOrDefault(emptySet<Int>() to emptySet<Int>())
         val initialCandidates = MONET_RULES.associateWith { rule ->
+            yielder.maybeYield()
             onProgress(matched, MONET_RULES.size, "匹配角色候选：${rule.id}")
             // Reuse the type-indexed node list built for the evidence scan instead of rebuilding it
             // for every rule (hundreds of rules × tens of thousands of resources).

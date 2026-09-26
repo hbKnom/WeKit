@@ -235,8 +235,8 @@ object MonetApkResourceGraphLoader {
     private const val XML_MAX_MILLIS = 120_000L
 
     /** 占空比分片：连续解析 [XML_SLICE_NANOS] 后让出 [XML_REST_MILLIS]。 */
-    private const val XML_SLICE_NANOS = 2_500_000_000L
-    private const val XML_REST_MILLIS = 1_500L
+    private const val XML_SLICE_NANOS = 1_500_000_000L
+    private const val XML_REST_MILLIS = 800L
 
     /** 内存护栏：剩余堆低于这个值就停止解析（宿主堆有限，别把微信搞 OOM）。 */
     private const val XML_MIN_FREE_HEAP_BYTES = 64L * 1024 * 1024

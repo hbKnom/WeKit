@@ -185,3 +185,33 @@ object ChatAnalysisRound17Dims {
         runCatching { WePrefs.putBool(KEY_DIMS17, on) }
     }
 }
+
+/**
+ * 第 18 轮「事件、节奏与关系网络」开关。
+ *
+ * 第 18 轮往报告末尾**再追加**七个维度：
+ *  - 【撤回与系统事件】 谁最爱说出口又收回去，系统事件占比多少；
+ *  - 【对话轮次结构】   一轮连续对话有多长（连续对话长度分布）；
+ *  - 【沉默间隔谱】     从"隔一分钟"到"隔一天"的全量静默分档 + 最长沉默的起止时间点；
+ *  - 【每人说话画像】   人均字数榜（谁是长文大户）；
+ *  - 【表情符号排行】   用得最多的表情 Top N；
+ *  - 【默契搭档】       最常互相接话的两个人（关系网络，而不是单向排行）；
+ *  - 【每日开场与收尾】 每天第一句 / 最后一句是谁说的。
+ *
+ * 与第 16/17 轮**同一套纪律**：只在报告末尾追加，老段落的每一行文本一字未改，
+ * 所以默认开启不会改变任何既有解析结果；关掉就退回第 17 轮的篇幅。
+ *
+ * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
+ */
+object ChatAnalysisRound18Dims {
+    private const val KEY_DIMS18 = "chat_analysis_dims_v18"
+
+    /** 第 18 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
+    const val DIM_COUNT = 7
+
+    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_DIMS18, true) }.getOrDefault(true)
+
+    fun setEnabled(on: Boolean) {
+        runCatching { WePrefs.putBool(KEY_DIMS18, on) }
+    }
+}

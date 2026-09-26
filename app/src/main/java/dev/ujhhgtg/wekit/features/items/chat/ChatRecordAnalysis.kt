@@ -1,5 +1,6 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -80,7 +81,17 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         ChatAnalysisEngine.TRANSCRIPT_MAX_CHARS_DEFAULT,
     )
 
-    private val rangeLabels = listOf("今天", "昨天", "本周", "上周", "本月", "上月")
+    // 时段名走三语资源 ID（与 ChatAnalysisUi.RangeLabelRes 一一对应，顺序不能改）。
+    // 这里不直接存字符串：本对象持有的是宿主 View 层状态，拿不到组合期上下文，
+    // 必须等到展示报告时用 view.context.getString(...) 解析。
+    private val rangeLabelRes = intArrayOf(
+        R.string.chat_analysis_range_today,
+        R.string.chat_analysis_range_yesterday,
+        R.string.chat_analysis_range_this_week,
+        R.string.chat_analysis_range_last_week,
+        R.string.chat_analysis_range_this_month,
+        R.string.chat_analysis_range_last_month,
+    )
 
     @Volatile
     private var busy = false
@@ -523,7 +534,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
             gReportDismiss = { dismiss() }
             ChatAnalysisUi.ReportDialogContent(
                 sessionName = gLabel,
-                periodLabel = currentPeriodLabel(),
+                periodLabel = currentPeriodLabel(view.context),
                 stats = gStats,
                 ai = gAi,
                 units = units,
@@ -539,8 +550,10 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
     private fun rememberUnits(stats: String): List<ChatAnalysisUi.ReportUnit> =
         ChatAnalysisUi.parseReport(stats)
 
-    private fun currentPeriodLabel(): String =
-        rangeLabels.getOrElse(gMode) { "分析范围" } + " · " + gLabel
+    private fun currentPeriodLabel(ctx: Context): String {
+        val res = rangeLabelRes.getOrElse(gMode) { R.string.chat_analysis_range_scope }
+        return ctx.getString(res) + " · " + gLabel
+    }
 
     private fun copyReport(view: View) {
         val txt = buildString {

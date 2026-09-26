@@ -401,16 +401,35 @@ object MonetAssetInjector {
     private fun stateItem(name: String, id: Int, child: XmlNode, value: Boolean = true): XmlNode =
         XmlNode("item", listOf(android(name, id, XmlValue.Boolean(value))), listOf(child))
 
+    /**
+     * 启动图（`launcher.splash.background`）：纯色底层 + 居中图标层。
+     *
+     * **图标层只在宿主真的有可引用的 icon 时才加**。旧实现无条件写
+     * `<item android:drawable="@{iconId}">`，而 iconId 来自
+     * `graph.node(MonetResourceKey("drawable", "icon"))?.id ?: 0` —— 宿主没有那个资源名时就是 0，
+     * 于是写出 `android:drawable="@0x0"`：宿主解析这个 layer-list 会失败（旧版实机日志里的
+     * `IllegalArgumentException: launcher.splash.background` 就是它），或者退化成一张透明/全黑
+     * 的窗口底 —— 而 **WeKit 设置页正是借宿主的 WeChatSplashActivity 当壳启动的，它的窗口底
+     * 就是这个 drawable**，于是「打开 WeKit 设置直接黑屏」（实机 2026-09-26 13:42:47 截图）。
+     * 少一个图标图层只是不好看，写一个悬空引用却是黑屏，取舍很清楚。
+     */
     private fun splash(color: XmlValue, iconId: Int): XmlNode = XmlNode(
         "layer-list",
         listOf(android("opacity", ATTR_OPACITY, XmlValue.Integer(-1))),
-        listOf(
-            XmlNode("item", children = listOf(solid(color))),
-            XmlNode("item", listOf(
-                android("gravity", ATTR_GRAVITY, XmlValue.Integer(17)),
-                android("drawable", ATTR_DRAWABLE, XmlValue.Reference(iconId)),
-            )),
-        ),
+        buildList {
+            add(XmlNode("item", children = listOf(solid(color))))
+            if (iconId != 0) {
+                add(
+                    XmlNode(
+                        "item",
+                        listOf(
+                            android("gravity", ATTR_GRAVITY, XmlValue.Integer(17)),
+                            android("drawable", ATTR_DRAWABLE, XmlValue.Reference(iconId)),
+                        ),
+                    ),
+                )
+            }
+        },
     )
 
     private fun header(surface: Int, accent: Int): XmlNode = XmlNode(

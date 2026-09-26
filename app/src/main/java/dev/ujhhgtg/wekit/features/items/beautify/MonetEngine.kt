@@ -138,8 +138,8 @@ object MonetEngine : ClickableFeature() {
     /** 启动后延后这么久才开始资源解析：把最重的一段挪出启动关键路径。 */
     private const val INITIAL_RESOLVE_DELAY_MS = 20_000L
 
-    /** 冒烟校验抽查的颜色绑定个数。 */
-    private const val SMOKE_TEST_SAMPLES = 8
+    /** 宿主 `res/` 下算作「可覆盖的真实文件」的扩展名（用于过滤别名 drawable）。 */
+    private val HOST_RESOURCE_FILE_EXTENSIONS = setOf("xml", "png", "webp", "jpg", "jpeg")
 
     const val KEY_BUBBLE_STYLE = "monet_bubble_style"
     const val KEY_MULTI_SCENE_CORNERS = "monet_multi_scene_corners"
@@ -423,11 +423,21 @@ object MonetEngine : ClickableFeature() {
                 val hostReference: (String, String) -> Int? = { type, name ->
                     graph.node(MonetResourceKey(type, name))?.id
                 }
+                // drawable 覆盖的「别名闸门」：解析阶段只认得「角色 -> id」，不知道这个 id 背后
+                // 是真实文件还是「指向别的资源的别名」。别名没有同名文件，把它的值改写成
+                // `res/drawable/xxx.xml` 就等于让宿主去打开一个不存在的文件 —— 实机崩溃
+                //   Resources$NotFoundException: File res/drawable/ao1.xml from drawable
+                //   resource ID #0x7f08116c / Unable to find resource ID #0x7f08116c
+                // （wekit-crash-2026-09-26_13-33-02 / 13-43-03）正是这条。所以先把宿主各 APK 的
+                // `res/**` 文件清单扫出来，只有「宿主真的自带该文件」的条目才允许覆盖。
+                val hostFiles = hostResourceFiles(paths)
+                val hostFileExists: (String) -> Boolean = { path -> path in hostFiles }
                 if (!MonetRuntimePackageWriter.write(
                         packageFile,
                         info.packageName,
                         resolution.plan,
                         hostReference,
+                        hostFileExists,
                     )
                 ) {
                     // 条目 id 校验没过 = 覆盖会落到别的资源上，写了就是闪退，宁可这次不注入。
@@ -507,23 +517,100 @@ object MonetEngine : ClickableFeature() {
             runCatching { resources.removeLoaders(loader) }
                 .onFailure { WeLogger.e(TAG, "cannot roll back runtime loader", it) }
             _runtimePackage.value = null
-            error("运行时资源包冒烟校验未通过（取色异常），已回滚本次注入以免影响微信运行")
+            // 坏包必须就地销毁：留着它下次启动还会被「缓存命中」直接注入，反复回滚 = 每次开机
+            // 都要踩一遍 Resources 取用异常。bindings 缓存不动（它只是 id 表），下次会用同样的
+            // bindings 重新生成包。
+            runCatching { if (file.exists()) file.delete() }
+                .onFailure { WeLogger.w(TAG, "cannot delete rejected runtime package", it) }
+            error("运行时资源包冒烟校验未通过（有覆盖资源取不出来），已回滚并删除坏包以免影响微信运行")
         }
         _runtimePackage.value = file
         WeLogger.i(TAG, "applied ${file.name} (${file.length()} bytes)")
     }
 
     /**
-     * 冒烟校验：抽查 [SMOKE_TEST_SAMPLES] 个已解析的颜色绑定去取色。
+     * 冒烟校验：把**写进包的每一条**覆盖资源都按它的真实类型取一次，全部成功才算健康。
      *
-     * 判据刻意宽松（**至少一个能取到就算通过**）：不同微信版本上个别条目缺失是正常的，
-     * 要拦的是「整个包让 Resources 取色全废」这种会立刻影响微信的情况。抽不到绑定
-     * （例如只有 drawable 角色 / 缓存来自更早版本）时视为通过，绝不用校验挡住功能。
+     * 旧实现只抽查 8 条颜色、且「至少一条成功就算通过」，所以一个「颜色都对、但某个 drawable
+     * 条目指向了包内不存在的 XML」的坏包能毫无阻碍地留下来 —— 宿主随后取那个 drawable 时
+     * 直接抛 `Resources$NotFoundException` 崩进程（实机 wekit-crash-2026-09-26_13-33-02 /
+     * 13-43-03 就是这个）。判据必须严到「任何一条我们自己写进去的资源取不出来 = 包是坏的」。
+     *
+     * 类型分流按 `Resources.getResourceTypeName`：drawable/mipmap 走 `getDrawable`（这条正是
+     * 崩溃路径），color 走 `getColor`，string 走 `getString`；其它类型本轮不写入，取不到不算我们写坏。
      */
+    /**
+     * 列出宿主全部 APK 里 `res/**` 下的资源文件路径（`res/drawable/ao1.xml` 这种）。
+     *
+     * 用途见 [applyRuntimePackage] 之前的别名闸门：只有**宿主真的自带同名文件**的 drawable 角色
+     * 才允许被改写成「同名文件 + 换色版 XML」；别名 / 引用型 drawable 没有同名文件，改写就会让
+     * 宿主打开一个不存在的文件并直接崩进程。
+     *
+     * 扫一次全清单（微信 base.apk 约 7 万条目，纯 zip 目录遍历，几十毫秒）后放进 Set，
+     * 写入阶段每次判断都是 O(1)。任何 APK 读失败只跳过它自己，绝不因为清单拿不全而中断解析；
+     * 清单为空时下游会保守地跳过全部 drawable 覆盖（不生效，但绝不崩）。
+     */
+    private fun hostResourceFiles(paths: List<String>): Set<String> {
+        val files = HashSet<String>()
+        paths.forEach { path ->
+            runCatching {
+                java.util.zip.ZipFile(File(path)).use { zip ->
+                    val entries = zip.entries()
+                    while (entries.hasMoreElements()) {
+                        val name = entries.nextElement().name
+                        if (name.startsWith("res/") && name.substringAfterLast('.', "").lowercase() in HOST_RESOURCE_FILE_EXTENSIONS) {
+                            files.add(name)
+                        }
+                    }
+                }
+            }.onFailure { WeLogger.w(TAG, "cannot list host resource files in $path", it) }
+        }
+        WeLogger.i(TAG, "宿主资源文件清单：${files.size} 个（用于过滤别名 drawable）")
+        return files
+    }
+
     private fun smokeTestRuntimePackage(resources: Resources, bindings: MonetBindings?): Boolean {
-        val ids = bindings?.roles?.values?.take(SMOKE_TEST_SAMPLES) ?: return true
+        val ids = bindings?.roles?.values?.toList() ?: return true
         if (ids.isEmpty()) return true
-        return ids.any { id -> runCatching { resources.getColor(id, null) }.isSuccess }
+        var checked = 0
+        var failed = 0
+        val samples = StringBuilder()
+        for (id in ids) {
+            val type = runCatching { resources.getResourceTypeName(id) }.getOrNull() ?: continue
+            val ok = runCatching {
+                when (type) {
+                    "color" -> {
+                        resources.getColor(id, null)
+                        true
+                    }
+
+                    "drawable", "mipmap" -> resources.getDrawable(id, null) != null
+                    "string" -> {
+                        resources.getString(id)
+                        true
+                    }
+
+                    else -> true
+                }
+            }.getOrDefault(false)
+            checked++
+            if (!ok) {
+                failed++
+                if (samples.length < 240) {
+                    if (samples.isNotEmpty()) samples.append(", ")
+                    samples.append(type).append("/0x").append(id.toUInt().toString(16))
+                }
+            }
+        }
+        if (failed > 0) {
+            WeLogger.e(
+                TAG,
+                "冒烟校验不通过：$failed/$checked 条覆盖资源取用异常（$samples）；本次注入已回滚",
+            )
+            return false
+        }
+        WeLogger.i(TAG, "冒烟校验通过：$checked 条覆盖资源全部可取用")
+        return true
     }
 
     /**

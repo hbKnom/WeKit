@@ -599,6 +599,49 @@ internal object ChatAnalysisUi {
     }
 
     /**
+     * 胶囊外壳（**全弹窗唯一**的胶囊几何与字级定义）。
+     *
+     * v18 之前本文件有四套各自为政的胶囊写法（[MetaChip] / [ModuleChip] /
+     * [DimensionChip] / [TocChip]），圆角、内边距、底色透明度和字号各写一遍：
+     * 改一次圆角要改四处，漏一处就会出现"两种胶囊并排"的错位感。
+     * 现在几何量（圆角 [RadiusChip]、内边距 Space8 × Space4、图标 14dp、字级 labelMedium、
+     * 单行省略）全部收在这里，四个对外函数只负责决定"底色 + 图标 + 可点不可点"。
+     *
+     * @param tone  前景与底色来源色（底色统一按 [fillAlpha] 稀释，不再各处手填透明度）
+     * @param icon  可选前置图标；给 null 就是纯标签胶囊
+     * @param onClick 仅 [TocChip] 这种"明确可点"的胶囊才传，其余保持静态以免误触
+     */
+    @Composable
+    private fun ChipShell(
+        text: String,
+        tone: Color,
+        fillAlpha: Float = 0.12f,
+        icon: ImageVector? = null,
+        onClick: (() -> Unit)? = null,
+    ) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(RadiusChip))
+                .background(tone.copy(alpha = fillAlpha))
+                .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+                .padding(horizontal = Space8, vertical = Space4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(icon, null, Modifier.size(14.dp), tint = tone)
+                Spacer(Modifier.width(Space4))
+            }
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = tone,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    /**
      * 元信息胶囊（时段 / 条数 / 模型名这类次级信息）：小字号 + 强调色浅底，
      * 与标题形成明确的字号层级。宽高都由 FlowRow 约束，长文本按测量宽度省略。
      *
@@ -610,25 +653,7 @@ internal object ChatAnalysisUi {
         accent: Color = MaterialTheme.colorScheme.primary,
         icon: ImageVector? = null,
     ) {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(RadiusChip))
-                .background(accent.copy(alpha = 0.13f))
-                .padding(horizontal = Space8, vertical = Space4),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (icon != null) {
-                Icon(icon, null, Modifier.size(14.dp), tint = accent)
-                Spacer(Modifier.width(Space4))
-            }
-            Text(
-                text,
-                style = MaterialTheme.typography.labelMedium,
-                color = accent,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        ChipShell(text = text, tone = accent, fillAlpha = 0.13f, icon = icon)
     }
 
     /**
@@ -917,7 +942,17 @@ internal object ChatAnalysisUi {
     // 三、时间范围选择
     // ==================================================================
 
-    private val RangeLabels = listOf("今天", "昨天", "本周", "上周", "本月", "上月")
+    // 时段名称与口径说明一律走三语资源：这里只存**资源 ID**（顶层 val 不能调用
+    // stringResource —— 非 @Composable 上下文），由下面的 rangeLabels()/rangeHints()
+    // 在组合期解析。这样六个时段不会再各写一遍中文字面量，也不会和设置页的文案漂移。
+    private val RangeLabelRes = listOf(
+        R.string.chat_analysis_range_today,
+        R.string.chat_analysis_range_yesterday,
+        R.string.chat_analysis_range_this_week,
+        R.string.chat_analysis_range_last_week,
+        R.string.chat_analysis_range_this_month,
+        R.string.chat_analysis_range_last_month,
+    )
 
     private val RangeIcons = listOf(
         MaterialSymbols.Outlined.Sunny,
@@ -928,14 +963,22 @@ internal object ChatAnalysisUi {
         MaterialSymbols.Outlined.Refresh,
     )
 
-    private val RangeHints = listOf(
-        "今天 00:00 至今",
-        "昨天全天（00:00 - 24:00）",
-        "本周一 00:00 至今",
-        "上周一至上周日",
-        "本月 1 日至今",
-        "上个月整月",
+    private val RangeHintRes = listOf(
+        R.string.chat_analysis_range_hint_today,
+        R.string.chat_analysis_range_hint_yesterday,
+        R.string.chat_analysis_range_hint_this_week,
+        R.string.chat_analysis_range_hint_last_week,
+        R.string.chat_analysis_range_hint_this_month,
+        R.string.chat_analysis_range_hint_last_month,
     )
+
+    /** 六个时段的显示名（组合期解析资源，顺序与 [RangeIcons] / [RangeHintRes] 一一对应） */
+    @Composable
+    private fun rangeLabels(): List<String> = RangeLabelRes.map { stringResource(it) }
+
+    /** 六个时段的口径说明（同上） */
+    @Composable
+    private fun rangeHints(): List<String> = RangeHintRes.map { stringResource(it) }
 
     @Composable
     fun RangePickerContent(
@@ -944,14 +987,16 @@ internal object ChatAnalysisUi {
         onSettings: () -> Unit,
         onClose: () -> Unit,
     ) {
+        val labels = rangeLabels()
+        val hints = rangeHints()
         BudgetedDialog(
             title = {
                 DialogTitle(
-                    title = "分析时间范围",
-                    subtitle = "本地统计与 AI 总结都只读取所选时段内的纯文本消息。",
+                    title = stringResource(R.string.chat_analysis_time_range_title),
+                    subtitle = stringResource(R.string.chat_analysis_time_range_hint),
                 )
             },
-            dismissButton = { DismissAction("关闭", onClose) },
+            dismissButton = { DismissAction(stringResource(R.string.chat_analysis_close), onClose) },
         ) { bodyDp ->
             LazyColumn(
                 Modifier
@@ -964,14 +1009,18 @@ internal object ChatAnalysisUi {
                     SessionCard(sessionName)
                 }
                 item(key = "ranges") {
-                    GroupCard(title = "统计时段", index = 1, badge = "${RangeLabels.size} 项") {
-                        RangeLabels.forEachIndexed { index, label ->
+                    GroupCard(
+                        title = stringResource(R.string.chat_analysis_range_section),
+                        index = 1,
+                        badge = stringResource(R.string.chat_analysis_range_items, labels.size),
+                    ) {
+                        labels.forEachIndexed { index, label ->
                             if (index > 0) InCardDivider()
                             BaseWidget(
                                 icon = RangeIcons[index],
                                 iconPlaceholder = true,
                                 title = label,
-                                description = RangeHints[index],
+                                description = hints[index],
                                 onClick = { onPick(index) },
                                 trailingContent = { ChevronTrailing() },
                             )
@@ -979,12 +1028,12 @@ internal object ChatAnalysisUi {
                     }
                 }
                 item(key = "more") {
-                    GroupCard(title = "更多", index = 2) {
+                    GroupCard(title = stringResource(R.string.chat_analysis_more_section), index = 2) {
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Settings,
                             iconPlaceholder = true,
-                            title = "设置",
-                            description = "功能开关 / 分析参数 / AI 模型管理",
+                            title = stringResource(R.string.chat_analysis_settings_title),
+                            description = stringResource(R.string.chat_analysis_settings_entry_desc),
                             onClick = onSettings,
                             trailingContent = { ChevronTrailing() },
                         )
@@ -1015,14 +1064,14 @@ internal object ChatAnalysisUi {
                 Spacer(Modifier.width(Space12))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "当前会话",
+                        stringResource(R.string.chat_analysis_current_session),
                         style = MaterialTheme.typography.labelSmall,
                         color = ToneTextDim,
                         maxLines = 1,
                     )
                     Spacer(Modifier.height(Space2))
                     Text(
-                        sessionName.ifBlank { "（未知会话）" },
+                        sessionName.ifBlank { stringResource(R.string.chat_analysis_unknown_session) },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = ToneText,
@@ -1064,15 +1113,17 @@ internal object ChatAnalysisUi {
         var extraDimsOn by remember { mutableStateOf(ChatAnalysisExtraDims.isEnabled()) }
         // 第 17 轮：第二个扩展维度包的开关状态（同一套纪律：即时落盘、下一次分析生效）
         var dims17On by remember { mutableStateOf(ChatAnalysisRound17Dims.isEnabled()) }
+        // 第 18 轮：第三个扩展维度包的开关状态（同上）
+        var dims18On by remember { mutableStateOf(ChatAnalysisRound18Dims.isEnabled()) }
 
         BudgetedDialog(
             title = {
                 DialogTitle(
-                    title = "聊天记录分析 · 设置",
-                    subtitle = "改动即时保存，下一次分析生效。",
+                    title = stringResource(R.string.chat_analysis_settings_dialog_title),
+                    subtitle = stringResource(R.string.chat_analysis_settings_subtitle),
                 )
             },
-            dismissButton = { DismissAction("关闭", onClose) },
+            dismissButton = { DismissAction(stringResource(R.string.chat_analysis_close), onClose) },
         ) { bodyDp ->
             LazyColumn(
                 Modifier
@@ -1092,15 +1143,15 @@ internal object ChatAnalysisUi {
                 }
                 item(key = "features") {
                     GroupCard(
-                        title = "功能开关",
+                        title = stringResource(R.string.chat_analysis_settings_features),
                         index = 1,
-                        badge = "已启用 $enabledCount/3",
+                        badge = stringResource(R.string.chat_analysis_features_badge, enabledCount),
                     ) {
                         SwitchWidget(
                             icon = MaterialSymbols.Outlined.Smart_toy,
                             iconPlaceholder = true,
-                            title = "AI 总结",
-                            description = "用大模型总结该时段聊天内容（需要先配置模型）",
+                            title = stringResource(R.string.chat_analysis_feature_ai),
+                            description = stringResource(R.string.chat_analysis_feature_ai_desc),
                             checked = aiOn,
                             onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_AI, it) },
                         )
@@ -1108,8 +1159,8 @@ internal object ChatAnalysisUi {
                         SwitchWidget(
                             icon = MaterialSymbols.Outlined.Tune,
                             iconPlaceholder = true,
-                            title = "本地统计",
-                            description = "核心指标 / 载体偏好 / 活跃频次 / 高频词 / 情绪指纹",
+                            title = stringResource(R.string.chat_analysis_feature_stats),
+                            description = stringResource(R.string.chat_analysis_feature_stats_desc),
                             checked = statsOn,
                             onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_STATS, it) },
                         )
@@ -1117,56 +1168,74 @@ internal object ChatAnalysisUi {
                         SwitchWidget(
                             icon = MaterialSymbols.Outlined.Sort,
                             iconPlaceholder = true,
-                            title = "发言排行",
-                            description = "发言对比 / 群成员发言 Top10",
+                            title = stringResource(R.string.chat_analysis_feature_rank),
+                            description = stringResource(R.string.chat_analysis_feature_rank_desc),
                             checked = rankOn,
                             onCheckedChange = { onToggleFeature(ChatAnalysisEngine.FEATURE_RANK, it) },
                         )
                     }
                 }
                 item(key = "params") {
-                    GroupCard(title = "分析参数", index = 2, badge = "4 项") {
+                    GroupCard(
+                        title = stringResource(R.string.chat_analysis_settings_params),
+                        index = 2,
+                        badge = stringResource(R.string.chat_analysis_param_items, 4),
+                    ) {
                         ParamRow(
-                            title = "分析条数上限",
+                            title = stringResource(R.string.chat_analysis_max_count_title),
                             description = if (maxCount <= 0) {
-                                "0 = 全部（读该时段所有消息，越大越慢）"
+                                stringResource(R.string.chat_analysis_max_count_hint_all)
                             } else {
-                                "当前 $maxCount 条 · 0 = 全部"
+                                stringResource(R.string.chat_analysis_max_count_hint_value, maxCount)
                             },
                             onClick = onEditMaxCount,
                         )
                         InCardDivider()
                         ParamRow(
-                            title = "抽样上限",
-                            description = "喂给 AI 的最大文本条数（当前 $sampleLimit）· 0 = 全部",
+                            title = stringResource(R.string.chat_analysis_sample_limit_title),
+                            description = stringResource(
+                                R.string.chat_analysis_sample_limit_hint_value,
+                                sampleLimit,
+                            ),
                             onClick = onEditSampleLimit,
                         )
                         InCardDivider()
                         ParamRow(
-                            title = "单条文本上限",
-                            description = "一条消息喂给 AI 的最多字数（当前 $lineMax 字）",
+                            title = stringResource(R.string.chat_analysis_line_max_title),
+                            description = stringResource(
+                                R.string.chat_analysis_line_max_hint_value,
+                                lineMax,
+                            ),
                             onClick = onEditLineMax,
                         )
                         InCardDivider()
                         ParamRow(
-                            title = "喂给 AI 的文本上限",
-                            description = "整段记录的总字数上限（当前 $transcriptMaxChars 字）；" +
-                                "模型上下文小就要调小，否则服务端会报上下文超限",
+                            title = stringResource(R.string.chat_analysis_transcript_max_title),
+                            description = stringResource(
+                                R.string.chat_analysis_transcript_max_hint_value,
+                                transcriptMaxChars,
+                            ),
                             onClick = onEditTranscriptMaxChars,
                         )
                     }
                 }
                 item(key = "model") {
                     GroupCard(
-                        title = "AI 模型",
+                        title = stringResource(R.string.chat_analysis_ai_models),
                         index = 3,
-                        badge = if (modelReady) "已配置" else "未配置",
+                        badge = if (modelReady) {
+                            stringResource(R.string.chat_analysis_model_configured)
+                        } else {
+                            stringResource(R.string.chat_analysis_model_unconfigured)
+                        },
                     ) {
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Memory,
                             iconPlaceholder = true,
-                            title = "当前模型",
-                            description = selectedModelName.ifEmpty { "未配置，点下方「模型管理」添加" },
+                            title = stringResource(R.string.chat_analysis_model_current),
+                            description = selectedModelName.ifEmpty {
+                                stringResource(R.string.chat_analysis_model_current_empty)
+                            },
                             onClick = onModelManager,
                             trailingContent = { ChevronTrailing() },
                         )
@@ -1174,8 +1243,8 @@ internal object ChatAnalysisUi {
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Edit,
                             iconPlaceholder = true,
-                            title = "模型管理",
-                            description = "新增 / 编辑 / 删除 / 选择（支持多套 baseURL + APIKey）",
+                            title = stringResource(R.string.chat_analysis_model_manager),
+                            description = stringResource(R.string.chat_analysis_ai_models_desc),
                             onClick = onModelManager,
                             trailingContent = {
                                 Icon(MaterialSymbols.Outlined.Edit, null, tint = ToneTextDim)
@@ -1185,8 +1254,8 @@ internal object ChatAnalysisUi {
                         BaseWidget(
                             icon = MaterialSymbols.Outlined.Bolt,
                             iconPlaceholder = true,
-                            title = "测试连接",
-                            description = "拉取模型列表 + 最小对话，验证当前模型能否正常请求",
+                            title = stringResource(R.string.chat_analysis_model_test),
+                            description = stringResource(R.string.chat_analysis_model_test_desc),
                             onClick = onTestModel,
                             trailingContent = {
                                 Icon(MaterialSymbols.Outlined.Refresh, null, tint = ToneTextDim)
@@ -1294,6 +1363,58 @@ internal object ChatAnalysisUi {
                         }
                     }
                 }
+                // 第 18 轮：第三个扩展维度包（事件 / 节奏 / 关系网络）。同样纯追加、默认开启；
+                // 关掉就回到第 17 轮的篇幅，已有段落一行都不会变。
+                item(key = "dims18") {
+                    GroupCard(
+                        title = stringResource(R.string.chat_analysis_dims18_card),
+                        index = 6,
+                        badge = stringResource(
+                            R.string.chat_analysis_dims18_badge,
+                            ChatAnalysisRound18Dims.DIM_COUNT,
+                        ),
+                    ) {
+                        SwitchWidget(
+                            icon = MaterialSymbols.Outlined.Star,
+                            iconPlaceholder = true,
+                            title = stringResource(R.string.chat_analysis_dims18_title),
+                            description = stringResource(R.string.chat_analysis_dims18_desc),
+                            checked = dims18On,
+                            onCheckedChange = { on ->
+                                dims18On = on
+                                ChatAnalysisRound18Dims.setEnabled(on)
+                            },
+                        )
+                        InCardDivider()
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space16, vertical = Space12)
+                        ) {
+                            Text(
+                                stringResource(R.string.chat_analysis_dims18_list_title),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ToneText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(Space8))
+                            FlowRow(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(ChipGap),
+                                verticalArrangement = Arrangement.spacedBy(ChipGap),
+                            ) {
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_revoke))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_rounds))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_silence))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_profile))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_emoji))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_pair))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_daily))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1325,25 +1446,29 @@ internal object ChatAnalysisUi {
         }
         val message = when {
             enabledCount == 0 ->
-                "三个模块都没开：分析结果会是空的，请至少开启一个。"
+                stringResource(R.string.chat_analysis_status_none_on)
             aiOn && !modelReady ->
-                "AI 总结已开启，但还没有可用模型：AI 总结会直接失败，请先在「AI 模型」里添加并选中。"
+                stringResource(R.string.chat_analysis_status_ai_no_model)
             aiOn ->
-                "配置就绪：本地统计与 AI 总结都可以执行。"
+                stringResource(R.string.chat_analysis_status_ready_all)
             else ->
-                "配置就绪：只做本地统计，不会发起任何网络请求。"
+                stringResource(R.string.chat_analysis_status_ready_stats)
         }
 
-        GroupCard(title = "配置状态", accent = tone, badge = "已启用 $enabledCount/3") {
+        GroupCard(
+            title = stringResource(R.string.chat_analysis_status_section),
+            accent = tone,
+            badge = stringResource(R.string.chat_analysis_features_badge, enabledCount),
+        ) {
             Column(Modifier.padding(horizontal = CardPad)) {
                 FlowRow(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(ChipGap),
                     verticalArrangement = Arrangement.spacedBy(ChipGap),
                 ) {
-                    ModuleChip("AI 总结", aiOn)
-                    ModuleChip("本地统计", statsOn)
-                    ModuleChip("发言排行", rankOn)
+                    ModuleChip(stringResource(R.string.chat_analysis_feature_ai), aiOn)
+                    ModuleChip(stringResource(R.string.chat_analysis_feature_stats), statsOn)
+                    ModuleChip(stringResource(R.string.chat_analysis_feature_rank), rankOn)
                 }
                 Spacer(Modifier.height(Space10))
                 StatusBanner(message, tone, icon)
@@ -1357,28 +1482,11 @@ internal object ChatAnalysisUi {
     /** 模块状态芯片：开启=第三强调色 + 勾，关闭=次要文本色 + 叉（一眼分清"有没有开"） */
     @Composable
     private fun ModuleChip(label: String, on: Boolean) {
-        val tone = if (on) ToneThird else ToneTextDim
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(RadiusChip))
-                .background(tone.copy(alpha = 0.12f))
-                .padding(horizontal = Space8, vertical = Space4),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                if (on) MaterialSymbols.Outlined.Check_circle else MaterialSymbols.Outlined.Close,
-                null,
-                Modifier.size(14.dp),
-                tint = tone,
-            )
-            Spacer(Modifier.width(Space4))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                color = tone,
-                maxLines = 1,
-            )
-        }
+        ChipShell(
+            text = label,
+            tone = if (on) ToneThird else ToneTextDim,
+            icon = if (on) MaterialSymbols.Outlined.Check_circle else MaterialSymbols.Outlined.Close,
+        )
     }
 
     /**
@@ -1390,21 +1498,7 @@ internal object ChatAnalysisUi {
      */
     @Composable
     private fun DimensionChip(label: String) {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(RadiusChip))
-                .background(ToneAccent.copy(alpha = 0.10f))
-                .padding(horizontal = Space8, vertical = Space4),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                color = ToneAccent,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        ChipShell(text = label, tone = ToneAccent, fillAlpha = 0.10f)
     }
 
     /** 参数行：BaseWidget + 统一的编辑图标（四处参数行共用，避免图标/描述风格漂移） */
@@ -1950,7 +2044,11 @@ internal object ChatAnalysisUi {
         onJump: (Int) -> Unit,
     ) {
         val tocAccent = MaterialTheme.colorScheme.tertiary
-        SectionCard(title = "快速跳转", accent = tocAccent, badge = entries.size.toString() + " 节") {
+        SectionCard(
+            title = stringResource(R.string.chat_analysis_toc_section),
+            accent = tocAccent,
+            badge = stringResource(R.string.chat_analysis_toc_badge, entries.size),
+        ) {
             FlowRow(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(ChipGap),
@@ -1967,22 +2065,7 @@ internal object ChatAnalysisUi {
     /** 目录胶囊：比普通 MetaChip 多一点点击反馈与描边，明确"可以点"。 */
     @Composable
     private fun TocChip(text: String, accent: Color, onClick: () -> Unit) {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(RadiusChip))
-                .background(accent.copy(alpha = 0.10f))
-                .clickable { onClick() }
-                .padding(horizontal = Space8, vertical = Space4),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text,
-                style = MaterialTheme.typography.labelMedium,
-                color = accent,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        ChipShell(text = text, tone = accent, fillAlpha = 0.10f, onClick = onClick)
     }
 
     /** 把线性 unit 流按 Section 切块；Gap 不再产生任何间距（节奏由卡片与标题承担）。 */
@@ -2035,6 +2118,16 @@ internal object ChatAnalysisUi {
         title.contains("活跃集中度") || title.contains("特殊消息") -> ToneAccent
         title.contains("复读") || title.contains("昼夜话量") -> ToneAlt
         title.contains("提问与回应") || title.contains("连续活跃") -> ToneThird
+        // 第 18 轮新增的七个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
+        // 老报告排在最后的是【昼夜话量】= ToneAlt，所以撤回段从 ToneThird 接上）。
+        // 弹窗与 PNG 导出（ChatAnalysisPng.sectionAccentOf）用同一套落点，两边颜色对得上。
+        title.contains("撤回与系统事件") -> ToneThird
+        title.contains("对话轮次") -> ToneAccent
+        title.contains("沉默间隔") -> ToneAlt
+        title.contains("每人说话") -> ToneThird
+        title.contains("表情符号") -> ToneAccent
+        title.contains("默契搭档") -> ToneAlt
+        title.contains("每日开场") -> ToneThird
         else -> fallback
     }
 
@@ -2050,11 +2143,17 @@ internal object ChatAnalysisUi {
             units.all { it is ReportUnit.KeyValue } &&
             units.count { it is ReportUnit.KeyValue && isNumericValue(it.value) } >= 2
 
-    /** 分节右侧计数徽章：KPI 段说"几项指标"，其余说"几行数据"（无内容则不显示徽章） */
+    /**
+     * 分节右侧计数徽章：KPI 段说"几项指标"，其余说"几行数据"（无内容则不显示徽章）。
+     *
+     * 走 @Composable 是为了直接取三语资源；只返回一个短 String，不参与布局测量，
+     * 所以不会因为变成组合函数而多出重组开销（调用点本来就在组合里）。
+     */
+    @Composable
     private fun sectionBadge(block: ReportBlock): String? = when {
         block.units.isEmpty() -> null
-        block.isKpiLike -> "${block.units.size} 项指标"
-        else -> "${block.units.size} 行数据"
+        block.isKpiLike -> stringResource(R.string.chat_analysis_badge_metrics, block.units.size)
+        else -> stringResource(R.string.chat_analysis_badge_rows, block.units.size)
     }
 
     /**
@@ -2162,9 +2261,8 @@ internal object ChatAnalysisUi {
             Box(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
                 EmptyState(
                     icon = MaterialSymbols.Outlined.Article,
-                    title = "报告为空",
-                    hint = "该时段没有可统计的文本消息（图片 / 语音 / 表情不计入）。\n" +
-                        "换个时间范围，或在设置里确认「本地统计」已开启。",
+                    title = stringResource(R.string.chat_analysis_empty_report_title),
+                    hint = stringResource(R.string.chat_analysis_empty_report_hint),
                 )
             }
             return
@@ -2310,7 +2408,7 @@ internal object ChatAnalysisUi {
                     .padding(CardPad)
             ) {
                 Text(
-                    "报告概览",
+                    stringResource(R.string.chat_analysis_overview_section),
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = LsHeader),
                     color = ToneTextDim,
                     maxLines = 1,
@@ -2320,10 +2418,25 @@ internal object ChatAnalysisUi {
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(KpiGap),
                 ) {
-                    MiniStat("数据分节", sectionCount.toString(), accent, Modifier.weight(1f))
-                    MiniStat("数据行", rowCount.toString(), ToneAlt, Modifier.weight(1f))
+                    MiniStat(
+                        stringResource(R.string.chat_analysis_overview_sections),
+                        sectionCount.toString(),
+                        accent,
+                        Modifier.weight(1f),
+                    )
+                    MiniStat(
+                        stringResource(R.string.chat_analysis_overview_rows),
+                        rowCount.toString(),
+                        ToneAlt,
+                        Modifier.weight(1f),
+                    )
                     if (aiChars > 0) {
-                        MiniStat("AI 正文", aiChars.toString(), ToneThird, Modifier.weight(1f))
+                        MiniStat(
+                            stringResource(R.string.chat_analysis_overview_ai_chars),
+                            aiChars.toString(),
+                            ToneThird,
+                            Modifier.weight(1f),
+                        )
                     }
                 }
             }
@@ -2671,7 +2784,7 @@ internal object ChatAnalysisUi {
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "合计",
+                        stringResource(R.string.chat_analysis_chart_total),
                         style = MaterialTheme.typography.labelSmall,
                         color = ToneTextDim,
                         maxLines = 1,
@@ -3116,7 +3229,7 @@ internal object ChatAnalysisUi {
                 horizontalArrangement = Arrangement.End,
             ) {
                 Text(
-                    "少",
+                    stringResource(R.string.chat_analysis_heat_less),
                     style = MaterialTheme.typography.labelSmall,
                     color = dim,
                     maxLines = 1,
@@ -3133,7 +3246,7 @@ internal object ChatAnalysisUi {
                 }
                 Spacer(Modifier.width(cellGap))
                 Text(
-                    "多",
+                    stringResource(R.string.chat_analysis_heat_more),
                     style = MaterialTheme.typography.labelSmall,
                     color = dim,
                     maxLines = 1,
@@ -3411,19 +3524,26 @@ internal object ChatAnalysisUi {
         onAiSummary: (() -> Unit)? = null,
     ) {
         Column(Modifier.fillMaxWidth()) {
+            // 固定尾部与滚动正文之间的一条发丝线：让"这一块是不动的"有明确视觉边界，
+            // 滚动到最后一张卡片时不会和按钮区糊在一起（遮挡感就来自这里）。
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+            )
+            Spacer(Modifier.height(Space10))
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(Space8),
             ) {
                 SecondaryAction(
                     icon = MaterialSymbols.Outlined.Download,
-                    text = "导出 PNG",
+                    text = stringResource(R.string.chat_analysis_export_png),
                     onClick = onExportPng,
                     modifier = Modifier.weight(1f),
                 )
                 SecondaryAction(
                     icon = MaterialSymbols.Outlined.Content_copy,
-                    text = "复制报告",
+                    text = stringResource(R.string.chat_analysis_copy_report),
                     onClick = onCopy,
                     modifier = Modifier.weight(1f),
                 )
@@ -3438,7 +3558,11 @@ internal object ChatAnalysisUi {
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = Space10, vertical = Space6),
                 ) {
-                    Text("关闭", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        stringResource(R.string.chat_analysis_close),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (onAiSummary != null) {
                     Button(
@@ -3448,7 +3572,11 @@ internal object ChatAnalysisUi {
                     ) {
                         Icon(MaterialSymbols.Outlined.Smart_toy, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(Space6))
-                        Text("AI 总结", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            stringResource(R.string.chat_analysis_ai_summary_action),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -3464,11 +3592,18 @@ internal object ChatAnalysisUi {
             verticalArrangement = Arrangement.spacedBy(ChipGap),
         ) {
             MetaChip(periodLabel, ToneAccent)
-            MetaChip("纯文本 " + countText(stats) + " 条", ToneAlt)
+            MetaChip(
+                stringResource(R.string.chat_analysis_meta_text_n, countText(stats)),
+                ToneAlt,
+            )
             if (ai.isNotBlank()) {
-                MetaChip("已含 AI 总结", ToneThird, MaterialSymbols.Outlined.Check_circle)
+                MetaChip(
+                    stringResource(R.string.chat_analysis_meta_has_ai),
+                    ToneThird,
+                    MaterialSymbols.Outlined.Check_circle,
+                )
             } else {
-                MetaChip("仅本地统计", ToneTextDim)
+                MetaChip(stringResource(R.string.chat_analysis_meta_stats_only), ToneTextDim)
             }
         }
     }
@@ -3490,9 +3625,11 @@ internal object ChatAnalysisUi {
             title = {
                 DialogHero(
                     glyph = firstGlyph(sessionName),
-                    title = sessionName.ifBlank { "聊天记录分析" },
+                    title = sessionName.ifBlank {
+                        stringResource(R.string.feature_chat_record_analysis_name)
+                    },
                     accent = ToneAccent,
-                    subtitle = "本地统计报告",
+                    subtitle = stringResource(R.string.chat_analysis_stats_report_subtitle),
                 ) {
                     ReportMetaFlow(periodLabel, stats, ai)
                 }
@@ -3512,9 +3649,8 @@ internal object ChatAnalysisUi {
                 Box(Modifier.fillMaxWidth().heightIn(max = bodyDp)) {
                     EmptyState(
                         icon = MaterialSymbols.Outlined.Article,
-                        title = "该时段没有可统计的文本消息",
-                        hint = "统计只覆盖纯文本消息（图片 / 语音 / 表情不计入）。\n" +
-                            "换个时间范围，或在设置里确认「本地统计」已开启。",
+                        title = stringResource(R.string.chat_analysis_empty_stats_title),
+                        hint = stringResource(R.string.chat_analysis_empty_stats_hint),
                     )
                 }
             }
@@ -3534,17 +3670,26 @@ internal object ChatAnalysisUi {
             title = {
                 DialogHero(
                     glyph = firstGlyph(sessionName),
-                    title = sessionName.ifBlank { "聊天记录分析" },
+                    title = sessionName.ifBlank {
+                        stringResource(R.string.feature_chat_record_analysis_name)
+                    },
                     accent = ToneThird,
-                    subtitle = "AI 总结 · 基于抽样转录的大模型洞察",
+                    subtitle = stringResource(R.string.chat_analysis_ai_report_subtitle),
                 ) {
                     FlowRow(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(ChipGap),
                         verticalArrangement = Arrangement.spacedBy(ChipGap),
                     ) {
-                        MetaChip("AI 生成", ToneThird, MaterialSymbols.Outlined.Smart_toy)
-                        MetaChip("正文 " + ai.length + " 字", ToneAlt)
+                        MetaChip(
+                            stringResource(R.string.chat_analysis_meta_ai_generated),
+                            ToneThird,
+                            MaterialSymbols.Outlined.Smart_toy,
+                        )
+                        MetaChip(
+                            stringResource(R.string.chat_analysis_meta_body_chars, ai.length),
+                            ToneAlt,
+                        )
                     }
                 }
             },
@@ -3573,7 +3718,10 @@ internal object ChatAnalysisUi {
                             .heightIn(max = bodyDp)
                             .verticalScroll(rememberScrollState())
                     ) {
-                        SectionCard(title = "AI 分析正文", accent = ToneThird) {
+                        SectionCard(
+                            title = stringResource(R.string.chat_analysis_ai_body_section),
+                            accent = ToneThird,
+                        ) {
                             Text(
                                 ai,
                                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = LhBody),
@@ -3587,8 +3735,8 @@ internal object ChatAnalysisUi {
                     Box(Modifier.fillMaxWidth().heightIn(max = bodyDp)) {
                         EmptyState(
                             icon = MaterialSymbols.Outlined.Article,
-                            title = "AI 没有返回内容",
-                            hint = "模型返回为空。请检查模型配置与网络，或调小「喂给 AI 的文本上限」后重试。",
+                            title = stringResource(R.string.chat_analysis_ai_empty_title),
+                            hint = stringResource(R.string.chat_analysis_ai_empty_hint),
                         )
                     }
                 }

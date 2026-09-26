@@ -26,7 +26,6 @@ import dev.ujhhgtg.reflekt.utils.makeAccessible
 import dev.ujhhgtg.wekit.constants.PackageNames
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
-import dev.ujhhgtg.wekit.utils.hookBeforeDirectly
 import dev.ujhhgtg.wekit.utils.android.Intent
 import dev.ujhhgtg.wekit.utils.reflection.ClassLoaders
 import java.lang.reflect.InvocationHandler
@@ -74,69 +73,26 @@ object ActivityProxy {
 
             hookIActivityManager()
             hookPackageManager(ctx, currentActivityThread, clazzActivityThread)
-            installLifecycleGuards()
+            // 【2026-09-26 撤销 handleStartActivity 生命周期守卫 —— 它自己就是更大的 bug】
+            //
+            // 上一轮在这里挂了 `ActivityThread.handleStartActivity` 的 before hook：发现 record
+            // 未处于 stopped 就强制置为 stopped，目的是绕开框架断言
+            //   IllegalStateException: Can't start activity that is not stopped
+            // 实机结果：副作用远远大于它要修的问题。借壳启动（设置页借宿主的
+            // WeChatSplashActivity 当壳，见 ActProxyMgr.SETTINGS_PROXY）时，框架拿到的是被我们
+            // 篡改过的生命周期状态，`performStart` / 窗口可见性 / 绘制之间的时序对不上，
+            // 表现就是**打开 WeKit 设置直接黑屏**（用户 2026-09-26 13:42:47 截图：壁纸+状态栏，
+            // 没有任何内容），同时整机更卡。
+            //
+            // 该断言本身是偶发竞态（1891 版整轮只出现 1 次），而黑屏是必现的体验灾难。
+            // 因此整体撤销这段守卫：不动框架的 record 状态，宁可保留极低概率的偶发崩溃，
+            // 也不能让用户常态黑屏。若要再收敛那个竞态，方向是「串行化借壳启动 / 让两次
+            // startActivity 不再并发操作同一批 record」，而不是在框架内部篡改状态。
 
             initialized = true
         }.onFailure { WeLogger.e(TAG, "failed to init stub activity hooks", it) }
     }
 
-    private var recordStoppedField: java.lang.reflect.Field? = null
-    private var recordIntentField: java.lang.reflect.Field? = null
-    private val warnedStartRecords: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
-    /**
-     * 防止「未停止的 record 被派发 START 事务」把整个微信进程打死。
-     *
-     * 事实依据（实机崩溃日志 wekit-crash-2026-09-26_11-43-30-694.log）：
-     * 劫持 SettingsActivity → 宿主 stub 后 0.6s，主线程在
-     * `ActivityThread.handleStartActivity` 抛
-     *   IllegalStateException: Can't start activity that is not stopped.
-     * 那是框架的硬断言（Android 14 / 15 / main 都保留同一行）：
-     * 客户端 record 必须已处于 stopped（生命周期 ON_CREATE / ON_STOP）才允许执行 START 事务。
-     * 借壳启动模块 Activity 时，宿主自己的启动流程与我们的 stub 启动会并发操作同一批
-     * ActivityClientRecord，服务端与客户端对 record 状态的认知在竞态下会短暂不一致，
-     * 于是这条断言直接把进程带走（表现为「解析完重启微信后直接崩溃闪退」）。
-     *
-     * 与其依赖「两端状态永远一致」这种不在我们掌控中的前提，这里在事务真正进入框架前
-     * 把 `stopped` 修正为框架期望的值：即将 START 的 record 本就是「已停止」语义，
-     * 修正后框架照常 performStart，最坏只是多一次 onStart，而不是崩溃。
-     * 按 record 的组件名去重打日志，方便后续继续收敛真正的竞态来源。
-     */
-    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun installLifecycleGuards() {
-        runCatching {
-            val method = Class.forName("android.app.ActivityThread").declaredMethods
-                .firstOrNull { it.name == "handleStartActivity" }
-                ?: error("handleStartActivity not found")
-            method.hookBeforeDirectly {
-                val record = args.getOrNull(0) ?: return@hookBeforeDirectly
-                runCatching {
-                    val stopped = stoppedFieldOf(record.javaClass)
-                    if (stopped.getBoolean(record)) return@runCatching
-                    stopped.setBoolean(record, true)
-                    val name = runCatching {
-                        val raw = intentFieldOf(record.javaClass).get(record)
-                        (raw as? android.content.Intent)?.component?.className ?: raw.toString()
-                    }.getOrNull() ?: record.javaClass.simpleName
-                    if (warnedStartRecords.add(name)) {
-                        WeLogger.w(
-                            TAG,
-                            "record 未处于 stopped 却收到 START 事务，已修正（否则框架会抛 " +
-                                "Can't start activity that is not stopped 崩进程）：$name"
-                        )
-                    }
-                }.onFailure { WeLogger.w(TAG, "lifecycle guard failed", it) }
-            }
-        }.onFailure { WeLogger.w(TAG, "install handleStartActivity guard failed", it) }
-    }
-
-    private fun stoppedFieldOf(clazz: Class<*>): java.lang.reflect.Field =
-        recordStoppedField
-            ?: clazz.getDeclaredField("stopped").makeAccessible().also { recordStoppedField = it }
-
-    private fun intentFieldOf(clazz: Class<*>): java.lang.reflect.Field =
-        recordIntentField
-            ?: clazz.getDeclaredField("intent").makeAccessible().also { recordIntentField = it }
 
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun hookIActivityManager() {

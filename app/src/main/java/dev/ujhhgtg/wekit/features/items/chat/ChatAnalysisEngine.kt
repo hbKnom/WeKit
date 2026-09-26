@@ -151,6 +151,168 @@ object ChatAnalysisEngine {
     /** 第 17 轮：复读金句在报告里最多保留的原文字数（超长正文只留开头，避免撞上摘录上限） */
     private const val REPEAT_SAMPLE_MAX = 24
 
+    // ---------------- 第 18 轮：事件 / 节奏 / 关系网络的口径常量 ----------------
+
+    /**
+     * 第 18 轮：对话轮次（一轮连续对话）的条数分档（5 档）。
+     *
+     * 分档标签写法与既有分布行**逐条同规**：标签里不含空格（解析器按最后一个空格切分值）、
+     * 不含全角冒号（会被当成指标行）、且至少一个标签含数字（否则整组会被判成环形图）。
+     * 这里第 1 档刻意写成「单独一条」而非「1条」——"1条" 与「2~5条」摆在一起时视觉上像两列数字，
+     * 而"单独一条"能一眼读出"这一段只有一句话，没有对话"。
+     */
+    private val ROUND18_ROUND_LABELS = listOf("单独一条", "2~5条", "6~15条", "16~50条", "50条以上")
+
+    /**
+     * 第 18 轮：静默间隔谱的分档（7 档，含 [TOPIC_BREAK_MS] 以上的长中断）。
+     *
+     * 与【互动节奏】的最长冷场 / 【回复延迟分布】的 30 分钟内分档是**互补**关系：
+     * 那两处只回答"多快接上"，这里把从"隔一分钟"到"隔几天"的全部静默铺成一张谱，
+     * 短档密集 = 实时聊天，长档密集 = 留言板式联络。
+     */
+    private val ROUND18_SILENCE_LABELS =
+        listOf("1分内", "5分内", "30分内", "2时内", "6时内", "1天内", "更久")
+
+    /** 第 18 轮：静默分档的上界（毫秒，最后一项之后一律归末档） */
+    private val ROUND18_SILENCE_BOUNDS =
+        longArrayOf(60_000L, 300_000L, 1_800_000L, 7_200_000L, 21_600_000L, 86_400_000L)
+
+    /**
+     * 第 18 轮：每人说话画像的样本门槛。
+     *
+     * 只发过一两条消息的人不该出现在"人均字数榜"上：一条 200 字的小作文就能让
+     * "人均 200 字" 压过整场聊天都在说话的人。条数不足的直接不参与排名。
+     */
+    private const val ROUND18_PROFILE_MIN_MSGS = 5
+
+    /**
+     * 第 18 轮：撤回者归因时从系统消息正文里最多取多少字符作为昵称。
+     *
+     * 微信的撤回系统消息形如 `"张三" 撤回了一条消息`（自己撤回则是 `你撤回了一条消息`）；
+     * 只做"取引号内内容"这一种最保守的解析，解析不出来就不归因（宁可少算，不要算错）。
+     */
+    private const val ROUND18_REVOKE_NAME_MAX = 24
+
+    /**
+     * 第 18 轮：表情符号种类上限（超出后不再新增键，只累加已有键）。
+     *
+     * emoji 的码点空间很大，理论上能出现上万种组合；给一个硬上限是为了让这张表
+     * **与消息总量解耦**（大群几十万条消息也不会多占内存）。命中上限后仍继续统计
+     * [ExtraStats.emojiTotal] 与已出现过的表情，只是不再记录新面孔。
+     */
+    private const val ROUND18_EMOJI_MAX_KINDS = 240
+
+    /**
+     * 第 18 轮：默契搭档（无向对）上限。
+     *
+     * 群成员 n 人最多有 n(n-1)/2 个组合，500 人大群会到十几万；达到上限后
+     * 只累加已出现过的组合（**不新增键**），保证内存与群规模解耦。
+     */
+    private const val ROUND18_PAIR_MAX = 4096
+
+    /** 第 18 轮：无向对在 map 里的分隔符（用不可能出现在 wxid / 昵称里的控制字符） */
+    private const val ROUND18_PAIR_SEP = '\u0001'
+
+    // ---------------- 第 18 轮：表情符号码点判定（纯区间比较） ----------------
+
+    /**
+     * 是否是一个"表情符号"码点。
+     *
+     * 只覆盖 Unicode 官方表情集中最常见、也是微信里真正会被当表情用的几个区块：
+     *  - `1F300–1FAFF` 杂项符号与图形 / 补充符号与图形 / 扩展-A（😀🚀🦄🫠…）
+     *  - `1F000–1F2FF` 麻将牌 / 扑克牌 / 带圈字符补充（🀄🃏🅰️…）
+     *  - `2600–27BF`    杂项符号 / 装饰符号（☀☺♥✅✂…）
+     *  - `2B00–2BFF`    杂项符号与箭头（⭐⬆…）
+     *
+     * 刻意**不**收 `2190–21FF`（普通箭头）、`2000–206F`（标点/空格）、`FE00–FE0F`（变体选择符）
+     * —— 这些在中文聊天里大量出现却根本不是表情，收进来只会把"表情排行"变成乱码榜。
+     */
+    private fun isEmojiCodePoint(cp: Int): Boolean = when (cp) {
+        in 0x1F300..0x1FAFF -> true
+        in 0x1F000..0x1F2FF -> true
+        in 0x2600..0x27BF -> true
+        in 0x2B00..0x2BFF -> true
+        else -> false
+    }
+
+    /**
+     * 第 18 轮：扫描一条正文里的表情符号（就地累计，不产生中间集合）。
+     *
+     * 逐码点走一遍（代理对一次跨两步），命中就自增；变体选择符（U+FE0F）与零宽连接符
+     * （U+200D）**不单独计数**（它们只是修饰，不是独立表情）。
+     * 单条正文的长度上限由调用方（[CLICHE_BODY_MAX] 同级的正文门槛）保证，这里不做二次限制。
+     */
+    private fun scanEmoji(body: String, ex: ExtraStats) {
+        var i = 0
+        var hit = false
+        val n = body.length
+        while (i < n) {
+            val cp = Character.codePointAt(body, i)
+            val cc = Character.charCount(cp)
+            if (isEmojiCodePoint(cp)) {
+                hit = true
+                ex.emojiTotal++
+                val key = String(Character.toChars(cp))
+                val cur = ex.emoji[key]
+                if (cur != null) {
+                    ex.emoji[key] = cur + 1
+                } else if (ex.emoji.size < ROUND18_EMOJI_MAX_KINDS) {
+                    ex.emoji[key] = 1
+                }
+            }
+            i += cc
+        }
+        if (hit) ex.emojiMsgsEx++
+    }
+
+    /**
+     * 第 18 轮：从系统消息正文里认领一次「撤回」的发起人。
+     *
+     * 只认两种最稳的形态：
+     *  - `"张三" 撤回了一条消息` → 归因到「张三」（群聊里最常见，昵称被引号包住）；
+     *  - `你撤回了一条消息`     → 归因到「我」（自己撤回，微信用第二人称）。
+     *
+     * 其它形态（版本差异、多语言）一律不归因：宁可少算一个人，也不要把整句正文当昵称塞进榜里。
+     */
+    private fun attributeRevoke(content: String, ex: ExtraStats) {
+        val q1 = content.indexOf('"')
+        val q2 = if (q1 >= 0) content.indexOf('"', q1 + 1) else -1
+        if (q1 >= 0 && q2 > q1 + 1) {
+            val name = content.substring(q1 + 1, q2).trim()
+            if (name.isNotEmpty() && name.length <= ROUND18_REVOKE_NAME_MAX) {
+                ex.revokeBy[name] = (ex.revokeBy[name] ?: 0) + 1
+                return
+            }
+        }
+        val q3 = content.indexOf('“')
+        val q4 = if (q3 >= 0) content.indexOf('”', q3 + 1) else -1
+        if (q3 >= 0 && q4 > q3 + 1) {
+            val name = content.substring(q3 + 1, q4).trim()
+            if (name.isNotEmpty() && name.length <= ROUND18_REVOKE_NAME_MAX) {
+                ex.revokeBy[name] = (ex.revokeBy[name] ?: 0) + 1
+                return
+            }
+        }
+        if (content.startsWith("你撤回")) ex.revokeBy["我"] = (ex.revokeBy["我"] ?: 0) + 1
+    }
+
+    /** 第 18 轮：静默时长 → 分档下标（越界一律归末档，绝不返回非法下标） */
+    private fun silenceBand(gap: Long): Int {
+        for (i in ROUND18_SILENCE_BOUNDS.indices) {
+            if (gap <= ROUND18_SILENCE_BOUNDS[i]) return i
+        }
+        return ROUND18_SILENCE_LABELS.size - 1
+    }
+
+    /** 第 18 轮：轮长（一轮对话的消息条数）→ 分档下标（越界归末档） */
+    private fun roundBand(len: Int): Int = when {
+        len <= 1 -> 0
+        len <= 5 -> 1
+        len <= 15 -> 2
+        len <= 50 -> 3
+        else -> 4
+    }
+
     /**
      * 第 15 轮：话题词表（固定 28 个，**不随消息内容增长**）。
      *
@@ -314,6 +476,10 @@ object ChatAnalysisEngine {
                 if (ct <= 0L) continue
                 if (ct < start || ct >= end) continue
                 totalAll++
+                // ---- 第 18 轮：当前这一轮对话的条数（跨 30 分钟中断时由 closeRound 结算）----
+                // 放在这里而不是文字消息分支里：轮次衡量的是"这段对话有多长"，
+                // 图片/表情/系统消息同样占一轮的名额。
+                ex.curRound++
 
                 val type = (m["type"] as? Number)?.toInt()
                     ?: m["type"]?.toString()?.toIntOrNull()
@@ -387,6 +553,10 @@ object ChatAnalysisEngine {
                         gapSum += gap
                         gapCount++
                         if (gap > maxGapMs) maxGapMs = gap
+                        // ---- 第 18 轮：静默间隔谱（**每一段**间隔都分档，不分长短）----
+                        // 与下面「30 分钟以内算回复」是两个互补口径：那边只回答"多快接上"，
+                        // 这里把从一分钟到几天以上的全部间隔铺成一张谱，回答"多久不说话"。
+                        ex.silence[silenceBand(gap)]++
                         // ---- 第 14 轮：回复间隔 / 沉默 / 话题分段（全是整数比较，无分配）----
                         if (gap <= TOPIC_BREAK_MS) {
                             // 真正意义上的「回复」：30 分钟内的你来我往
@@ -414,6 +584,10 @@ object ChatAnalysisEngine {
                                 ex.maxGapEnd = ct
                             }
                             closeTopic(ex, prevCt)
+                            // ---- 第 18 轮：≥30 分钟的中断同样意味着「一轮对话」结束 ----
+                            // 与 closeTopic 同源同判据（同一个 TOPIC_BREAK_MS），只多记一次轮长分档：
+                            // 不新增比较、不新增遍历，纯标量累加。
+                            closeRound(ex)
                             ex.topicStart = ct
                             waitingInitiator = true
                         }
@@ -428,6 +602,19 @@ object ChatAnalysisEngine {
                 val sent = (m["isSend"] as? Number)?.toLong() == 1L
                     || m["isSend"]?.toString() == "1"
                 val content = m["content"]?.toString() ?: ""
+
+                // ---- 第 18 轮：系统消息与撤回事件 ----
+                // 系统消息（type 10000）是微信用来播报"谁撤回了一条消息 / 谁加入了群聊 /
+                // 群名被改成了什么"的统一载体。这里只做一次 contains + 一次引号解析：
+                // 不解析 XML、不查库、不留中间结果。【特殊消息雷达】里的「撤回条数」走的是
+                // type 10002（新版微信把撤回单列成一种消息类型），两者口径互补，都保留。
+                if (type == 10000) {
+                    ex.sysMsgs++
+                    if (content.contains("撤回")) {
+                        ex.revokeMsgs++
+                        attributeRevoke(content, ex)
+                    }
+                }
 
                 if (type != 10000) {
                     val rankKey = when {
@@ -503,6 +690,21 @@ object ChatAnalysisEngine {
                             ex.replyFetch[streakKey] = (ex.replyFetch[streakKey] ?: 0) + 1
                             ex.replyGive[senderKey] = (ex.replyGive[senderKey] ?: 0) + 1
                             if (streakKey == "我") ex.myFetched++
+                            // ---- 第 18 轮：默契搭档（无向对，双向接话合并成一个键）----
+                            // 两个 senderKey 先按字典序排一次，保证 A→B 与 B→A 落在同一个键上，
+                            // 于是这张表天然回答"哪两个人最常互相接话"（单向排行回答不了这个问题）。
+                            // 键数超过 ROUND18_PAIR_MAX 后只累加已存在的组合，内存与群规模解耦。
+                            val pk = if (streakKey <= senderKey) {
+                                streakKey + ROUND18_PAIR_SEP + senderKey
+                            } else {
+                                senderKey + ROUND18_PAIR_SEP + streakKey
+                            }
+                            val pv = ex.pairs[pk]
+                            if (pv != null) {
+                                ex.pairs[pk] = pv + 1
+                            } else if (ex.pairs.size < ROUND18_PAIR_MAX) {
+                                ex.pairs[pk] = 1
+                            }
                         }
                         streakKey = senderKey
                         streak = 1
@@ -519,6 +721,25 @@ object ChatAnalysisEngine {
                     // ---- 第 14 轮：长度 / 标点 / 口头禅 / 摘录（同一次扫描内增量）----
                     ex.lenSum += body.length
                     ex.rankChars[senderKey] = (ex.rankChars[senderKey] ?: 0) + body.length
+                    // ---- 第 18 轮：每人说话画像（人均字数的分母 + 最长单条）----
+                    // rankChars 是"总字数"，缺了"条数"就算不出人均；这里补上条数与最长单条，
+                    // 三者合起来才是"这个人平时说话多长"。
+                    ex.rankTexts[senderKey] = (ex.rankTexts[senderKey] ?: 0) + 1
+                    if (body.length > (ex.rankLongest[senderKey] ?: 0)) {
+                        ex.rankLongest[senderKey] = body.length
+                    }
+                    // ---- 第 18 轮：每日开场 / 收尾（日期切换时把上一条归为前一天的收尾）----
+                    // 判据来自循环上面算好的 dayKey（年 × 1000 + 年内第几天），与【连续活跃】同源。
+                    // 只在日期切换的那一条上做两次 map 自增，热路径零额外开销。
+                    if (dayKey != ex.senderDayKey) {
+                        val prev = ex.lastSenderKey
+                        if (prev.isNotEmpty()) {
+                            ex.dayCloser[prev] = (ex.dayCloser[prev] ?: 0) + 1
+                        }
+                        ex.dayOpener[senderKey] = (ex.dayOpener[senderKey] ?: 0) + 1
+                        ex.senderDayKey = dayKey
+                    }
+                    ex.lastSenderKey = senderKey
                     // ---- 第 16 轮：我的文字消息数（被接话率的分母）与深夜/白天文字基数 ----
                     if (senderKey == "我") ex.myTexts++
                     if (night) ex.nightText++ else ex.dayText++
@@ -533,6 +754,8 @@ object ChatAnalysisEngine {
                     scanRepeat(ex, senderKey, body)
                     scanQuestion(ex, senderKey, body, lastReplyGap)
                     scanPunctuation(body, ex)
+                    // ---- 第 18 轮：表情符号逐码点扫描（命中即累加，不建中间集合）----
+                    scanEmoji(body, ex)
                     if (body.length <= CLICHE_BODY_MAX) scanCliches(body, ex)
                     if (body.length <= TOPIC_BODY_MAX) scanTopics(body, ex, night)
                     rememberExcerpt(ex, senderKey, body)
@@ -548,6 +771,12 @@ object ChatAnalysisEngine {
         }
         // 收尾最后一个话题段（段时长 = 段内最后一条 - 段内第一条）
         closeTopic(ex, prevCt)
+        // ---- 第 18 轮：收尾最后一轮对话 + 把最后一天的收尾者补记上 ----
+        // 日期切换时只会结算"前一天"的收尾，最后一天没有下一次切换，必须在这里补一次。
+        closeRound(ex)
+        if (ex.lastSenderKey.isNotEmpty()) {
+            ex.dayCloser[ex.lastSenderKey] = (ex.dayCloser[ex.lastSenderKey] ?: 0) + 1
+        }
         // ---- 第 16 轮：收尾当天 + 一次性生成趋势桶的 x 轴标签（≤12 次，不进入消息循环）----
         closeDay(ex)
         val hourAxis = rangeSpanMs <= 2L * 86_400_000L
@@ -876,6 +1105,57 @@ object ChatAnalysisEngine {
         var dayChars = 0L
         var nightLong = 0
         var dayLong = 0
+
+        // ---------------- 第 18 轮：事件 / 节奏 / 关系网络的累计量 ----------------
+        // 与前面七轮同一条纪律：全部是定长数组 + 「以参与者为键」的小 map，
+        // 每张表都有硬上限（见 ROUND18_* 常量），**不随消息条数增长**。
+
+        /** 系统消息（type 10000）总数 —— 撤回、入群、改群名都走这个类型 */
+        var sysMsgs = 0
+
+        /** 其中正文命中「撤回」二字的条数（撤回事件口径，与 [typeCount] 的 type 10002 互补） */
+        var revokeMsgs = 0
+
+        /** 撤回者归因（昵称 → 次数）；解析不出昵称的系统消息不计入 */
+        val revokeBy = mutableMapOf<String, Int>()
+
+        /** 对话轮次：总轮数、轮长总和、最长一轮的条数 */
+        var roundCount = 0
+        var roundLenSum = 0
+        var roundMax = 0
+
+        /** 当前这一轮已累计的条数（跨轮时结算并置 1） */
+        var curRound = 0
+
+        /** 轮长分布（5 档，见 [ROUND18_ROUND_LABELS]） */
+        val roundBands = IntArray(5)
+
+        /** 静默间隔谱（7 档，见 [ROUND18_SILENCE_LABELS]）：覆盖从 1 分钟到一天以上的全部间隔 */
+        val silence = IntArray(7)
+
+        /** 每个人的文字消息条数（人均字数的分母；与 [rankChars] 的分子配套） */
+        val rankTexts = mutableMapOf<String, Int>()
+
+        /** 每个人最长的一条文字消息字数 */
+        val rankLongest = mutableMapOf<String, Int>()
+
+        /** 表情符号出现次数（码点字符串 → 次数）与总个数 */
+        val emoji = mutableMapOf<String, Int>()
+        var emojiTotal = 0
+
+        /** 含至少一个表情符号的文字消息条数（"表情消息率"的分子） */
+        var emojiMsgsEx = 0
+
+        /** 默契搭档：无向对（两个 senderKey 用小分隔符拼成键）→ 互相接话次数 */
+        val pairs = mutableMapOf<String, Int>()
+
+        /** 每日开场 / 收尾者的归因计数（每天第一条 / 最后一条消息是谁发的） */
+        val dayOpener = mutableMapOf<String, Int>()
+        val dayCloser = mutableMapOf<String, Int>()
+
+        /** 开场 / 收尾归因用的短状态：当前已归因到的日期键与上一条文字消息的发送者 */
+        var senderDayKey = 0
+        var lastSenderKey = ""
     }
 
     // ---------------- 本地统计报告（口径与脚本一致） ----------------
@@ -1070,6 +1350,20 @@ object ChatAnalysisEngine {
                 totalAll = totalAll,
                 hourDist = hourDist,
                 typeCount = typeCount,
+            )
+        }
+
+        // 第 18 轮扩展的七个新维度，同样是**只在末尾追加**：与第 16/17 轮同一套纪律，
+        // 关掉开关就退回第 17 轮的篇幅，开着也不改变任何既有解析结果（老段一字未动）。
+        if (ChatAnalysisRound18Dims.isEnabled()) {
+            appendRound18Sections(
+                r = r,
+                ex = extra,
+                talker = talker,
+                isGroup = isGroup,
+                textN = textN,
+                totalAll = totalAll,
+                nickCache = nickCache,
             )
         }
 
@@ -1864,8 +2158,295 @@ object ChatAnalysisEngine {
         }
     }
 
+    // ---------------- 第 18 轮新增：七个维度的报告段 ----------------
+
+    /**
+     * 追加第 18 轮的七个维度：撤回与系统事件 / 对话轮次结构 / 沉默间隔谱 /
+     * 每人说话画像 / 表情符号排行 / 默契搭档 / 每日开场与收尾。
+     *
+     * 这七项同样**只从已有数据算**：扫描期就地累加的那几个标量、定长分档数组，
+     * 以及三张"以参与者为键"的小表（撤回者 / 每人字数 / 无向对）。
+     * 没有新查询、没有新存储、没有第二遍遍历消息；报告期只做字符串拼接与
+     * ≤[ROUND18_PAIR_MAX] 项的一次小排序（不进入消息循环）。
+     *
+     * 排版语法与第 14~17 轮**完全同一套**（两侧的通用解析器不认识新语法，这里不发明写法）：
+     *  - `键：值` 一行一个指标，键 ≤ 20 字、值 ≤ 18 字、整行 ≤ 40 字 → 进 KPI 网格；
+     *  - `标签 数值 ████` → 分布图（标签含数字 → 柱状图；标签不含数字且全正 → 环形图）；
+     *  - 榜单行用 `序号. 名字 数值`（数值落在**最后一个空格之后**，两侧解析器都会切成
+     *    "标签 + 值" 两列，并在弹窗/导图里画成带名次的条形行）；
+     *  - 结论句与口径说明一律不带全角冒号，免得被误判成指标行。
+     */
+    private fun appendRound18Sections(
+        r: StringBuilder,
+        ex: ExtraStats,
+        talker: String,
+        isGroup: Boolean,
+        textN: Int,
+        totalAll: Int,
+        nickCache: MutableMap<String, String>,
+    ) {
+        // ── 25) 撤回与系统事件 ──────────────────────────────────────
+        r.append("\n【撤回与系统事件】\n")
+        if (totalAll > 0) {
+            r.append("系统消息：").append(ex.sysMsgs).append(" 条\n")
+            r.append("撤回事件：").append(ex.revokeMsgs).append(" 次\n")
+            r.append("系统占比：").append(pct(ex.sysMsgs, totalAll)).append("%\n")
+            r.append("撤回率：").append(pct(ex.revokeMsgs, totalAll)).append("%\n")
+            val rk = topKeys(ex.revokeBy, 6)
+            if (rk.isNotEmpty()) {
+                r.append("撤回者榜 谁最爱说出口又收回去\n")
+                val rMax = (ex.revokeBy[rk[0]] ?: 1).coerceAtLeast(1)
+                for ((i, k) in rk.withIndex()) {
+                    val v = ex.revokeBy[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(i + 1).append(". ").append(textSafe(k))
+                        .append(' ').append(v).append(' ').append(bar(v, rMax, 16)).append('\n')
+                }
+            }
+            r.append("事件点评 ").append(
+                when {
+                    ex.sysMsgs == 0 -> "零系统消息 这一时段清清爽爽，没人撤回也没人进退群"
+                    ex.revokeMsgs * 10 >= ex.sysMsgs * 6 -> "系统消息里大半是撤回 话说出口又收回去"
+                    pct(ex.revokeMsgs, totalAll) >= 3 -> "撤回有点勤 每隔几十条就有一条被收回"
+                    else -> "零星系统事件 不影响聊天节奏"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可统计的消息\n")
+        }
+
+        // ── 26) 对话轮次结构 ────────────────────────────────────────
+        r.append("\n【对话轮次结构】\n")
+        if (ex.roundCount > 0) {
+            r.append("对话轮数：").append(ex.roundCount).append(" 轮\n")
+            r.append("平均轮长：").append(ex.roundLenSum / ex.roundCount).append(" 条\n")
+            r.append("最长轮长：").append(ex.roundMax).append(" 条\n")
+            var bandMax = 0
+            for (v in ex.roundBands) if (v > bandMax) bandMax = v
+            r.append("轮长分布 每轮之间相隔 30 分钟以上\n")
+            for (i in ROUND18_ROUND_LABELS.indices) {
+                r.append(ROUND18_ROUND_LABELS[i]).append(' ').append(ex.roundBands[i]).append(' ')
+                    .append(bar(ex.roundBands[i], bandMax, 16)).append('\n')
+            }
+            val avg = ex.roundLenSum / ex.roundCount
+            r.append("轮次点评 ").append(
+                when {
+                    ex.roundCount == 1 -> "整段只有一轮 中间没有超过半小时的中断"
+                    avg <= 2 -> "一句一停 基本都是单句往来，说完就散"
+                    avg >= 20 -> "一聊就是一大轮 中间几乎不歇"
+                    ex.roundMax >= 100 -> "有一轮聊了上百条 那是压轴长谈"
+                    else -> "轮长适中 有来有回也有自然的停顿"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有可统计的消息\n")
+        }
+
+        // ── 27) 沉默间隔谱 ──────────────────────────────────────────
+        r.append("\n【沉默间隔谱】\n")
+        var silenceSum = 0
+        for (v in ex.silence) silenceSum += v
+        if (silenceSum > 0 && ex.maxGapMs > 0L) {
+            var sMax = 0
+            for (v in ex.silence) if (v > sMax) sMax = v
+            r.append("静默次数：").append(silenceSum).append(" 次\n")
+            val sStart = clockText(ex.maxGapStart)
+            val sEnd = clockText(ex.maxGapEnd)
+            if (sStart.isNotEmpty()) r.append("最长沉默起点：").append(sStart).append("\n")
+            if (sEnd.isNotEmpty()) r.append("最长沉默终点：").append(sEnd).append("\n")
+            r.append("静默分档 相邻两条消息之间的间隔\n")
+            for (i in ROUND18_SILENCE_LABELS.indices) {
+                r.append(ROUND18_SILENCE_LABELS[i]).append(' ').append(ex.silence[i]).append(' ')
+                    .append(bar(ex.silence[i], sMax, 16)).append('\n')
+            }
+            val short = ex.silence[0] + ex.silence[1] + ex.silence[2]
+            r.append("静默点评 ").append(
+                when {
+                    pct(short, silenceSum) >= 70 -> "密集短间隔 大部分消息在一刻钟内就接上了"
+                    ex.silence[5] + ex.silence[6] > silenceSum / 2 -> "半数是长间隔 更像留言板而不是实时聊天"
+                    ex.maxGapMs >= 7L * 86_400_000L -> "中间断过一整周 这段关系有过长长的空白"
+                    else -> "间隔分布正常 有快有慢"
+                }
+            ).append("\n")
+        } else {
+            r.append("样本不足 该时段只有一条消息，没有可比较的间隔\n")
+        }
+
+        // ── 28) 每人说话画像 ────────────────────────────────────────
+        r.append("\n【每人说话画像】\n")
+        if (textN > 0) {
+            val avgMap = mutableMapOf<String, Int>()
+            for ((k, n) in ex.rankTexts) {
+                if (n < ROUND18_PROFILE_MIN_MSGS) continue
+                val chars = ex.rankChars[k] ?: 0
+                avgMap[k] = chars / n
+            }
+            val avgKeys = topKeys(avgMap, 6)
+            val avgOfAll = if (textN > 0) (ex.lenSum / textN).toInt() else 0
+            r.append("整体人均：").append(avgOfAll).append(" 字\n")
+            r.append("样本人数：").append(avgMap.size).append(" 人\n")
+            if (avgKeys.isNotEmpty()) {
+                r.append("人均字数榜 只统计文字消息，条数不足 ")
+                    .append(ROUND18_PROFILE_MIN_MSGS).append(" 条不参与\n")
+                val aMax = (avgMap[avgKeys[0]] ?: 1).coerceAtLeast(1)
+                for ((i, k) in avgKeys.withIndex()) {
+                    val v = avgMap[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(i + 1).append(". ")
+                        .append(textSafe(speakerDisplayName(k, talker, isGroup, nickCache)))
+                        .append(' ').append(v).append(' ').append(bar(v, aMax, 16)).append('\n')
+                }
+            }
+            val longKeys = topKeys(ex.rankLongest, 3)
+            if (longKeys.isNotEmpty()) {
+                val top = longKeys[0]
+                val topLen = ex.rankLongest[top] ?: 0
+                if (topLen > 0) {
+                    r.append("最长单条：").append(topLen).append(" 字\n")
+                    r.append("最长单条作者：")
+                        .append(textSafe(speakerDisplayName(top, talker, isGroup, nickCache))).append("\n")
+                }
+            }
+            r.append("画像点评 ").append(
+                when {
+                    avgOfAll <= 8 -> "全员短句派 一句话不超过十个字"
+                    avgOfAll >= 60 -> "人人小作文 一条消息顶别人一段话"
+                    avgKeys.size == 1 -> "只有一个话多的人 其余都是零星附和"
+                    else -> "字数差异正常 有长有短"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 29) 表情符号排行 ────────────────────────────────────────
+        r.append("\n【表情符号排行】\n")
+        if (textN > 0) {
+            r.append("表情总个数：").append(ex.emojiTotal).append(" 个\n")
+            r.append("表情消息率：").append(pct(ex.emojiMsgsEx, textN)).append("%\n")
+            r.append("表情种类：").append(ex.emoji.size).append(" 种\n")
+            if (textN > 0 && ex.emojiTotal > 0) {
+                r.append("人均表情数：").append(oneDecimal(ex.emojiTotal.toDouble() / textN)).append(" 个\n")
+            }
+            val ek = topKeys(ex.emoji, 8)
+            if (ek.isNotEmpty()) {
+                r.append("表情排行 用得最多的表情符号\n")
+                val eMax = (ex.emoji[ek[0]] ?: 1).coerceAtLeast(1)
+                for (k in ek) {
+                    val v = ex.emoji[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(k).append(' ').append(v).append(' ').append(bar(v, eMax, 16)).append('\n')
+                }
+            }
+            r.append("表情点评 ").append(
+                when {
+                    ex.emojiTotal == 0 -> "纯文字聊天 一个表情都没用过"
+                    pct(ex.emojiMsgsEx, textN) >= 50 -> "表情是第二语言 一半以上的消息都带表情"
+                    ex.emojiTotal >= textN -> "表情比字还多 平均一条消息不止一个"
+                    else -> "表情点缀 该用的时候才用"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+
+        // ── 30) 默契搭档 ────────────────────────────────────────────
+        r.append("\n【默契搭档】\n")
+        if (ex.pairs.isNotEmpty()) {
+            val topPairs = topKeys(ex.pairs, 6)
+            val best = topPairs.firstOrNull()
+            r.append("搭档组合：").append(ex.pairs.size).append(" 对\n")
+            if (best != null) {
+                val bestV = ex.pairs[best] ?: 0
+                r.append("最高搭档次数：").append(bestV).append(" 次\n")
+                val sp = splitPairKey(best)
+                if (sp != null) {
+                    r.append("最默契组合：")
+                        .append(textSafe(speakerDisplayName(sp.first, talker, isGroup, nickCache)))
+                        .append(" × ")
+                        .append(textSafe(speakerDisplayName(sp.second, talker, isGroup, nickCache)))
+                        .append("\n")
+                }
+                r.append("默契榜 互相接话最多的两人组合\n")
+                val pMax = bestV.coerceAtLeast(1)
+                for (k in topPairs) {
+                    val v = ex.pairs[k] ?: 0
+                    if (v <= 0) continue
+                    val pair = splitPairKey(k) ?: continue
+                    r.append(textSafe(speakerDisplayName(pair.first, talker, isGroup, nickCache)))
+                        .append(" × ")
+                        .append(textSafe(speakerDisplayName(pair.second, talker, isGroup, nickCache)))
+                        .append(' ').append(v).append(' ').append(bar(v, pMax, 16)).append('\n')
+                }
+            }
+            val topV = if (best != null) ex.pairs[best] ?: 0 else 0
+            r.append("默契点评 ").append(
+                when {
+                    ex.turnsAttributed > 0 && topV * 3 >= ex.turnsAttributed ->
+                        "固定搭子 大半的话都是那两个人你来我往"
+                    ex.pairs.size >= 10 -> "多线并行 谁跟谁都能聊上几句"
+                    else -> "接话比较分散 没有特别固定的搭子"
+                }
+            ).append("\n")
+        } else {
+            r.append("样本不足 该时段没有换人接话的文字消息\n")
+        }
+
+        // ── 31) 每日开场与收尾 ──────────────────────────────────────
+        r.append("\n【每日开场与收尾】\n")
+        if (ex.senderDayKey != 0) {
+            var openerSum = 0
+            for (v in ex.dayOpener.values) openerSum += v
+            r.append("归因天数：").append(openerSum).append(" 天\n")
+            val ok = topKeys(ex.dayOpener, 6)
+            if (ok.isNotEmpty()) {
+                val oTop = ok[0]
+                r.append("开场王：")
+                    .append(textSafe(speakerDisplayName(oTop, talker, isGroup, nickCache))).append("\n")
+                r.append("每日开场榜 每天第一条文字消息是谁发的\n")
+                val oMax = (ex.dayOpener[oTop] ?: 1).coerceAtLeast(1)
+                for ((i, k) in ok.withIndex()) {
+                    val v = ex.dayOpener[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(i + 1).append(". ")
+                        .append(textSafe(speakerDisplayName(k, talker, isGroup, nickCache)))
+                        .append(' ').append(v).append(' ').append(bar(v, oMax, 16)).append('\n')
+                }
+            }
+            val ck = topKeys(ex.dayCloser, 6)
+            if (ck.isNotEmpty()) {
+                val cTop = ck[0]
+                r.append("收尾王：")
+                    .append(textSafe(speakerDisplayName(cTop, talker, isGroup, nickCache))).append("\n")
+                r.append("每日收尾榜 每天最后一条文字消息是谁发的\n")
+                val cMax = (ex.dayCloser[cTop] ?: 1).coerceAtLeast(1)
+                for ((i, k) in ck.withIndex()) {
+                    val v = ex.dayCloser[k] ?: 0
+                    if (v <= 0) continue
+                    r.append(i + 1).append(". ")
+                        .append(textSafe(speakerDisplayName(k, talker, isGroup, nickCache)))
+                        .append(' ').append(v).append(' ').append(bar(v, cMax, 16)).append('\n')
+                }
+            }
+            val oTopV = if (ok.isNotEmpty()) ex.dayOpener[ok[0]] ?: 0 else 0
+            val cTopV = if (ck.isNotEmpty()) ex.dayCloser[ck[0]] ?: 0 else 0
+            val samePerson = ok.isNotEmpty() && ck.isNotEmpty() && ok[0] == ck[0]
+            r.append("作息点评 ").append(
+                when {
+                    samePerson && oTopV * 2 >= openerSum -> "同一个人既开场又收尾 每天的聊天由他起头也由他收尾"
+                    oTopV <= 1 && cTopV <= 1 -> "谁先冒头都不固定 没有固定的开场人"
+                    oTopV * 2 >= openerSum -> "一个人常先开口 每天多半是他先冒头"
+                    else -> "开场与收尾都比较分散"
+                }
+            ).append("\n")
+        } else {
+            r.append("统计口径 该时段没有文字消息\n")
+        }
+    }
+
     /** 热力格下标（周几 × 24 + 小时）→ 「周三 21 点」 */
     private fun heatLabel(idx: Int): String {
+
         if (idx < 0 || idx >= HEAT_CELLS) return ""
         return DAY_NAMES[idx / 24] + " " + (idx % 24) + " 点"
     }
@@ -1885,6 +2466,35 @@ object ChatAnalysisEngine {
             ex.maxTopicStart = ex.topicStart
             ex.maxTopicEnd = endCt
         }
+    }
+
+    /**
+     * 第 18 轮：结算一轮对话（把已累计的条数并进轮长分布），然后把当前轮置零。
+     *
+     * 调用时机与 [closeTopic] 完全一致：**只在 ≥[TOPIC_BREAK_MS] 的中断处**、以及整段扫描结束时各调一次。
+     * 条数 ≤0 表示这一轮还没开始（例如时段内第一条消息之前），直接返回，
+     * 不会往分布里塞一个"0 条的轮次"。
+     */
+    private fun closeRound(ex: ExtraStats) {
+        val len = ex.curRound
+        ex.curRound = 0
+        if (len <= 0) return
+        ex.roundCount++
+        ex.roundLenSum += len
+        if (len > ex.roundMax) ex.roundMax = len
+        ex.roundBands[roundBand(len)]++
+    }
+
+    /**
+     * 第 18 轮：把无向对键拆回两个人（键格式见 [ROUND18_PAIR_SEP]）。
+     *
+     * 报告只在最后对 ≤[ROUND18_PAIR_MAX] 个键走一遍，**不进入消息循环**；
+     * 拿不到分隔符（理论上不会发生）时返回 null，由调用方跳过。
+     */
+    private fun splitPairKey(key: String): Pair<String, String>? {
+        val at = key.indexOf(ROUND18_PAIR_SEP)
+        if (at <= 0 || at >= key.length - 1) return null
+        return key.substring(0, at) to key.substring(at + 1)
     }
 
     /**

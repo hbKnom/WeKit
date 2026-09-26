@@ -5,21 +5,25 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.ColorFilter
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Drawable
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
-import android.widget.TextView
 import android.widget.Toast
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.items.chat.jev.analysis.ChatInsights
@@ -36,120 +40,266 @@ import dev.ujhhgtg.wekit.features.items.chat.jev.core.dominantName
 import dev.ujhhgtg.wekit.utils.monet.MonetColors
 import java.util.IdentityHashMap
 import java.util.Locale
+import java.util.WeakHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Append a sibling below the real text bubble, without replacing a host row or ViewHolder.
+ * 分析卡的渲染层。
  *
- * 铁律（踩过崩溃，别再犯）：卡片只允许作为**宿主行内部容器的子 View**存在，
- * 绝不往宿主 RecyclerView（或其直接子 View 之外的位置）addView ——
- * 那会让 RecyclerView 看到没有 ViewHolder 的外来子 View，直接 NPE 崩溃。
- * 因此这里一路只找「行内部那个纵向 LinearLayout / 行根 RelativeLayout」作为落点，
- * 并且只做**追加**（不改变宿主原有子 View 的下标）。
+ * ## 第 19 轮：改成「零宿主子 View 注入 + 宿主列表 overlay 直绘」
  *
- * 卡片形态（第 17 轮：把信息层级、字号、留白与标签重新排过一遍）：
+ * ### 为什么要推翻上一版
+ *
+ * 上一版把卡片作为子 View 追加进宿主行内部的那个纵向 LinearLayout。它确实没往
+ * 宿主 RecyclerView 直接 addView，但**改了宿主行的 View 树结构**（行内容器多一个 child、
+ * 行高随之变化）。实机崩溃栈正是这一类「宿主按预期结构取子 View」被破坏后的典型表现：
+ *
  * ```
- * ┃ 潜语 · 平静  · 较前几句 ↑12            ← 主情绪 + 与前几句对比（加粗、跟随情绪色）
- * ┃ 平静 ▓▓▓▓▓▓░░░░ 59%                  ← 主情绪一条（展开时给全概率）
- * ┃ 邀约安排 · 等具体安排                   ← 场景 / 阶段（模型原文，可换行）
- * ┃ 〔建议：稳步回复〕〔置信度 62%〕          ← 标签行：建议强度 / 置信度（圆角小标签）
- * ┃ 解读：这句可能在给见面留位置              ← 解读（标签加粗）
- * ┃ ┌ 建议：顺着刚提到的事，问一个还没说的细节 ┐ ← 建议块（带底色，最该看的一行）
- * ┃ 情绪趋势：近 6 条在变好 · 均值 0.21 · 波动 0.12
- * ┃ 风险：中等 · 对方连发 3 条还没等到回复
- * ┃ 互动均衡（本屏 12 条）                 ← 展开后：双方话量对比（真正画成横幅）
- * ┃ ────────────────────────────────
- * ┃ ▾ 点击展开完整解读 · 长按复制            ← 交互提示 / 降级说明
+ * java.lang.RuntimeException: Attempt to invoke virtual method 'int android.view.View.getId()'
+ *         on a null object reference
+ *   at com.tencent.mm.pluginsdk.ui.tools.q3.onCreateViewHolder(SourceFile:55)
+ *   at com.tencent.mm.ui.chatting.layoutmanager.ChattingLinearLayoutManager
+ *         .scrollVerticallyBy(SourceFile:6)
+ * Caused by: java.lang.NullPointerException
+ *   at com.tencent.mm.ui.chatting.viewitems.si.<init>(SourceFile:626)
+ *   at com.tencent.mm.ui.chatting.viewitems.lp.F(SourceFile:13)
+ *   at com.tencent.mm.view.recyclerview.WxRecyclerAdapter.r0(SourceFile:17)
  * ```
- * 默认收起（主情绪 + 标签 + 一条解读 + 一条建议），点一下展开全部细节，长按复制成文本 ——
- * 聊天里最重要的信息一眼可见，其余按需展开，不占屏、不刷屏；字号与留白自上而下递减，
- * 眼睛能顺着「情绪 → 概率 → 场景 → 强度 → 解读 → 建议 → 细节」一路读下去。
  *
- * 左侧竖条颜色 = 情绪倾向（正向绿 / 中性橙 / 负向红），失败态整卡换成告警底色 + ⚠。
+ * 滚动时宿主新建 ViewHolder（复用被我们改过的行视图），构造里拿不到预期的子 View → NPE。
+ * 所以这一版的原则是：**宿主行的子 View 一个都不增、一个都不删、不占下标、不改 id、
+ * 不改 tag、不改 LayoutParams**。只有「预留空间」和「在宿主自己的画布上画」两件事。
  *
- * 性能（用户实测「卡片一多就卡」的几处）：
- *  - 渲染指纹改成**结构化比较**（不再拼字符串），调色板与文本拼接只在真的变化时才算；
- *  - 指纹里带上 `ModulePrefs.uiRevision` 与莫奈色板实例，设置里改开关 / 换主题能立刻重画
- *    这张卡，不必等下一次重绑（否则用户会以为「开关没生效」）；
- *  - 调色板（含莫奈取色）按「夜间模式 + 引擎色板实例」缓存，不再每次 show 都重建；
- *  - 卡片落点反射结果按 holder 类缓存，不再每次绑定时重扫方法表；
- *  - 新增的标签行与分隔线都是**固定的几个 View**（不随内容增删），标签复用同一个
- *    TextView 池，展开/收起不产生视图树增删。
+ * ### 现在怎么画（两条合法路里的 overlay 直绘）
+ *
+ * 1. **预留空间**：只改宿主行内容器的 `paddingBottom`。容器高度是 wrap_content，
+ *    所以行会像以前一样长高，「卡片落在消息下方、下一条消息不被盖住」由宿主自己的
+ *    布局保证；恢复时把 padding 写回原值即可。
+ * 2. **绘制**：卡片本体是一个纯 [Drawable]，挂到宿主列表自己的 `ViewOverlay`。
+ *    `android.view.ViewOverlay` / `android.graphics.drawable.Drawable` 都是 **framework 类**，
+ *    与宿主进程里那一份共享同一个类身份（这一点很关键：`androidx.recyclerview.*` 是宿主
+ *    自带库，我们**不能**引用它，见 [findList] 的注释），所以能安全挂上去，
+ *    宿主每次绘制列表时会把我们一并画进去。
+ * 3. **坐标**：overlay 的绘制坐标系就是列表自身的坐标系，`view.top` 逐级累加到列表即可
+ *    得到行当前位置。位置**每帧现算**，因此不需要滚动监听、不需要垂直同步回调、
+ *    不需要维护任何帧间状态 —— 列表滚到哪里，卡片就画到哪里，零额外卡顿。
+ * 4. **交互**：卡片落在内容器的 padding 留白里，那片区域没有任何宿主子 View，
+ *    因此点击/长按直接用内容器自己的 click/longClick；气泡上的手势完全不受影响。
+ * 5. **排版**：文本一律走 [StaticLayout]，只在「内容变了 / 宽度变了 / 配置变了」时重排；
+ *    每帧绘制只有 `drawRoundRect` / `layout.draw` / `drawText`，没有 View 测量、
+ *    没有 View 绘制、没有对象分配。
+ *
+ * 卡片形态（第 17 轮起的信息层级，本轮做了字号/留白/标签行的重新排布）：
+ * ```
+ *    ┃ 潜语 · 平静  · 较前几句 ↑12            ← 主情绪 + 与前几句对比（加粗、跟随情绪色）
+ *    ┃ 平静 ▓▓▓▓▓▓░░░░ 59%                  ← 收起只给主情绪一条，展开给全概率
+ *    ┃ 邀约安排 · 等具体安排                   ← 场景 / 阶段（模型原文，可换行）
+ *    ┃ 〔建议：稳步回复〕〔置信度 62%〕          ← 标签行：建议强度 / 置信度（圆角小标签）
+ *    ┃ 解读：这句可能在给见面留位置              ← 解读（标签加粗 + 情绪色）
+ *    ┃ ▍建议：顺着刚提到的事，问一个还没说的细节   ← 建议块（带底色 + 左侧强调条）
+ *    ┃ 情绪趋势：近 6 条在变好 · 均值 0.21 · 波动 0.12
+ *    ┃ 风险：中等 · 对方连发 3 条还没等到回复
+ *    ┃ 互动均衡（本屏 12 条）                 ← 展开后：双方话量对比（真正画成横幅）
+ *    ┃ ────────────────────────────────
+ *    ┃ ▾ 点击展开完整解读 · 长按复制            ← 交互提示 / 降级说明
+ * ```
+ *
+ * 铁律（这一版全部满足，别再退回子 View 注入）：
+ *  - 绝不向宿主 RecyclerView（或宿主任意行、容器）增删子 View；
+ *  - 渲染失败一律降级为「这张卡不画」，绝不抛异常、绝不影响宿主与其他功能；
+ *  - 逐 bind / 逐帧诊断日志一律走 [MoodLog.v]（`verboseEnabled` 门闩）。
  */
 object YanwaiBubble {
-    private data class Card(
-        val key: String,
-        val container: LinearLayout,
-        val parent: ViewGroup,
-        val anchor: View,
-        val assignedId: Int?,
-        val detach: View.OnAttachStateChangeListener,
-        val stripe: View,
-        val header: TextView,
-        val bars: BarsView,
-        val meta: TextView,
-        /** 标签行（建议强度 / 置信度）：固定两个 TextView，按需显示。 */
-        val chips: LinearLayout,
-        val chipViews: List<TextView>,
-        val reading: TextView,
-        val advice: TextView,
-        /** 卡片扩展块：话题 / 情绪趋势 / 风险依据（一行行文本）。 */
-        val insight: TextView,
-        /** 互动均衡：展开后真正画出来的两条比例横幅。 */
-        val balance: BarsView,
-        /** 页脚上方的分隔线。 */
-        val divider: View,
-        val footer: TextView,
-        /** 是否展开了完整解读（默认取设置里的「卡片默认展开详情」）。 */
-        var expanded: Boolean = ModulePrefs.cardExpanded,
-        /** 上一次渲染的指纹；相等就整个跳过布局与文本重算。 */
-        var fingerprint: Fingerprint? = null,
-        /** 最近一次渲染用的输入与跳过原因：展开/收起时要按它原样重绘（不再走一遍扫描器）。 */
-        var input: AnalysisInput? = null,
-        var note: String? = null,
-        /** 本屏素材（谁在说话 + 前文/本条原文），绑定那一刻由扫描器算好。 */
-        var screen: ChatInsights.Screen = ChatInsights.Screen(),
-        /** 队列满、这一条还没排上：卡片要如实说明「在等空位」，而不是看起来卡住了。 */
-        var capacityPending: Boolean = false,
-    )
+
+    // ------------------------------------------------------------------ 几何常量（dp / sp）
+
+    /** 内容左边界：左侧情绪指示条 10dp + 5dp 留白。 */
+    private const val PAD_LEFT_DP = 15f
+    private const val PAD_RIGHT_DP = 12f
+    private const val PAD_TOP_DP = 10f
+    private const val PAD_BOTTOM_DP = 10f
+
+    /** 情绪指示条：不贴边、画成一根竖向药丸，避免与卡片圆角打架。 */
+    private const val STRIPE_LEFT_DP = 7f
+    private const val STRIPE_WIDTH_DP = 3f
+    private const val STRIPE_INSET_DP = 9f
+
+    private const val CARD_RADIUS_DP = 12f
+    private const val CARD_STROKE_DP = 1f
+
+    /** 卡片与列表左/右边缘的留白。 */
+    private const val SIDE_MARGIN_DP = 10f
+
+    /** 超宽屏（平板/横屏）下不让卡片拉满整屏。 */
+    private const val MAX_CARD_WIDTH_DP = 560
+
+    /** 卡片与下一条消息之间的留白。 */
+    private const val BOTTOM_GAP_DP = 6f
+
+    /** 行内容器找不到（未知气泡布局）后的放弃阈值，避免每拍重试。 */
+    private const val MAX_LANDING_ATTEMPTS = 6
+
+    /** 行已绑定但还没绘制出来（可重试）的卡片。 */
+    private val cards = IdentityHashMap<View, Card>()
+
+    /** 宿主列表 -> 挂在它 overlay 上的卡片层（WeakHashMap：列表销毁后自动放手）。 */
+    private val layers = WeakHashMap<View, CardLayer>()
+
+    /** 记录过的「画不了」签名：同一类宿主布局只记一条日志。 */
+    private val unsupported = HashSet<String>()
+
+    /** 已经打过一次「首批卡片已绘制」诊断。 */
+    private var drewOnce = false
 
     /**
-     * 渲染指纹：只包含**会改变画面**的东西，用字段比较代替字符串拼接
-     * （拼接本身在每拍每行都会产生临时对象，是之前热路径上没必要的一笔开销）。
+     * 一张卡片的全部状态。
+     *
+     * 宿主侧只保留「我改过什么」以便完整还原：padding 原值、clickable 原值、监听器。
      */
-    private data class Fingerprint(
+    private class Card(val row: View, var key: String) {
+        var input: AnalysisInput? = null
+        var note: String? = null
+        var screen: ChatInsights.Screen = ChatInsights.Screen()
+        var capacityPending = false
+        var expanded: Boolean = ModulePrefs.cardExpanded
+
+        /** 承载绘制的宿主列表视图（overlay 宿主）。 */
+        var list: View? = null
+
+        /** 被预留空间、并接收点击的宿主行内容器。 */
+        var container: View? = null
+
+        /** padding / 监听器是否已由我们装上（[release] 据此还原）。 */
+        var hooked = false
+        var origPaddingBottom = 0
+        var origClickable = false
+        var origLongClickable = false
+
+        /** 已经预留的高度（px），仅用于日志与断言。 */
+        var reserved = 0
+
+        /** 找不到落点时的重试次数；超过阈值后不再重试。 */
+        var landingAttempts = 0
+        var blocked = false
+
+        var width = 0
+        var fingerprint: Fingerprint? = null
+
+        /** 排好版的卡片（画的时候直接用，不需要重新测量）。 */
+        var layout: CardLayout? = null
+
+        /** 内容与落点都就绪，可以画了。 */
+        val ready: Boolean get() = hooked && layout != null
+    }
+
+    /**
+     * 渲染指纹：任何会影响画面的输入都放进来，只有它变了才重排。
+     *
+     * 刻意**不含**全局队列长度（[MoodStore.pendingCount]）：队列每出一条结论就会让全屏
+     * 「正在分析…」的卡一起重排重画，这正是用户实测的「决策分析造成卡顿」的主因之一。
+     * 排队条数只在状态文本里用一次，卡片真正出结果时由 `onSettled → fill()` 精确重画它自己。
+     */
+    private class Fingerprint(
         val key: String,
         val state: Char,
         val moodId: Int,
         val failure: String?,
         val note: String?,
-        val pending: Int,
         val expanded: Boolean,
         val night: Boolean,
         val trendVersion: Int,
         val capacity: Boolean,
         val screenId: Int,
-        /** 配置版本号：设置里改了开关/标签/颜色偏好就 +1，卡片据此立刻重画。 */
         val uiRevision: Int,
-        /** 莫奈色板实例身份：换主题/引擎重新解析后卡片要跟着换色，而不是停在旧配色。 */
         val paletteId: Int,
+        val width: Int,
     )
 
-    private val cards = IdentityHashMap<View, Card>()
-    private val unsupported = mutableSetOf<String>()
+    private class CardLayout(val width: Int, val height: Int, val ops: List<Op>)
 
-    /** holder 类 → 找主容器的方法（反射结果缓存，避免每次绑定重扫方法表）。 */
-    private val mainContainerLookup = HashMap<Class<*>, java.lang.reflect.Method?>()
+    // ------------------------------------------------------------------ 绘制指令（排版期生成，绘制期零分配）
 
-    /** 调色板缓存：夜间模式 + 莫奈引擎色板实例都没变时就复用同一份。 */
-    private val paletteLock = Any()
-    private var paletteNight = false
-    private var paletteEngine: Any? = null
-    private var paletteCache: Palette? = null
+    private sealed class Op
+
+    /** 圆角矩形（`strokeWidth > 0` 时画描边）。 */
+    private class RectOp(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val color: Int,
+        val radius: Float,
+        val strokeWidth: Float = 0f,
+        val strokeColor: Int = 0,
+    ) : Op()
+
+    /** 已经是路径的形状（左侧指示条那种只有左角是圆的）。 */
+    private class PathOp(val path: Path, val color: Int) : Op()
+
+    private class TextOp(val layout: Layout, val x: Float, val top: Float) : Op()
+
+    /** 情绪概率 / 互动均衡横条：标签 + 轨道 + 填充 + 百分比。 */
+    private class BarOp(
+        val top: Float,
+        val barHeight: Float,
+        val barLeft: Float,
+        val barRight: Float,
+        val labelX: Float,
+        val percentX: Float,
+        val baseline: Float,
+        val textSize: Float,
+        val label: String,
+        val percent: Int,
+        val highlight: Boolean,
+        val accent: Int,
+        val labelColor: Int,
+        val muted: Int,
+        val track: Int,
+    ) : Op()
+
+    /** 圆角小标签（建议强度 / 置信度）。 */
+    private class ChipOp(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val radius: Float,
+        val background: Int,
+        val text: String,
+        val textColor: Int,
+        val textSize: Float,
+        val textX: Float,
+        val baseline: Float,
+    ) : Op()
+
+    // ------------------------------------------------------------------ 绘制（每帧调用，零分配）
+
+    private val rectPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val chipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     /**
-     * 画/刷新一张卡片。返回 true 表示这张卡已经就绪（含「本来就不该有卡」的情况）。
+     * 挂在宿主列表 overlay 上的卡片层。
+     *
+     * [Drawable] 是 framework 类，宿主列表的 `ViewOverlay` 认它；`draw` 收到的 canvas
+     * 就在**列表自己的坐标系**里，所以这里每帧现算每张卡的位置。
+     */
+    private class CardLayer(private val draw: (Canvas) -> Unit) : Drawable() {
+        override fun draw(canvas: Canvas) = draw(canvas)
+        override fun setAlpha(alpha: Int) = Unit
+        override fun setColorFilter(colorFilter: ColorFilter?) = Unit
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+    }
+
+    // ------------------------------------------------------------------ 对外入口
+
+    /**
+     * 画/刷新一张卡片。返回 true 表示这一行已经由本模块接手（不论是否已经画出来）。
+     *
+     * 与上一版不同：这里**不再因为「行还没测量」而返回 false** —— 卡片内容是先排好版、
+     * 再按宿主列表宽度预留空间的，行什么时候测量完都不影响它最终出现。
      */
     fun show(
         row: View,
@@ -165,27 +315,255 @@ object YanwaiBubble {
             return false
         }
         val key = message.key
-        var state = cards[row]
-        if (state != null && (state.key != key || state.container.parent !== state.parent)) {
-            clear(row)
-            state = null
+        var card = cards[row]
+        if (card != null && card.key != key) {
+            // 宿主行被复用成另一条消息：先还原它对容器的改动，再按新 key 重建
+            release(card)
+            card = null
         }
-        if (state == null) {
-            state = attach(row, key) ?: return false
-            cards[row] = state
+        if (card == null) {
+            card = Card(row, key)
+            cards[row] = card
         }
-        state.input = message
-        state.note = note
-        state.screen = screen
-        state.capacityPending = capacityPending
-        render(row, state, message, note)
+        card.input = message
+        card.note = note
+        card.screen = screen
+        card.capacityPending = capacityPending
+        if (prepare(card)) render(card)
         return true
     }
 
-    // ------------------------------------------------------------------ 内容
+    /** 卡片随行解绑/回收一起消失，并把宿主的 padding / 监听器还原。 */
+    fun clear(row: View) {
+        val card = cards.remove(row) ?: return
+        release(card)
+    }
 
-    private fun render(row: View, card: Card, input: AnalysisInput, note: String? = null) {
+    fun clearAll() {
+        for (card in cards.values) release(card)
+        cards.clear()
+        for ((list, layer) in layers.entries.toList()) {
+            runCatching { list.overlay.remove(layer) }
+        }
+        layers.clear()
+    }
+
+    /**
+     * 清理不可见的卡片，并补做「还没画出来」的卡片（落点/宽度/绘制通道晚一点才可用的那些）。
+     *
+     * @return 是否还有卡片需要继续跑兜底节拍 —— 扫描器据此决定要不要继续排下一拍，
+     *         因此这里必须如实返回（宁可多跑几拍，也不要留下「既没画出来也没人管」的卡）。
+     */
+    fun prune(): Boolean {
+        for (row in cards.keys.toList()) {
+            if (!row.isAttachedToWindow) clear(row)
+        }
+        if (cards.isEmpty()) return false
+        var pending = false
+        for (card in cards.values) {
+            if (card.blocked || card.ready) continue
+            if (!card.row.isAttachedToWindow) continue
+            // 落点/列表宽度可能是刚刚才可用的：清掉指纹强制重排一次，
+            // 否则上一轮「没落点」时存下的指纹会把这一轮的重试挡掉
+            card.fingerprint = null
+            if (prepare(card)) render(card)
+            if (!card.ready) pending = true
+        }
+        return pending
+    }
+
+    // ------------------------------------------------------------------ 落点：只改 padding，不动子 View
+
+    /**
+     * 找落点（宿主行内容器 + 承载绘制的宿主列表），并预留卡片高度。
+     *
+     * 落点规则与上一版一致（同一套宿主布局判定），只是**不再往里 addView**：
+     *  - 优先：从气泡往上找到的第一个 `vertical LinearLayout`（宿主行里装气泡的那一列）；
+     *  - 退路：行根 `RelativeLayout`（未知布局时的兜底）；
+     * 两者都要求 `height = wrap_content` —— 只有它们会跟着内容长高，卡片才有地方落。
+     */
+    private fun prepare(card: Card): Boolean {
+        val row = card.row
+        if (card.blocked) return false
+        var container = card.container
+        if (container == null || container.parent == null || !container.isAttachedToWindow) {
+            // 落点失效（行被重建/换绑）：先还原旧容器的改动，再重新找
+            if (card.hooked) release(card)
+            card.container = null
+            card.list = null
+            container = findContainer(row)
+            if (container == null) {
+                card.landingAttempts++
+                if (card.landingAttempts >= MAX_LANDING_ATTEMPTS) {
+                    card.blocked = true
+                    val root = row as? ViewGroup
+                    val signature = "${root?.javaClass?.name}/${findBubble(root)?.parent?.javaClass?.name}"
+                    if (unsupported.add(signature)) {
+                        MoodLog.w("暂不绘制未知气泡布局：$signature")
+                    }
+                }
+                return false
+            }
+            card.landingAttempts = 0
+            card.container = container
+        }
+        if (card.list == null) {
+            // overlay 宿主：从行的父链往上找那个 RecyclerView 类的视图
+            card.list = findList(row) ?: run {
+                card.landingAttempts++
+                if (card.landingAttempts >= MAX_LANDING_ATTEMPTS) card.blocked = true
+                return false
+            }
+        }
+        attachLayer(card.list!!)
+        return true
+    }
+
+    /**
+     * 在宿主列表的 overlay 上装一层卡片绘制层（每个列表只装一次）。
+     *
+     * 这里用 `View.overlay`（framework 的 `ViewOverlay`）而不是 `RecyclerView.addItemDecoration`：
+     * 前者不参与宿主布局、不引用宿主自带的 `androidx.recyclerview` 类，只借用宿主自己的画布。
+     */
+    private fun attachLayer(list: View) {
+        if (layers.containsKey(list)) return
+        val layer = CardLayer { canvas -> drawCards(list, canvas) }
+        val added = runCatching { list.overlay.add(layer) }.isSuccess
+        if (!added) return
+        layers[list] = layer
+        MoodLog.v("卡片层已挂到宿主列表 ${list.javaClass.simpleName}")
+    }
+
+    /**
+     * 从行视图往上找承载它的列表视图。
+     *
+     * **不能**写成 `is RecyclerView`：`androidx.recyclerview.widget.RecyclerView` 是宿主 APK
+     * 自带的库类，与本进程里我们能引用的那一份不是同一个类身份（WeKit 也刻意不链接它），
+     * 所以只按类名/方法签名判断（与删除动画那边同一个做法）。
+     */
+    private fun findList(view: View): View? {
+        var current = view.parent as? View
+        while (current != null) {
+            if (isRecyclerViewLike(current)) return current
+            current = current.parent as? View
+        }
+        return null
+    }
+
+    private fun isRecyclerViewLike(view: View): Boolean {
+        val cls = view.javaClass
+        val name = cls.name
+        if (name.startsWith("androidx.recyclerview.widget")) return true
+        if (name.contains("RecyclerView")) return true
+        return synchronized(recyclerLookup) {
+            recyclerLookup.getOrPut(cls) {
+                generateSequence(cls as Class<*>) { it.superclass }.any { c ->
+                    c.declaredMethods.any { it.name == "getScrollState" && it.parameterCount == 0 } &&
+                        c.declaredMethods.any { it.name == "getAdapter" && it.parameterCount == 0 }
+                }
+            }
+        }
+    }
+
+    private val recyclerLookup = HashMap<Class<*>, Boolean>()
+
+    private fun findContainer(row: View): View? {
+        val root = row as? ViewGroup ?: return null
+        val anchor = findBubble(root) ?: return null
+        var branch: View = anchor
+        var parent = branch.parent as? ViewGroup
+        while (parent != null && isInside(parent, root)) {
+            if (parent is LinearLayout && parent.orientation == LinearLayout.VERTICAL &&
+                parent.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
+            ) {
+                return parent
+            }
+            if (parent === root) break
+            branch = parent
+            parent = branch.parent as? ViewGroup
+        }
+        // 未知气泡布局的退路：行根 RelativeLayout 自己（同样只动 padding，不动子 View）
+        if (root is RelativeLayout && branch.parent === root &&
+            root.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
+        ) {
+            return root
+        }
+        return null
+    }
+
+    /**
+     * 预留卡片高度：改宿主内容器的 `paddingBottom`，并把卡片区域的点击接过来。
+     *
+     * 只改这两个属性，**不增删任何子 View**：容器高度是 wrap_content，因此行会像以前
+     * （把卡片作为子 View 追加时）一样精确长高相同的量，而宿主的 ViewHolder 构造、
+     * 子 View 下标、id、tag、LayoutParams 全都不受影响。
+     */
+    private fun reserve(card: Card, height: Int) {
+        val container = card.container ?: return
+        if (!container.isAttachedToWindow) return
+        val gap = dp(container, BOTTOM_GAP_DP).toInt()
+        val want = card.origPaddingBottom + height + gap
+        if (!card.hooked) {
+            card.origPaddingBottom = container.paddingBottom
+            card.origClickable = container.isClickable
+            card.origLongClickable = container.isLongClickable
+            card.hooked = true
+        }
+        if (container.paddingBottom != want) {
+            runCatching {
+                container.setPadding(
+                    container.paddingLeft,
+                    container.paddingTop,
+                    container.paddingRight,
+                    want,
+                )
+            }
+        }
+        // 卡片那片留白里没有任何宿主子 View，所以这里的点击/长按不会抢走气泡上的手势
+        runCatching {
+            if (!container.isClickable) container.isClickable = true
+            if (!container.isLongClickable) container.isLongClickable = true
+        }
+        card.reserved = height
+    }
+
+    /** 还原对宿主内容器的一切改动（padding / clickable / 监听器）。 */
+    private fun release(card: Card) {
+        val container = card.container
+        if (card.hooked && container != null) {
+            runCatching {
+                container.setOnClickListener(null)
+                container.setOnLongClickListener(null)
+                container.setPadding(
+                    container.paddingLeft,
+                    container.paddingTop,
+                    container.paddingRight,
+                    card.origPaddingBottom,
+                )
+                container.isClickable = card.origClickable
+                container.isLongClickable = card.origLongClickable
+            }
+        }
+        card.hooked = false
+        card.reserved = 0
+    }
+
+    private fun hookClicks(card: Card) {
+        val container = card.container ?: return
+        val row = card.row
+        runCatching {
+            container.setOnClickListener { onClick(row) }
+            container.setOnLongClickListener { onLongClick(row) }
+        }
+    }
+
+    // ------------------------------------------------------------------ 内容与指纹
+
+    private fun render(card: Card) {
+        val row = card.row
+        val input = card.input ?: return
         val key = input.key
+        prepare(card)
         val mood = MoodStore.get(key)
         val failure = SignalAnalyzer.failure(key)
         val night = isNight(row)
@@ -193,269 +571,503 @@ object YanwaiBubble {
             failure != null -> 'f'
             mood != null -> 'm'
             !ModulePrefs.canAnalyze -> 'u'
-            note != null -> 's'
+            card.note != null -> 's'
             else -> 'p'
         }
+        val list = card.list
+        val width = cardWidth(row, list)
+        if (width <= 0) return
         val fingerprint = Fingerprint(
             key = key,
             state = state,
             moodId = if (mood != null) System.identityHashCode(mood) else 0,
             failure = failure,
-            note = note,
-            // 第 17 轮：**不**把全局队列长度放进指纹。
-            // 以前这里是 `MoodStore.pendingCount()`：队列每出一条结论，屏幕上所有「正在分析…」
-            // 的卡片指纹集体变化 → 节拍（1 秒）把十几张卡**全部重绘一遍**（drawable、文本、
-            // requestLayout），用户实测的「决策分析造成的卡顿」主要就来自这里。
-            // 队列长度现在只作为一次性的「排队交代」展示（见下方 render 的 else 分支），
-            // 卡片真正出结果时由 onSettled → fill() 精确重绘它自己。
-            pending = 0,
+            note = card.note,
             expanded = card.expanded,
             night = night,
             trendVersion = MoodStore.trendVersion,
             capacity = card.capacityPending,
-            // 本屏素材只在重绑时换对象：用实例身份当指纹，避免每拍哈希整屏文本
             screenId = System.identityHashCode(card.screen),
-            // 第 17 轮新增：设置里改了开关（标签/展开/主题）或莫奈色板换了一版，
-            // 卡片必须跟着重画 —— 否则用户改完设置会以为「开关没生效」。
             uiRevision = ModulePrefs.uiRevision,
             paletteId = System.identityHashCode(MonetColors.applied.value),
+            width = width,
         )
-        if (fingerprint == card.fingerprint) return
+        if (fingerprint == card.fingerprint && card.layout != null) return
+
+        // 指纹通过之后才取色板 / 排版（莫奈取色与 StaticLayout 都有成本，没变化就不该付）
+        val layout = runCatching {
+            val pal = palette(row, night)
+            val accent = when {
+                failure != null -> pal.warning
+                mood == null -> pal.muted
+                mood.score > 0.25 -> pal.positive
+                mood.score < -0.25 -> pal.negative
+                else -> pal.neutral
+            }
+            buildCard(row, card, width, pal, accent, mood, failure)
+        }.getOrElse {
+            // 拿不到辅助信息（截图/OCR/native/洞察失败）只降级：这张卡这一帧不画，绝不影响分析
+            MoodLog.v("卡片排版降级：${it.javaClass.simpleName} ${it.message}")
+            return
+        }
+        card.width = width
+        card.layout = layout
+        reserve(card, layout.height)
+        if (card.hooked) hookClicks(card)
+        // 指纹只在真正排好版之后才落：排版失败那一拍不该被记成「已经画好了」
         card.fingerprint = fingerprint
-
-        // 指纹比对通过之后才取调色板（莫奈取色有成本，没变化就不该付）
-        val pal = palette(row, night)
-        val accent = when {
-            failure != null -> pal.warning
-            mood == null -> pal.muted
-            mood.score > 0.25 -> pal.positive
-            mood.score < -0.25 -> pal.negative
-            else -> pal.neutral
-        }
-        card.stripe.background = stripeDrawable(accent, row)
-        card.container.background = cardDrawable(pal, accent, row, failure != null)
-        card.divider.setBackgroundColor(pal.divider)
-        hideExtras(card)
-
-        when {
-            failure != null -> {
-                card.header.text = "⚠ " + JevText.get(R.string.jev_card_failed_title)
-                card.header.setTextColor(pal.warning)
-                card.reading.text = twoTone(
-                    failure,
-                    JevText.get(R.string.jev_card_retry_hint),
-                    pal.body,
-                    pal.muted,
-                )
-                card.reading.setTextColor(pal.body)
-                card.reading.visibility = View.VISIBLE
-                card.footer.text = JevText.get(R.string.jev_card_retry_footer)
-                card.footer.visibility = View.VISIBLE
-                card.divider.visibility = View.VISIBLE
-            }
-
-            mood != null -> renderMood(row, card, input, mood, pal, accent)
-
-            !ModulePrefs.canAnalyze -> {
-                card.header.text = JevText.get(R.string.jev_card_unconfigured_title)
-                card.header.setTextColor(pal.muted)
-                card.reading.text = JevText.get(R.string.jev_card_unconfigured_body)
-                card.reading.setTextColor(pal.muted)
-                card.reading.visibility = View.VISIBLE
-                card.footer.visibility = View.GONE
-                card.divider.visibility = View.GONE
-            }
-
-            else -> {
-                val queued = if (note == null) MoodStore.pendingCount() else 0
-                card.header.text = if (note != null) {
-                    JevText.get(R.string.jev_card_skipped_title)
-                } else {
-                    JevText.get(R.string.jev_card_pending_title)
-                }
-                card.header.setTextColor(pal.muted)
-                card.reading.text = note ?: when {
-                    // 队列满、这一条还没排上：说清「在等空位、不会丢」，别让它看起来卡住了
-                    card.capacityPending -> JevText.get(R.string.jev_card_pending_capacity, queued)
-                    // 一屏多条同时提交时给个排队交代：卡片看起来「卡住了」多数只是还没轮到
-                    queued > 1 -> JevText.get(R.string.jev_card_pending_queued, queued)
-                    else -> JevText.get(R.string.jev_card_pending_solo)
-                }
-                card.reading.setTextColor(pal.muted)
-                card.reading.visibility = View.VISIBLE
-                card.footer.visibility = View.GONE
-                card.divider.visibility = View.GONE
-            }
-        }
+        card.list?.let { runCatching { it.invalidate() } }
+        if (card.ready) logFirstDraw(card, layout)
     }
 
-    /** 非「有结论」的三个状态（失败/未配置/分析中）：扩展块与标签行一律收起来。 */
-    private fun hideExtras(card: Card) {
-        card.bars.visibility = View.GONE
-        card.chips.visibility = View.GONE
-        card.insight.visibility = View.GONE
-        card.balance.visibility = View.GONE
-        card.advice.visibility = View.GONE
+    /** 首批绘制打一行诊断（只在详细日志下），便于实机确认「卡片确实被宿主画出来了」。 */
+    private fun logFirstDraw(card: Card, layout: CardLayout) {
+        if (drewOnce) return
+        drewOnce = true
+        MoodLog.v(
+            "首张卡片已排版并交给宿主绘制：${card.width}x${layout.height}px，" +
+                "ops=${layout.ops.size}，容器=${card.container?.javaClass?.simpleName}，" +
+                "列表=${card.list?.javaClass?.simpleName}"
+        )
     }
 
-    private fun renderMood(
-        row: View,
-        card: Card,
-        input: AnalysisInput,
-        mood: Mood,
-        pal: Palette,
-        accent: Int,
+    /** 卡片可用宽度：宿主列表宽度减去左右边距与列表自身 padding（超宽屏再限个上限）。 */
+    private fun cardWidth(row: View, list: View?): Int {
+        val margin = dp(row, SIDE_MARGIN_DP).toInt()
+        val available = when {
+            list != null && list.width > 0 ->
+                list.width - list.paddingLeft - list.paddingRight - margin * 2
+            row.width > 0 -> row.width - margin * 2
+            else -> row.resources.displayMetrics.widthPixels - margin * 2
+        }
+        val max = dp(row, MAX_CARD_WIDTH_DP).toInt()
+        return minOf(available, max).coerceAtLeast(minOf(dp(row, 120).toInt(), available))
+            .coerceAtLeast(0)
+    }
+
+    // ------------------------------------------------------------------ 排版
+
+    private class LayoutBuilder(
+        private val width: Int,
+        private val pal: Palette,
+        private val accent: Int,
+        private val density: Float,
+        private val scaled: Float,
     ) {
-        // 标题：主情绪 + （可选）与前几句的对比
-        val arrow = if (ModulePrefs.showTrend) {
-            MoodStore.trendOf(input.talker)?.let {
-                val points = (abs(it) * 100).roundToInt()
-                "· " + when {
-                    points < 5 -> JevText.get(R.string.jev_trend_flat)
-                    it > 0 -> JevText.get(R.string.jev_trend_up, points)
-                    else -> JevText.get(R.string.jev_trend_down, points)
-                }
-            }
-        } else {
-            null
+        val ops = ArrayList<Op>(28)
+        val contentLeft = PAD_LEFT_DP * density
+        val contentRight = width - PAD_RIGHT_DP * density
+        val contentWidth = (contentRight - contentLeft).toInt()
+        var y = PAD_TOP_DP * density
+
+        fun dp(value: Float) = value * density
+        fun sp(value: Float) = value * scaled
+
+        fun gap(value: Float) {
+            y += dp(value)
         }
-        card.header.text = listOf(JevText.get(R.string.jev_card_title, mood.dominantName()), arrow.orEmpty())
-            .filter { it.isNotEmpty() }.joinToString("  ")
-        card.header.setTextColor(accent)
 
-        // 情绪概率：收起时只给主情绪一条，展开时给全部
-        val visibleBars = if (card.expanded) {
-            mood.bars
-        } else {
-            mood.bars.filter { it.highlight }.ifEmpty { mood.bars.take(1) }
+        fun paint(sizeSp: Float, color: Int, bold: Boolean = false) = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = sp(sizeSp)
+            this.color = color
+            typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
-        card.bars.setBars(visibleBars, accent, pal)
-        card.bars.visibility = if (visibleBars.isEmpty()) View.GONE else View.VISIBLE
 
-        // 元信息：场景 · 阶段（模型给的短标签，可能很长，所以走会换行的文本行）
-        val metaParts = mutableListOf<String>()
-        mood.sceneLabel?.let { metaParts += it }
-        mood.progressLabel?.let { metaParts += it }
-        card.meta.text = metaParts.joinToString(" · ")
-        card.meta.visibility = if (card.meta.text.isNullOrBlank()) View.GONE else View.VISIBLE
-
-        // 解读：标签 + 标题一行（收起）/ 标题 + 问题 + 备选概率（展开）
-        val reading = buildString {
-            val title = mood.readingTitle
-            if (title != null) {
-                append(title)
-                if (card.expanded) {
-                    mood.readingQuestion?.let { append('\n').append(it) }
-                    if (mood.readingOptions.isNotEmpty()) {
-                        append('\n').append(mood.readingOptions.joinToString(" · ") { "${it.label} ${it.percent}%" })
-                    }
-                }
+        @Suppress("DEPRECATION")
+        fun build(
+            text: CharSequence,
+            sizeSp: Float,
+            color: Int,
+            bold: Boolean = false,
+            lineSpacingDp: Float = 2f,
+            widthPx: Int = contentWidth,
+            singleLine: Boolean = false,
+        ): Layout {
+            val paint = paint(sizeSp, color, bold)
+            val source = if (singleLine) {
+                TextUtils.ellipsize(text, paint, widthPx.toFloat(), TextUtils.TruncateAt.END)
             } else {
-                // 降级结果（只有第一轮）没有结构化解读：退回原来的正文裁剪
-                append(bodyText(mood))
+                text
             }
-        }.trim()
-        card.reading.text = if (reading.isBlank()) {
-            reading
-        } else {
-            labelTone(JevText.get(R.string.jev_card_reading, reading), accent, pal.body)
-        }
-        card.reading.setTextColor(pal.body)
-        card.reading.visibility = if (reading.isBlank()) View.GONE else View.VISIBLE
-
-        // 建议：最该看的一行，永远显示；给一层底色把它从正文里托出来
-        val advice = mood.advice
-        card.advice.text = advice?.let { JevText.get(R.string.jev_advice, it) }.orEmpty()
-        card.advice.visibility = if (advice.isNullOrBlank()) View.GONE else View.VISIBLE
-        if (!advice.isNullOrBlank()) {
-            card.advice.background = blockDrawable(pal.card, accent, row, 8)
+            return StaticLayout(
+                source, paint, widthPx.coerceAtLeast(1),
+                Layout.Alignment.ALIGN_NORMAL, 1f, dp(lineSpacingDp), false,
+            )
         }
 
-        // 页脚：降级说明优先，其次交互提示
-        val expandable = canExpand(mood)
-        val hint = when {
-            mood.note != null -> JevText.get(R.string.jev_hint_note, mood.note)
-            expandable && card.expanded -> JevText.get(R.string.jev_hint_collapse)
-            expandable -> JevText.get(R.string.jev_hint_expand)
-            else -> JevText.get(R.string.jev_hint_copy)
+        fun place(layout: Layout, x: Float = contentLeft) {
+            ops += TextOp(layout, x, y)
+            y += layout.height
         }
-        card.footer.text = hint
-        card.footer.visibility = View.VISIBLE
-        card.divider.visibility = View.VISIBLE
 
-        // 标签行（建议强度 / 置信度）与扩展块（话题 / 趋势 / 风险 / 互动均衡）
-        renderInsights(row, card, input, mood, pal, accent)
+        fun line(
+            text: CharSequence,
+            sizeSp: Float,
+            color: Int,
+            bold: Boolean = false,
+            lineSpacingDp: Float = 2f,
+            singleLine: Boolean = false,
+        ) {
+            place(build(text, sizeSp, color, bold, lineSpacingDp, singleLine = singleLine))
+        }
+
+        fun divider() {
+            ops += RectOp(
+                contentLeft, y, contentRight, y + dp(1f),
+                pal.divider, 0f,
+            )
+        }
+
+        /** 情绪概率 / 互动均衡横条。 */
+        fun bars(bars: List<MoodBar>) {
+            if (bars.isEmpty()) return
+            val textSize = sp(10f)
+            val metrics = paint(10f, pal.body)
+            val rowHeight = sp(16f)
+            val barHeight = sp(8f)
+            val labelWidth = sp(38f)
+            val percentWidth = sp(34f)
+            bars.forEach { bar ->
+                val centerY = y + rowHeight / 2f
+                val barLeft = contentLeft + labelWidth
+                val barRight = (contentRight - percentWidth).coerceAtLeast(barLeft + sp(20f))
+                ops += BarOp(
+                    top = centerY - barHeight / 2f,
+                    barHeight = barHeight,
+                    barLeft = barLeft,
+                    barRight = barRight,
+                    labelX = contentLeft,
+                    percentX = contentRight,
+                    baseline = centerY - (metrics.ascent() + metrics.descent()) / 2f,
+                    textSize = textSize,
+                    label = bar.name,
+                    percent = bar.percent,
+                    highlight = bar.highlight,
+                    accent = accent,
+                    labelColor = pal.body,
+                    muted = pal.muted,
+                    track = pal.track,
+                )
+                y += rowHeight
+            }
+        }
+
+        /** 标签行（建议强度 / 置信度）：单行、放不下就少画一个，不换行。 */
+        fun chips(items: List<Pair<String, Int>>) {
+            if (items.isEmpty()) return
+            val metrics = paint(10f, pal.body)
+            val height = dp(17f)
+            val padH = dp(7f)
+            var x = contentLeft
+            var drawn = 0
+            val top = y
+            items.forEach { (label, color) ->
+                val textWidth = metrics.measureText(label)
+                val w = textWidth + padH * 2
+                if (x + w > contentRight) return@forEach
+                ops += ChipOp(
+                    left = x,
+                    top = top,
+                    right = x + w,
+                    bottom = top + height,
+                    radius = dp(6f),
+                    background = MonetColors.blend(pal.card, color, 0.12f),
+                    text = label,
+                    textColor = color,
+                    textSize = sp(10f),
+                    textX = x + padH,
+                    baseline = top + (height - (metrics.ascent() + metrics.descent())) / 2f,
+                )
+                x += w + dp(6f)
+                drawn++
+            }
+            if (drawn > 0) y = top + height
+        }
+
+        /** 建议块：一层底色 + 左侧强调条，把「最该看的一行」从正文里托出来。 */
+        fun advice(text: CharSequence) {
+            val innerPad = dp(9f)
+            val innerWidth = (contentWidth - innerPad - dp(10f)).coerceAtLeast(1)
+            val layout = build(text, 12f, pal.title, lineSpacingDp = 2f, widthPx = innerWidth.toInt())
+            val innerPadV = dp(7f)
+            val top = y
+            val bottom = top + layout.height + innerPadV * 2
+            ops += RectOp(
+                contentLeft, top, contentRight, bottom,
+                MonetColors.blend(pal.card, accent, 0.08f), dp(8f),
+            )
+            ops += RectOp(
+                contentLeft, top, contentLeft + dp(3f), bottom, accent, dp(1.5f),
+            )
+            ops += TextOp(layout, contentLeft + innerPad, top + innerPadV)
+            y = bottom
+        }
     }
 
     /**
-     * 卡片扩展块：把 [ChatInsights] 的纯计算结果渲染成「标签行 + 几行文本 + 互动均衡横幅」。
+     * 把卡片内容排成一份「绘制指令表」。
      *
-     * 收起时只留「建议强度标签 + 话题 + 风险等级」（三秒内看得完），展开后再补建议说明、
-     * 情绪趋势、风险依据与互动均衡比例；四个开关（[ModulePrefs.showLevel] /
-     * [ModulePrefs.showBalance] / [ModulePrefs.showTopics] / [ModulePrefs.showTrendPanel]）
-     * 全关就直接不画这一块。
-     *
-     * 计算失败一律降级为「不画」：卡片少一块不影响原来的解读与建议。
+     * 四个状态共用同一套骨架（标题 → 横条 → 场景 → 标签 → 解读 → 建议 → 扩展行 → 页脚），
+     * 差别只在填什么内容：失败 / 有结论 / 未配置 / 分析中（含「队列已满，等空位」和
+     * 「本条过长，未分析」）。任何一段拿不到内容就整段不画，绝不让整张卡失败。
      */
-    private fun renderInsights(
+    private fun buildCard(
         row: View,
         card: Card,
-        input: AnalysisInput,
-        mood: Mood,
+        width: Int,
         pal: Palette,
         accent: Int,
-    ) {
-        if (!ModulePrefs.showLevel && !ModulePrefs.showBalance &&
-            !ModulePrefs.showTopics && !ModulePrefs.showTrendPanel
-        ) {
-            card.chips.visibility = View.GONE
-            card.insight.visibility = View.GONE
-            card.balance.visibility = View.GONE
-            return
-        }
-        val insight = runCatching {
-            ChatInsights.build(mood, card.screen, MoodStore.recentScores(input.talker))
-        }.getOrNull()
-        if (insight == null) {
-            card.chips.visibility = View.GONE
-            card.insight.visibility = View.GONE
-            card.balance.visibility = View.GONE
-            return
-        }
+        mood: Mood?,
+        failure: String?,
+    ): CardLayout {
+        val metrics = row.resources.displayMetrics
+        val builder = LayoutBuilder(width, pal, accent, metrics.density, metrics.scaledDensity)
+        val note = card.note
+        var footer: CharSequence? = null
 
-        // 1) 标签行：建议强度（语义色）+ 置信度（中性）——两个都是短文案，做成圆角小标签
-        val chips = ArrayList<Pair<String, Int>>(2)
-        if (ModulePrefs.showLevel) {
-            insight.level?.let { level ->
-                chips += JevText.get(
-                    R.string.jev_chip_level,
-                    JevText.get(ChatInsights.levelLabel(level)),
-                ) to levelColor(level, pal)
+        when {
+            failure != null -> {
+                builder.line(
+                    "⚠ " + JevText.get(R.string.jev_card_failed_title),
+                    12.5f, pal.warning, bold = true, singleLine = true,
+                )
+                builder.gap(5f)
+                builder.line(
+                    twoTone(failure, JevText.get(R.string.jev_card_retry_hint), pal.body, pal.muted),
+                    12f, pal.body,
+                )
+                footer = JevText.get(R.string.jev_card_retry_footer)
             }
-        }
-        if (mood.confidence > 0.0) {
-            chips += JevText.get(
-                R.string.jev_meta_confidence,
-                (mood.confidence * 100).roundToInt(),
-            ) to pal.muted
-        }
-        setChips(row, card, chips, pal)
 
-        // 2) 文本块：收起只留话题 + 风险等级，展开再补建议说明 / 趋势 / 风险依据 / 互动均衡
-        val lines = ArrayList<StyledLine>(8)
-        val riskLevel = insight.risk?.level ?: 0
-        if (ModulePrefs.showLevel) {
-            val level = insight.level
-            if (card.expanded && level != null) {
-                // 展开时才解释「为什么是这个强度」，收起时标签已经说完了
-                lines += StyledLine(
-                    JevText.get(ChatInsights.levelDesc(level)),
-                    pal.body,
-                    pal.muted,
+            mood != null -> {
+                // 标题：主情绪 +（可选）与前几句的对比
+                val arrow = if (ModulePrefs.showTrend) {
+                    MoodStore.trendOf(card.input?.talker.orEmpty())?.let {
+                        val points = (abs(it) * 100).roundToInt()
+                        "· " + when {
+                            points < 5 -> JevText.get(R.string.jev_trend_flat)
+                            it > 0 -> JevText.get(R.string.jev_trend_up, points)
+                            else -> JevText.get(R.string.jev_trend_down, points)
+                        }
+                    }
+                } else {
+                    null
+                }
+                builder.line(
+                    listOf(JevText.get(R.string.jev_card_title, mood.dominantName()), arrow.orEmpty())
+                        .filter { it.isNotEmpty() }.joinToString("  "),
+                    12.5f, accent, bold = true, singleLine = true,
+                )
+
+                // 情绪概率：收起只给主情绪一条，展开给全部
+                val visibleBars = if (card.expanded) {
+                    mood.bars
+                } else {
+                    mood.bars.filter { it.highlight }.ifEmpty { mood.bars.take(1) }
+                }
+                if (visibleBars.isNotEmpty()) {
+                    builder.gap(6f)
+                    builder.bars(visibleBars)
+                }
+
+                // 场景 · 阶段（模型给的短标签，可能很长，所以走会换行的文本行）
+                val meta = listOfNotNull(mood.sceneLabel, mood.progressLabel).joinToString(" · ")
+                if (meta.isNotBlank()) {
+                    builder.gap(5f)
+                    builder.line(meta, 10f, pal.muted)
+                }
+
+                val insight = renderableInsight(card, mood)
+                val chips = ArrayList<Pair<String, Int>>(2)
+                if (ModulePrefs.showLevel) {
+                    insight?.level?.let { level ->
+                        chips += JevText.get(
+                            R.string.jev_chip_level,
+                            JevText.get(ChatInsights.levelLabel(level)),
+                        ) to levelColor(level, pal)
+                    }
+                }
+                if (mood.confidence > 0.0) {
+                    chips += JevText.get(
+                        R.string.jev_meta_confidence,
+                        (mood.confidence * 100).roundToInt(),
+                    ) to pal.muted
+                }
+                if (chips.isNotEmpty()) {
+                    builder.gap(6f)
+                    builder.chips(chips)
+                }
+
+                // 解读：标签 + 标题一行（收起）/ 标题 + 问题 + 备选概率（展开）
+                val reading = readingText(card, mood)
+                if (reading.isNotBlank()) {
+                    builder.gap(6f)
+                    builder.line(
+                        labelTone(JevText.get(R.string.jev_card_reading, reading), accent, pal.body),
+                        12f, pal.body,
+                    )
+                }
+
+                // 建议：最该看的一行，永远显示
+                if (!mood.advice.isNullOrBlank()) {
+                    builder.gap(7f)
+                    builder.advice(JevText.get(R.string.jev_advice, mood.advice))
+                }
+
+                // 扩展块：标签行之外的补充说明 + 互动均衡横幅
+                insightLines(insight, card, pal, accent).takeIf { it.isNotEmpty() }?.let { lines ->
+                    builder.gap(7f)
+                    builder.line(styled(lines), 11f, pal.body)
+                }
+                val balance = insight?.balance
+                if (card.expanded && ModulePrefs.showBalance && balance != null) {
+                    builder.gap(4f)
+                    builder.bars(
+                        listOf(
+                            MoodBar(JevText.get(R.string.jev_card_balance_self), balance.selfPercent, true),
+                            MoodBar(JevText.get(R.string.jev_card_balance_other), balance.otherPercent, false),
+                        ),
+                    )
+                }
+
+                footer = hintText(card, mood)
+            }
+
+            !ModulePrefs.canAnalyze -> {
+                builder.line(
+                    JevText.get(R.string.jev_card_unconfigured_title),
+                    12.5f, pal.muted, bold = true, singleLine = true,
+                )
+                builder.gap(5f)
+                builder.line(JevText.get(R.string.jev_card_unconfigured_body), 12f, pal.muted)
+            }
+
+            else -> {
+                // 分析中 / 队列已满 / 本条过长：标题 + 一行说明，不画扩展块
+                builder.line(
+                    if (note != null) {
+                        JevText.get(R.string.jev_card_skipped_title)
+                    } else {
+                        JevText.get(R.string.jev_card_pending_title)
+                    },
+                    12.5f, pal.muted, bold = true, singleLine = true,
+                )
+                builder.gap(5f)
+                val queued = if (note == null) MoodStore.pendingCount() else 0
+                builder.line(
+                    note ?: when {
+                        card.capacityPending -> JevText.get(R.string.jev_card_pending_capacity, queued)
+                        queued > 1 -> JevText.get(R.string.jev_card_pending_queued, queued)
+                        else -> JevText.get(R.string.jev_card_pending_solo)
+                    },
+                    12f, pal.muted,
                 )
             }
         }
-        // 话题标签：一行，命中不到就说「没提取到」，不留空行
+
+        if (footer != null) {
+            builder.gap(7f)
+            builder.divider()
+            builder.gap(6f)
+            builder.line(footer, 10f, pal.muted)
+        }
+        val height = (builder.y + PAD_BOTTOM_DP * metrics.density).toInt().coerceAtLeast(1)
+
+        // 背景与指示条放最前面：指令按顺序执行，后面画的才是内容
+        val head = ArrayList<Op>(2)
+        head += RectOp(
+            0f, 0f, width.toFloat(), height.toFloat(),
+            if (failure != null) MonetColors.blend(pal.card, pal.warning, 0.12f) else pal.card,
+            dpf(metrics.density, CARD_RADIUS_DP),
+            dpf(metrics.density, CARD_STROKE_DP),
+            if (failure != null) {
+                MonetColors.blend(pal.stroke, pal.warning, 0.55f)
+            } else {
+                MonetColors.blend(pal.stroke, accent, 0.18f)
+            },
+        )
+        head += PathOp(stripePath(metrics.density, height), accent)
+        return CardLayout(width, height, head + builder.ops)
+    }
+
+    /** 左侧情绪指示条：竖着的药丸，纵向内缩，和卡片圆角互不打架。 */
+    private fun stripePath(density: Float, height: Int): Path {
+        val left = STRIPE_LEFT_DP * density
+        val right = left + STRIPE_WIDTH_DP * density
+        val top = STRIPE_INSET_DP * density
+        val bottom = (height - STRIPE_INSET_DP * density).coerceAtLeast(top + 1f)
+        val radius = STRIPE_WIDTH_DP * density / 2f
+        return Path().apply {
+            addRoundRect(
+                RectF(left, top, right, bottom),
+                floatArrayOf(radius, radius, radius, radius, radius, radius, radius, radius),
+                Path.Direction.CW,
+            )
+        }
+    }
+
+    private fun dpf(density: Float, dp: Float) = density * dp
+
+    /** 解读正文：优先用结构化解读，降级结果退回原始正文裁剪。 */
+    private fun readingText(card: Card, mood: Mood): String {
+        val title = mood.readingTitle
+        if (title == null) return bodyText(mood)
+        val builder = StringBuilder(title)
+        if (card.expanded) {
+            mood.readingQuestion?.let { builder.append('\n').append(it) }
+            if (mood.readingOptions.isNotEmpty()) {
+                builder.append('\n')
+                    .append(mood.readingOptions.joinToString(" · ") { "${it.label} ${it.percent}%" })
+            }
+        }
+        return builder.toString().trim()
+    }
+
+    /** 页脚：降级说明优先，其次交互提示。 */
+    private fun hintText(card: Card, mood: Mood): CharSequence = when {
+        mood.note != null -> JevText.get(R.string.jev_hint_note, mood.note)
+        canExpand(mood) && card.expanded -> JevText.get(R.string.jev_hint_collapse)
+        canExpand(mood) -> JevText.get(R.string.jev_hint_expand)
+        else -> JevText.get(R.string.jev_hint_copy)
+    }
+
+    /**
+     * 扩展洞察（话题 / 趋势 / 风险 / 互动均衡）的计算。
+     *
+     * 一律包在 runCatching 里：**辅助信息拿不到就整块不画**，绝不让这一条分析变成失败。
+     */
+    private fun renderableInsight(card: Card, mood: Mood): ChatInsights.Insight? {
+        if (!ModulePrefs.showLevel && !ModulePrefs.showBalance &&
+            !ModulePrefs.showTopics && !ModulePrefs.showTrendPanel
+        ) {
+            return null
+        }
+        val talker = card.input?.talker ?: return null
+        return runCatching {
+            ChatInsights.build(mood, card.screen, MoodStore.recentScores(talker))
+        }.getOrNull()
+    }
+
+    /**
+     * 扩展块的文本行。
+     *
+     * 收起时只留「话题 + 一行风险等级」（三秒内看得完），展开后再补建议说明、
+     * 情绪趋势、风险依据与互动均衡比例。
+     */
+    private fun insightLines(
+        insight: ChatInsights.Insight?,
+        card: Card,
+        pal: Palette,
+        accent: Int,
+    ): List<StyledLine> {
+        if (insight == null) return emptyList()
+        val lines = ArrayList<StyledLine>(8)
+        val riskLevel = insight.risk?.level ?: 0
+        if (ModulePrefs.showLevel && card.expanded) {
+            insight.level?.let {
+                lines += StyledLine(JevText.get(ChatInsights.levelDesc(it)), pal.body, pal.muted)
+            }
+        }
         if (ModulePrefs.showTopics) {
             val topics = insight.topics.map { JevText.get(it) }.filter { it.isNotEmpty() }
             lines += StyledLine(
@@ -476,10 +1088,7 @@ object YanwaiBubble {
                         else -> R.string.jev_ext_trend_flat
                     }
                     lines += StyledLine(
-                        JevText.get(
-                            R.string.jev_line_trend,
-                            JevText.get(direction, trend.samples),
-                        ),
+                        JevText.get(R.string.jev_line_trend, JevText.get(direction, trend.samples)),
                         pal.body,
                         accent,
                     )
@@ -496,30 +1105,17 @@ object YanwaiBubble {
             }
             insight.risk?.let { risk ->
                 if (ModulePrefs.showLevel) {
-                    // 风险等级文案本身已经是「风险：高」这种带标签的整句，直接当一行用
-                    lines += StyledLine(
-                        JevText.get(riskLevelText(risk.level)),
-                        pal.warning,
-                        pal.warning,
-                    )
+                    lines += StyledLine(JevText.get(riskLevelText(risk.level)), pal.warning, pal.warning)
                     risk.notes.forEach { (id, args) ->
                         lines += StyledLine(JevText.get(id, *args), pal.warning, pal.warning)
                     }
                 }
             }
         } else if (ModulePrefs.showLevel && riskLevel >= 1) {
-            // 收起时只给一行风险等级：有依据才说，细节留给展开
-            lines += StyledLine(
-                JevText.get(riskLevelText(riskLevel)),
-                pal.warning,
-                pal.warning,
-            )
+            lines += StyledLine(JevText.get(riskLevelText(riskLevel)), pal.warning, pal.warning)
         }
-
-        // 3) 互动均衡：先给「本屏多少条 + 谁在连发」，最后一行之后再画两条真正的比例横幅
         val balance = insight.balance
-        val showBalance = card.expanded && ModulePrefs.showBalance && balance != null
-        if (showBalance && balance != null) {
+        if (card.expanded && ModulePrefs.showBalance && balance != null) {
             if (balance.otherRun >= 2) {
                 lines += StyledLine(
                     JevText.get(R.string.jev_ext_balance_other_run, balance.otherRun),
@@ -534,29 +1130,223 @@ object YanwaiBubble {
                     pal.muted,
                 )
             }
-            // 横幅紧跟在文本块下面，所以把「本屏 N 条」放成最后一行，读起来是连着的
             lines += StyledLine(
                 JevText.get(R.string.jev_ext_balance_title, balance.total),
                 pal.muted,
                 pal.muted,
             )
         }
+        return lines
+    }
 
-        val text = styled(lines)
-        card.insight.text = text
-        card.insight.setTextColor(pal.body)
-        card.insight.visibility = if (lines.isEmpty()) View.GONE else View.VISIBLE
+    // ------------------------------------------------------------------ 绘制实现
 
-        if (showBalance && balance != null) {
-            val bars = listOf(
-                MoodBar(JevText.get(R.string.jev_card_balance_self), balance.selfPercent, true),
-                MoodBar(JevText.get(R.string.jev_card_balance_other), balance.otherPercent, false),
-            )
-            card.balance.setBars(bars, accent, pal)
-            card.balance.visibility = View.VISIBLE
-        } else {
-            card.balance.visibility = View.GONE
+    private fun drawCards(list: View, canvas: Canvas) {
+        if (cards.isEmpty()) return
+        val height = list.height
+        val margin = SIDE_MARGIN_DP * list.resources.displayMetrics.density
+        val x = list.paddingLeft + margin
+        for (card in cards.values) {
+            val layout = card.layout ?: continue
+            val container = card.container ?: continue
+            if (card.list !== list) continue
+            if (!container.isAttachedToWindow) continue
+            val top = offsetWithin(container, list) ?: continue
+            // 卡片落在内容器 padding 留白的顶端：容器高度 wrap_content，所以这段留白
+            // 就是我们预留出来的空间，位置与行完全同步（不需要任何滚动回调）
+            val bandTop = top + container.height - container.paddingBottom
+            if (bandTop + layout.height < 0f || bandTop > height) continue
+            val save = canvas.save()
+            canvas.translate(x, bandTop)
+            paintLayout(canvas, layout)
+            canvas.restoreToCount(save)
         }
+    }
+
+    /** 视图在祖先坐标系里的纵向偏移（不含滚动，overlay 的坐标系就是列表自己的坐标系）。 */
+    private fun offsetWithin(view: View, ancestor: View): Float? {
+        var y = 0f
+        var current: View? = view
+        while (current != null && current !== ancestor) {
+            y += current.top + current.translationY
+            current = current.parent as? View
+        }
+        return if (current === ancestor) y else null
+    }
+
+    private fun paintLayout(canvas: Canvas, layout: CardLayout) {
+        for (op in layout.ops) {
+            when (op) {
+                is RectOp -> {
+                    rectPaint.style = Paint.Style.FILL
+                    rectPaint.color = op.color
+                    if (op.radius > 0f) {
+                        canvas.drawRoundRect(op.left, op.top, op.right, op.bottom, op.radius, op.radius, rectPaint)
+                    } else {
+                        canvas.drawRect(op.left, op.top, op.right, op.bottom, rectPaint)
+                    }
+                    if (op.strokeWidth > 0f) {
+                        rectPaint.style = Paint.Style.STROKE
+                        rectPaint.strokeWidth = op.strokeWidth
+                        rectPaint.color = op.strokeColor
+                        canvas.drawRoundRect(op.left, op.top, op.right, op.bottom, op.radius, op.radius, rectPaint)
+                        rectPaint.style = Paint.Style.FILL
+                    }
+                }
+
+                is PathOp -> {
+                    rectPaint.style = Paint.Style.FILL
+                    rectPaint.color = op.color
+                    canvas.drawPath(op.path, rectPaint)
+                }
+
+                is TextOp -> {
+                    val save = canvas.save()
+                    canvas.translate(op.x, op.top)
+                    op.layout.draw(canvas)
+                    canvas.restoreToCount(save)
+                }
+
+                is BarOp -> {
+                    chipPaint.color = op.track
+                    val radius = op.barHeight / 2f
+                    canvas.drawRoundRect(
+                        op.barLeft, op.top, op.barRight, op.top + op.barHeight,
+                        radius, radius, chipPaint,
+                    )
+                    val filled = (op.barRight - op.barLeft) *
+                        (op.percent.coerceIn(0, 100) / 100f)
+                    if (filled > 0f) {
+                        chipPaint.color = if (op.highlight) op.accent else op.muted
+                        canvas.drawRoundRect(
+                            op.barLeft, op.top, op.barLeft + filled, op.top + op.barHeight,
+                            radius, radius, chipPaint,
+                        )
+                    }
+                    barPaint.textSize = op.textSize
+                    barPaint.textAlign = Paint.Align.LEFT
+                    barPaint.color = if (op.highlight) op.accent else op.labelColor
+                    canvas.drawText(op.label, op.labelX, op.baseline, barPaint)
+                    barPaint.textAlign = Paint.Align.RIGHT
+                    canvas.drawText("${op.percent}%", op.percentX, op.baseline, barPaint)
+                    barPaint.textAlign = Paint.Align.LEFT
+                }
+
+                is ChipOp -> {
+                    chipPaint.color = op.background
+                    canvas.drawRoundRect(op.left, op.top, op.right, op.bottom, op.radius, op.radius, chipPaint)
+                    barPaint.textSize = op.textSize
+                    barPaint.color = op.textColor
+                    barPaint.textAlign = Paint.Align.LEFT
+                    canvas.drawText(op.text, op.textX, op.baseline, barPaint)
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 交互
+
+    /**
+     * 点击：失败态重试；有结论时展开/收起完整解读。
+     *
+     * 「展开」比「复制」更适合作为单击默认行为 —— 复制改成**长按**，
+     * 卡片上常驻一行提示说明这两件事。
+     */
+    private fun onClick(row: View) {
+        val card = cards[row] ?: return
+        val key = card.key
+        runCatching {
+            when {
+                SignalAnalyzer.failure(key) != null -> YanwaiScanner.retryRow(row)
+                MoodStore.get(key) != null -> {
+                    card.expanded = !card.expanded
+                    render(card)
+                }
+            }
+        }
+    }
+
+    /** 长按：把整份解读（含情绪概率与建议）复制成纯文本。 */
+    private fun onLongClick(row: View): Boolean {
+        val card = cards[row] ?: return false
+        val mood = MoodStore.get(card.key) ?: return false
+        val text = MoodMessageChannel.format(mood)
+        val copied = runCatching {
+            val manager = row.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            manager.setPrimaryClip(ClipData.newPlainText(JevText.get(R.string.jev_clip_label), text))
+            true
+        }.getOrDefault(false)
+        runCatching {
+            val toast = if (copied) {
+                JevText.get(R.string.jev_toast_copied)
+            } else {
+                JevText.get(R.string.jev_toast_copy_failed)
+            }
+            Toast.makeText(row.context, toast, Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    // ------------------------------------------------------------------ 富文本与文案工具
+
+    /**
+     * 一行扩展文案 + 它的两个颜色：正文色与「标签」色。
+     *
+     * 标签 = 冒号（中英文都认）之前的那一段，渲染时加粗并换成标签色 ——
+     * 这样「话题：…」「风险：…」在视觉上自动分成「标签 + 内容」两层。
+     */
+    private class StyledLine(val text: String, val body: Int, val label: Int)
+
+    /** 把 [lines] 拼成一份带样式文本：标签加粗上色，正文按各自的行色。 */
+    private fun styled(lines: List<StyledLine>): CharSequence {
+        val builder = SpannableStringBuilder()
+        lines.forEachIndexed { index, line ->
+            if (index > 0) builder.append('\n')
+            val start = builder.length
+            builder.append(line.text)
+            val end = builder.length
+            val cut = line.text.indexOfFirst { it == '：' || it == ':' }
+            val labelEnd = if (cut >= 0) start + cut + 1 else start
+            if (cut >= 0) {
+                builder.setSpan(StyleSpan(Typeface.BOLD), start, labelEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                builder.setSpan(
+                    ForegroundColorSpan(line.label),
+                    start,
+                    labelEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+            builder.setSpan(
+                ForegroundColorSpan(line.body),
+                labelEnd,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        return builder
+    }
+
+    /** 单行「标签：正文」：标签加粗上色，正文用 [body] 色。 */
+    private fun labelTone(text: String, label: Int, body: Int): CharSequence =
+        styled(listOf(StyledLine(text, body, label)))
+
+    /** 失败态：第一行（原因）加粗，第二行（怎么办）压暗。 */
+    private fun twoTone(first: String, second: String, firstColor: Int, secondColor: Int): CharSequence {
+        val builder = SpannableStringBuilder(first).append('\n').append(second)
+        builder.setSpan(StyleSpan(Typeface.BOLD), 0, first.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        builder.setSpan(
+            ForegroundColorSpan(firstColor),
+            0,
+            first.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        builder.setSpan(
+            ForegroundColorSpan(secondColor),
+            first.length + 1,
+            builder.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        return builder
     }
 
     /** 建议强度 → 语义色（推进=正向 / 稳步=中性 / 观察=告警 / 暂缓=负向）。 */
@@ -587,461 +1377,7 @@ object YanwaiBubble {
         .joinToString("\n")
         .trim()
 
-    // ------------------------------------------------------------------ 富文本与标签
-
-    /**
-     * 一行扩展文案 + 它的两个颜色：正文色与「标签」色。
-     *
-     * 标签 = 冒号（中英文都认）之前的那一段，渲染时加粗并换成标签色 ——
-     * 这样「话题：…」「风险：…」在视觉上自动分成「标签 + 内容」两层，不必为每行多建一个 View。
-     */
-    private class StyledLine(val text: String, val body: Int, val label: Int)
-
-    /** 把 [lines] 拼成一份带样式文本：标签加粗上色，正文按各自的行色。 */
-    private fun styled(lines: List<StyledLine>): CharSequence {
-        val builder = SpannableStringBuilder()
-        lines.forEachIndexed { index, line ->
-            if (index > 0) builder.append('\n')
-            val start = builder.length
-            builder.append(line.text)
-            val end = builder.length
-            val cut = line.text.indexOfFirst { it == '：' || it == ':' }
-            val labelEnd = if (cut >= 0) start + cut + 1 else start
-            if (cut >= 0) {
-                builder.setSpan(
-                    StyleSpan(Typeface.BOLD),
-                    start,
-                    labelEnd,
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-                builder.setSpan(
-                    ForegroundColorSpan(line.label),
-                    start,
-                    labelEnd,
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-            }
-            builder.setSpan(
-                ForegroundColorSpan(line.body),
-                labelEnd,
-                end,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
-        return builder
-    }
-
-    /** 单行「标签：正文」：标签加粗上色，正文用 [body] 色。 */
-    private fun labelTone(text: String, label: Int, body: Int): CharSequence =
-        styled(listOf(StyledLine(text, body, label)))
-
-    /** 失败态：第一行（原因）加粗，第二行（怎么办）压暗。 */
-    private fun twoTone(first: String, second: String, firstColor: Int, secondColor: Int): CharSequence {
-        val builder = SpannableStringBuilder(first).append('\n').append(second)
-        builder.setSpan(
-            StyleSpan(Typeface.BOLD),
-            0,
-            first.length,
-            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-        builder.setSpan(
-            ForegroundColorSpan(firstColor),
-            0,
-            first.length,
-            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-        builder.setSpan(
-            ForegroundColorSpan(secondColor),
-            first.length + 1,
-            builder.length,
-            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-        return builder
-    }
-
-    /** 标签行：按顺序把文案塞进固定的几个标签 View，多出来的（用不到）直接隐藏。 */
-    private fun setChips(row: View, card: Card, chips: List<Pair<String, Int>>, pal: Palette) {
-        card.chipViews.forEachIndexed { index, view ->
-            val chip = chips.getOrNull(index)
-            if (chip == null) {
-                view.visibility = View.GONE
-                return@forEachIndexed
-            }
-            view.visibility = View.VISIBLE
-            view.text = chip.first
-            view.setTextColor(chip.second)
-            view.background = chipDrawable(pal.card, chip.second, row)
-        }
-        card.chips.visibility = if (chips.isEmpty()) View.GONE else View.VISIBLE
-    }
-
-    // ------------------------------------------------------------------ 挂载
-
-    private fun attach(row: View, key: String): Card? {
-        val root = row as? ViewGroup ?: return null
-        val anchor = findBubble(root) ?: return null
-        val rowPos = IntArray(2).also { root.getLocationOnScreen(it) }
-        val anchorPos = IntArray(2).also { anchor.getLocationOnScreen(it) }
-        val left = (anchorPos[0] - rowPos[0]).coerceAtLeast(0)
-        // 行还没测量时 root.width == 0，以前这里会直接放弃（卡片就此不再出现，
-        // 直到下一次 show —— 表现为「有些行一直没有卡」）。现在退化用屏幕宽度兜底，
-        // 卡片先按固定宽度挂上去，宿主测量完会正常布局。
-        val availableWidth = if (root.width > 0) {
-            root.width
-        } else {
-            row.resources.displayMetrics.widthPixels
-        }
-        val width = minOf(dp(row, 300), availableWidth - left - dp(row, 16))
-        if (width < dp(row, 100)) return null
-
-        val views = createViews(row)
-
-        var branch: View = anchor
-        var parent = branch.parent as? ViewGroup
-        var target: ViewGroup? = null
-        var assignedId: Int? = null
-        while (parent != null && isInside(parent, root)) {
-            if (parent is LinearLayout && parent.orientation == LinearLayout.VERTICAL &&
-                parent.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
-            ) {
-                val parentPos = IntArray(2).also { parent.getLocationOnScreen(it) }
-                val lp = LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    leftMargin = (anchorPos[0] - parentPos[0] - parent.paddingLeft).coerceAtLeast(0)
-                    topMargin = dp(row, 3)
-                    bottomMargin = dp(row, 6)
-                }
-                // Append only: do not shift the indexes of the host's original children.
-                parent.addView(views.container, lp)
-                target = parent
-                break
-            }
-            if (parent === root) break
-            branch = parent
-            parent = branch.parent as? ViewGroup
-        }
-        if (target == null && root is RelativeLayout && branch.parent === root &&
-            root.layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT
-        ) {
-            val branchParams = branch.layoutParams as? RelativeLayout.LayoutParams ?: return null
-            if (branchParams.getRule(RelativeLayout.ALIGN_PARENT_BOTTOM) != 0) return null
-            if (branch.id == View.NO_ID) {
-                assignedId = View.generateViewId()
-                branch.id = assignedId
-            }
-            val lp = RelativeLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                addRule(RelativeLayout.BELOW, branch.id)
-                addRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                leftMargin = left
-                topMargin = dp(row, 3)
-                bottomMargin = dp(row, 6)
-            }
-            root.addView(views.container, lp)
-            target = root
-        }
-        if (target == null) {
-            val signature = "${root.javaClass.name}/${anchor.parent?.javaClass?.name}"
-            if (unsupported.add(signature)) MoodLog.w("暂不绘制未知气泡布局：$signature")
-            return null
-        }
-
-        views.container.setOnClickListener { onClick(row, key) }
-        views.container.setOnLongClickListener { onLongClick(row, key) }
-        val detach = object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) {}
-            override fun onViewDetachedFromWindow(v: View) { clear(v) }
-        }
-        row.addOnAttachStateChangeListener(detach)
-        return Card(
-            key = key,
-            container = views.container,
-            parent = target,
-            anchor = branch,
-            assignedId = assignedId,
-            detach = detach,
-            stripe = views.stripe,
-            header = views.header,
-            bars = views.bars,
-            meta = views.meta,
-            chips = views.chips,
-            chipViews = views.chipViews,
-            reading = views.reading,
-            advice = views.advice,
-            insight = views.insight,
-            balance = views.balance,
-            divider = views.divider,
-            footer = views.footer,
-        )
-    }
-
-    /**
-     * 点击：失败态重试；有结论时展开/收起完整解读。
-     *
-     * 「展开」比「复制」更适合作为单击默认行为 —— 复制改成**长按**，
-     * 卡片上常驻一行提示说明这两件事。
-     */
-    private fun onClick(row: View, key: String) {
-        val card = cards[row] ?: return
-        when {
-            SignalAnalyzer.failure(key) != null -> YanwaiScanner.retryRow(row)
-            MoodStore.get(key) != null -> {
-                val input = card.input ?: return
-                card.expanded = !card.expanded
-                // 指纹里的 expanded 变了，render 会自然重画；这里不用手动清缓存
-                render(row, card, input, card.note)
-            }
-        }
-    }
-
-    /** 长按：把整份解读（含情绪概率与建议）复制成纯文本。 */
-    private fun onLongClick(row: View, key: String): Boolean {
-        val mood = MoodStore.get(key) ?: return false
-        val text = MoodMessageChannel.format(mood)
-        val copied = runCatching {
-            val cm = row.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText(JevText.get(R.string.jev_clip_label), text))
-            true
-        }.getOrDefault(false)
-        runCatching {
-            val toast = if (copied) {
-                JevText.get(R.string.jev_toast_copied)
-            } else {
-                JevText.get(R.string.jev_toast_copy_failed)
-            }
-            Toast.makeText(row.context, toast, Toast.LENGTH_SHORT).show()
-        }
-        return true
-    }
-
-    // ------------------------------------------------------------------ 视图
-
-    private class Views(
-        val container: LinearLayout,
-        val stripe: View,
-        val header: TextView,
-        val bars: BarsView,
-        val meta: TextView,
-        val chips: LinearLayout,
-        val chipViews: List<TextView>,
-        val reading: TextView,
-        val advice: TextView,
-        val insight: TextView,
-        val balance: BarsView,
-        val divider: View,
-        val footer: TextView,
-    )
-
-    private fun createViews(row: View): Views {
-        val pal = palette(row, isNight(row))
-        val stripe = View(row.context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(row, 3), ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        val header = TextView(row.context).apply {
-            textSize = 12.5f
-            setTextColor(pal.title)
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.01f
-            gravity = Gravity.START
-            includeFontPadding = false
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        val bars = BarsView(row.context).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 6) }
-        }
-        val meta = TextView(row.context).apply {
-            textSize = 10f
-            setTextColor(pal.muted)
-            includeFontPadding = false
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 5) }
-        }
-        // 标签行：固定两个（建议强度 / 置信度），复用同一批 View，展开收起不增删视图
-        val chips = LinearLayout(row.context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 6) }
-        }
-        val chipViews = (0 until 2).map { index ->
-            TextView(row.context).apply {
-                textSize = 10f
-                includeFontPadding = false
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                setPadding(dp(row, 7), dp(row, 2), dp(row, 7), dp(row, 2))
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { if (index > 0) leftMargin = dp(row, 6) }
-            }.also { chips.addView(it) }
-        }
-        val reading = TextView(row.context).apply {
-            textSize = 12f
-            setTextColor(pal.body)
-            includeFontPadding = false
-            setLineSpacing(dp(row, 3).toFloat(), 1f)
-            letterSpacing = 0.005f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 6) }
-        }
-        val advice = TextView(row.context).apply {
-            textSize = 12f
-            setTextColor(pal.title)
-            includeFontPadding = false
-            setLineSpacing(dp(row, 2).toFloat(), 1f)
-            // 建议是「最该看的一行」：给它一层跟情绪相关的底色，从正文里托出来
-            setPadding(dp(row, 8), dp(row, 6), dp(row, 8), dp(row, 6))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 7) }
-        }
-        val insight = TextView(row.context).apply {
-            textSize = 11f
-            setTextColor(pal.body)
-            includeFontPadding = false
-            setLineSpacing(dp(row, 3).toFloat(), 1f)
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 7) }
-        }
-        // 互动均衡：展开后用两条真正的比例横幅，而不是一行「me 42% · them 58%」的干文案
-        val balance = BarsView(row.context).apply {
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 4) }
-        }
-        val divider = View(row.context).apply {
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(row, 1),
-            ).apply { topMargin = dp(row, 8) }
-        }
-        val footer = TextView(row.context).apply {
-            textSize = 9.5f
-            setTextColor(pal.muted)
-            includeFontPadding = false
-            letterSpacing = 0.01f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(row, 6) }
-        }
-        val column = LinearLayout(row.context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(row, 12), dp(row, 9), dp(row, 12), dp(row, 9))
-            addView(header)
-            addView(bars)
-            addView(meta)
-            addView(chips)
-            addView(reading)
-            addView(advice)
-            addView(insight)
-            addView(balance)
-            addView(divider)
-            addView(footer)
-        }
-        val container = LinearLayout(row.context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            id = View.generateViewId()
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            addView(stripe)
-            // 宽度由调用方在布局参数里钉死（=气泡宽度）；这里让内容列占满剩余宽度
-            addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        return Views(
-            container,
-            stripe,
-            header,
-            bars,
-            meta,
-            chips,
-            chipViews,
-            reading,
-            advice,
-            insight,
-            balance,
-            divider,
-            footer,
-        )
-    }
-
-    /**
-     * 情绪概率横条（也用于互动均衡）。
-     *
-     * 纯 [View.onDraw] 实现：**零子 View**，因此不会给宿主行增加任何测量/布局节点
-     * （这正是之前踩过崩溃的那类操作，这里刻意避开）。
-     */
-    private class BarsView(context: Context) : View(context) {
-        private var bars: List<MoodBar> = emptyList()
-        private var accent: Int = Color.GRAY
-        private var labelColor: Int = Color.GRAY
-        private var trackColor: Int = Color.LTGRAY
-        private var mutedColor: Int = Color.GRAY
-
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textAlign = Paint.Align.LEFT
-        }
-        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-        fun setBars(value: List<MoodBar>, accentColor: Int, pal: Palette) {
-            if (bars == value && accent == accentColor && labelColor == pal.body) return
-            bars = value
-            accent = accentColor
-            labelColor = pal.body
-            trackColor = pal.track
-            mutedColor = pal.muted
-            textPaint.textSize = sp(10f)
-            requestLayout()
-            invalidate()
-        }
-
-        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val width = MeasureSpec.getSize(widthMeasureSpec)
-            val rowHeight = sp(16f).toInt()
-            setMeasuredDimension(width, bars.size * rowHeight)
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            if (bars.isEmpty()) return
-            val rowHeight = sp(16f).toInt()
-            val labelWidth = sp(38f)
-            val percentWidth = sp(34f)
-            val barLeft = labelWidth
-            val barRight = (width - percentWidth).coerceAtLeast(barLeft + sp(20f))
-            val barHeight = sp(8f)
-            textPaint.textAlign = Paint.Align.LEFT
-
-            bars.forEachIndexed { index, bar ->
-                val centerY = index * rowHeight + rowHeight / 2f
-                trackPaint.color = trackColor
-                fillPaint.color = if (bar.highlight) accent else mutedColor
-                val top = centerY - barHeight / 2f
-                val radius = barHeight / 2f
-                canvas.drawRoundRect(barLeft, top, barRight, top + barHeight, radius, radius, trackPaint)
-                val filled = (barRight - barLeft) * (bar.percent.coerceIn(0, 100) / 100f)
-                if (filled > 0f) {
-                    canvas.drawRoundRect(barLeft, top, barLeft + filled, top + barHeight, radius, radius, fillPaint)
-                }
-                // 文字基线：居中（ascent 是负数，所以是 centerY - (ascent+descent)/2）
-                textPaint.color = if (bar.highlight) accent else labelColor
-                val baseline = centerY - (textPaint.ascent() + textPaint.descent()) / 2f
-                canvas.drawText(bar.name, 0f, baseline, textPaint)
-                textPaint.textAlign = Paint.Align.RIGHT
-                canvas.drawText("${bar.percent}%", width.toFloat(), baseline, textPaint)
-                textPaint.textAlign = Paint.Align.LEFT
-            }
-        }
-
-        private fun sp(value: Float) = value * resources.displayMetrics.scaledDensity
-    }
-
-    // ------------------------------------------------------------------ 配色 / 形状
+    // ------------------------------------------------------------------ 配色
 
     private class Palette(
         val card: Int,
@@ -1060,18 +1396,22 @@ object YanwaiBubble {
         val divider: Int,
     )
 
+    private val paletteLock = Any()
+    private var paletteCache: Palette? = null
+    private var paletteNight = false
+    private var paletteEngine: Any? = null
+
     private fun isNight(row: View): Boolean = row.resources.configuration.uiMode and
         Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
     /**
      * 取色板（带缓存）。
      *
-     * 莫奈取色 + Palette 构造在每次 show 里都做一遍是没有必要的：只有夜间模式切换或
-     * 引擎色板换了一版才需要重算。缓存键就是这两样。
+     * 莫奈取色 + Palette 构造没必要每次 show 都做：只有夜间模式切换或引擎色板换了一版
+     * 才需要重算。缓存键是这两样（注意用**引擎色板实例**，不是 tokens(night) 的返回值 ——
+     * 后者每次都新建一个 Tokens，拿它当键等于永远不命中）。
      */
     private fun palette(row: View, night: Boolean): Palette {
-        // 注意缓存键用的是**引擎色板实例**（applied.value），不是 tokens(night) 的返回值 ——
-        // 后者每次都新建一个 Tokens，拿它当键等于永远不命中。
         val engine = MonetColors.applied.value
         synchronized(paletteLock) {
             val cached = paletteCache
@@ -1094,9 +1434,9 @@ object YanwaiBubble {
                 0xFFEDEFF3.toInt(), 0xFF8A8F98.toInt(), 0xFF2F9E63.toInt(), 0xFFCC8A2E.toInt(),
                 0xFFC0453B.toInt(), 0xFFCC8A2E.toInt(), 0xFFF1F3F7.toInt(), 0xFFE9ECF1.toInt())
         }
-        // 莫奈引擎生效时改用引擎色板。这张卡片是 WeKit 自己插进聊天行的，宿主的资源替换覆盖不到它，
-        // 不接过来就会在已经莫奈化的会话里显得突兀（用户反馈「WeKit 添加/修改的组件没美化到位」）。
-        // 语义色（正向/中性/负向/告警）仍用卡片自己的，情绪含义不跟着主题漂移。
+        // 莫奈引擎生效时改用引擎色板：这张卡是 WeKit 画在会话里的，宿主的资源替换覆盖不到它，
+        // 不接过来就会在已经莫奈化的会话里显得突兀。语义色（正向/中性/负向/告警）仍用卡片自己的，
+        // 情绪含义不跟着主题漂移。
         val tokens = MonetColors.tokens(dark) ?: return base
         return Palette(
             card = tokens.surfaceContainer,
@@ -1109,51 +1449,22 @@ object YanwaiBubble {
             neutral = base.neutral,
             negative = base.negative,
             warning = base.warning,
-            chip = MonetColors.blend(tokens.surfaceContainerHigh, tokens.accent, 0.10),
-            divider = MonetColors.blend(tokens.surfaceContainer, tokens.onSurface, 0.14),
+            chip = MonetColors.blend(tokens.surfaceContainerHigh, tokens.accent, 0.10f),
+            divider = MonetColors.blend(tokens.surfaceContainer, tokens.onSurface, 0.14f),
         )
     }
 
-    private fun cardDrawable(pal: Palette, accent: Int, row: View, failed: Boolean): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(row, 12).toFloat()
-            // 失败态：整卡换成告警底色 + 告警描边，一眼就能和「有结论」区分开
-            setColor(if (failed) MonetColors.blend(pal.card, pal.warning, 0.12) else pal.card)
-            // 描边蹭一点情绪色 / 告警色：比纯灰描边精致，又不会抢走正文注意力
-            setStroke(
-                dp(row, 1),
-                if (failed) {
-                    MonetColors.blend(pal.stroke, pal.warning, 0.55)
-                } else {
-                    MonetColors.blend(pal.stroke, accent, 0.18)
-                },
-            )
-        }
+    // ------------------------------------------------------------------ 宿主视图定位
 
-    /** 标签底色：卡片底色混一点点标签色，保证深浅色主题下都读得清。 */
-    private fun chipDrawable(cardColor: Int, chipColor: Int, row: View): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(row, 6).toFloat()
-            setColor(MonetColors.blend(cardColor, chipColor, 0.12))
-        }
+    private val mainContainerLookup = HashMap<Class<*>, java.lang.reflect.Method?>()
 
-    /** 建议块底色：卡片底色混一点情绪色（比标签更淡，块面积更大）。 */
-    private fun blockDrawable(cardColor: Int, accent: Int, row: View, radiusDp: Int): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(row, radiusDp).toFloat()
-            setColor(MonetColors.blend(cardColor, accent, 0.08))
-        }
-
-    private fun stripeDrawable(accent: Int, row: View): GradientDrawable {
-        val radius = dp(row, 12).toFloat()
-        return GradientDrawable().apply {
-            // 只圆左侧两角，和卡片外框的圆角对齐
-            cornerRadii = floatArrayOf(radius, radius, 0f, 0f, 0f, 0f, radius, radius)
-            setColor(accent)
-        }
-    }
-
-    private fun findBubble(root: ViewGroup): View? {
+    /**
+     * 取宿主行里那个真正的文本气泡视图。
+     *
+     * 它只用于「从气泡往上找到行内容器」这一步（落点判定），不再参与任何绘制。
+     */
+    private fun findBubble(root: ViewGroup?): View? {
+        if (root == null) return null
         val holder = root.tag
         if (holder != null) {
             val cls = holder.javaClass
@@ -1168,13 +1479,18 @@ object YanwaiBubble {
                     found
                 }
             }
-            val main = runCatching { method?.isAccessible = true; method?.invoke(holder) as? View }.getOrNull()
+            val main = runCatching {
+                method?.isAccessible = true
+                method?.invoke(holder) as? View
+            }.getOrNull()
             if (main != null && main !== root && main.isShown && isInside(main, root)) return main
         }
         fun find(view: View, depth: Int): View? {
             if (depth > 24 || view.visibility != View.VISIBLE) return null
             if (view.javaClass.name.endsWith(".MMNeat7extView")) return view
-            if (view is ViewGroup) for (i in 0 until view.childCount) find(view.getChildAt(i), depth + 1)?.let { return it }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) find(view.getChildAt(i), depth + 1)?.let { return it }
+            }
             return null
         }
         return find(root, 0)
@@ -1189,14 +1505,17 @@ object YanwaiBubble {
         return false
     }
 
-    fun clear(row: View) {
-        val state = cards.remove(row) ?: return
-        row.removeOnAttachStateChangeListener(state.detach)
-        (state.container.parent as? ViewGroup)?.removeView(state.container)
-        if (state.assignedId != null && state.anchor.id == state.assignedId) state.anchor.id = View.NO_ID
-    }
+    private fun dp(view: View, value: Float): Float = value * view.resources.displayMetrics.density
 
-    fun clearAll() { cards.keys.toList().forEach(::clear) }
-    fun prune() { cards.keys.filter { !it.isAttachedToWindow }.forEach(::clear) }
-    private fun dp(view: View, n: Int) = (n * view.resources.displayMetrics.density).toInt()
+    private fun dp(view: View, value: Int): Int =
+        (value * view.resources.displayMetrics.density).toInt()
+
+    /** 只给 [YanwaiScanner] 诊断用：当前挂着的卡片数与预留高度（不触发任何宿主改动）。 */
+    fun describe(): String {
+        if (cards.isEmpty()) return "当前无卡片"
+        val rows = cards.values
+        val reserved = rows.sumOf { it.reserved }
+        val ready = rows.count { it.ready }
+        return "卡片 ${cards.size} 张（已就绪 $ready，预留合计 ${reserved}px）"
+    }
 }
