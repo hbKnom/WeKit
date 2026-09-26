@@ -3,10 +3,10 @@
      由三语同表生成，key 必须三份一致；报告正文本身不走资源（它是数据，
      由引擎生成、被弹窗与 PNG 两侧的解析器按字形识别，不能本地化）。 -->
 <resources>
-    <string name="chat_analysis_extra_dims_card">Extended analysis</string>
-    <string name="chat_analysis_extra_dims_badge">%1$d new</string>
-    <string name="chat_analysis_extra_dims_title">Extended dimension pack</string>
-    <string name="chat_analysis_extra_dims_desc">Appends 6 extra dimensions to the report: speech density, daily trend, reply-speed profile, who gets replied to, topic time-of-day and daily rhythm. Turning it off returns the report to its previous length.</string>
+    <string name="chat_analysis_extra_dims_card">Dimension pack · Time</string>
+    <string name="chat_analysis_extra_dims_badge">%1$d dimensions</string>
+    <string name="chat_analysis_extra_dims_title">Time dimension pack</string>
+    <string name="chat_analysis_extra_dims_desc">4 time dimensions: activity calendar and trend, reply speed, activity density and continuity, bursts and rounds. All computed inside the same scan; turning it off just omits this pack.</string>
     <string name="chat_analysis_extra_dims_list_title">Dimensions in this pack</string>
 
     <string name="chat_analysis_dim_density">Speech density</string>
@@ -16,10 +16,10 @@
     <string name="chat_analysis_dim_topic_period">Topic time-of-day</string>
     <string name="chat_analysis_dim_rhythm">Daily rhythm</string>
     <!-- 第 17 轮：观感美化 + 六个新维度（同样只追加，老 key 一字未改） -->
-    <string name="chat_analysis_dims17_card">Extended analysis II</string>
-    <string name="chat_analysis_dims17_badge">%1$d new</string>
-    <string name="chat_analysis_dims17_title">Extended dimension pack II</string>
-    <string name="chat_analysis_dims17_desc">Appends 6 more dimensions: hourly concentration, repeats &amp; copycats, questions &amp; replies, special-message radar, active streaks and day/night message length. All of them are computed inside the existing scan, with no extra database read.</string>
+    <string name="chat_analysis_dims17_card">Dimension pack · Relation</string>
+    <string name="chat_analysis_dims17_badge">%1$d dimensions</string>
+    <string name="chat_analysis_dims17_title">Relation dimension pack</string>
+    <string name="chat_analysis_dims17_desc">4 relation dimensions: who picks up and asks, repeats and copycats, reply-speed ranking, per-person rhythm radar. All computed inside the same scan; turning it off just omits this pack.</string>
     <string name="chat_analysis_dims17_list_title">Dimensions in this pack</string>
 
     <string name="chat_analysis_dim_concentration">Hourly concentration</string>
@@ -31,10 +31,10 @@
     <!-- ===== 第 18 轮：第三个扩展维度包 + 全弹窗文案三语化 =====
          key 与 values-zh-rCN / values-zh-rTW 两份**必须同名**；
          报告正文本身不走资源（它是数据，由引擎生成、被弹窗与 PNG 两侧解析器按字形识别）。 -->
-    <string name="chat_analysis_dims18_card">Extended analysis III</string>
-    <string name="chat_analysis_dims18_badge">%1$d new</string>
-    <string name="chat_analysis_dims18_title">Extended dimension pack III</string>
-    <string name="chat_analysis_dims18_desc">Appends 7 more dimensions: recalls &amp; system events, conversation rounds, silence spectrum, per-person speaking profile, emoji ranking, best duos, and daily opener/closer. All of them are computed inside the existing scan with no extra database read.</string>
+    <string name="chat_analysis_dims18_card">Dimension pack · Language</string>
+    <string name="chat_analysis_dims18_badge">%1$d dimensions</string>
+    <string name="chat_analysis_dims18_title">Language dimension pack</string>
+    <string name="chat_analysis_dims18_desc">4 language dimensions: emotion word radar, typing habits, plans and reminders, hourly volume profile. All computed inside the same scan; turning it off just omits this pack.</string>
     <string name="chat_analysis_dims18_list_title">Dimensions in this pack</string>
 
     <string name="chat_analysis_dim_revoke">Recalls &amp; system events</string>
@@ -44,6 +44,13 @@
     <string name="chat_analysis_dim_emoji">Emoji ranking</string>
     <string name="chat_analysis_dim_pair">Best duos</string>
     <string name="chat_analysis_dim_daily">Daily opener &amp; closer</string>
+    <!-- ===== 第 20 轮：维度整合（25 个维度 = 核心 13 + 三个进阶包各 4）新增的维度名 ===== -->
+    <string name="chat_analysis_dim_reply_rank">Reply-speed ranking</string>
+    <string name="chat_analysis_dim_profile_radar">Per-person rhythm radar</string>
+    <string name="chat_analysis_dim_mood_words">Emotion word radar</string>
+    <string name="chat_analysis_dim_typing">Typing habits</string>
+    <string name="chat_analysis_dim_appointment">Plans and reminders</string>
+    <string name="chat_analysis_dim_hour_volume">Hourly volume profile</string>
 
     <!-- 弹窗与设置页的界面文案（与报告正文无关，可以本地化） -->
     <string name="chat_analysis_copy_report">Copy report</string>

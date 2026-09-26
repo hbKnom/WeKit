@@ -143,75 +143,58 @@ object ChatAnalysisModelStore {
 }
 
 /**
- * 第 16 轮「扩展维度包」开关。
+ * 第 20 轮「维度整合」开关组：把 41 个报告段位整合成 25 个维度，并给出三个篇幅档。
  *
- * 第 16 轮往报告末尾追加了六个新维度（发言密度 / 每日趋势 / 回应速度画像 / 被接话榜 /
- * 话题时段偏好 / 作息画像）。它们全部是**追加**，旧段落的文本一字未改，所以默认开启
- * 不会改变任何既有解析结果；但报告变长是真的，于是给一个开关：关掉就退回第 15 轮的篇幅。
+ * 整合结果（详见 ChatAnalysisEngine 的报告段注释）：
+ *  - 核心 13 个维度**始终输出**（核心指标 / 内容载体与表情 / 活跃时段分布 / 活跃热力 /
+ *    作息与昼夜 / 节奏与沉默 / 消息长度画像 / 情绪与语气 / 高频词与口头禅 /
+ *    话题雷达与时段 / 发言与互动平衡 / 特殊消息与互动 / 每日开场与收尾）；
+ *  - 进阶 12 个维度分成三个包，每包 4 个，各有开关、默认全开：
+ *    时间包（活跃日历与趋势 / 回应速度 / 活跃密度与连续 / 连击与轮次）、
+ *    关系包（接话·提问·默契 / 复读与重复 / 回复速度榜 / 个人作息雷达）、
+ *    语言包（情绪词雷达 / 打字习惯 / 约定与提醒 / 时段话量画像）。
+ *
+ * 三个开关的 key **沿用第 16/17/18 轮的三个老 key**：老用户即使之前关过某个包，
+ * 设置也不会丢，只是该包现在装的是整合后的 4 个维度（而不是原来那 6~7 个）。
  *
  * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
  */
-object ChatAnalysisExtraDims {
-    private const val KEY_EXTRA_DIMS = "chat_analysis_extra_dims"
+object ChatAnalysisDimPacks {
+    /** 始终输出的核心维度数量：设置页与统计口径共用，避免两处写死数字 */
+    const val CORE_DIM_COUNT = 13
 
-    /** 第 16 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
-    const val EXTRA_DIM_COUNT = 6
+    /** 每个进阶包的维度数量 */
+    const val PACK_DIM_COUNT = 4
 
-    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_EXTRA_DIMS, true) }.getOrDefault(true)
+    /** 进阶维度总量（三个包合计）= 12 */
+    const val EXTRA_DIM_COUNT = PACK_DIM_COUNT * 3
 
-    fun setEnabled(on: Boolean) {
-        runCatching { WePrefs.putBool(KEY_EXTRA_DIMS, on) }
+    /** 维度总量（核心 + 进阶）= 25 */
+    const val TOTAL_DIM_COUNT = CORE_DIM_COUNT + EXTRA_DIM_COUNT
+
+    /** 时间包（活跃日历与趋势 / 回应速度 / 活跃密度与连续 / 连击与轮次） */
+    const val PACK_TIME = 0
+
+    /** 关系包（接话·提问·默契 / 复读与重复 / 回复速度榜 / 个人作息雷达） */
+    const val PACK_RELATION = 1
+
+    /** 语言包（情绪词雷达 / 打字习惯 / 约定与提醒 / 时段话量画像） */
+    const val PACK_LANGUAGE = 2
+
+    /** 三个包分别沿用的老 key（顺序与 PACK_* 常量一致） */
+    private val KEYS = arrayOf(
+        "chat_analysis_extra_dims",
+        "chat_analysis_dims_v17",
+        "chat_analysis_dims_v18",
+    )
+
+    fun isEnabled(pack: Int): Boolean {
+        if (pack < 0 || pack >= KEYS.size) return true
+        return runCatching { WePrefs.getBoolOrDef(KEYS[pack], true) }.getOrDefault(true)
     }
-}
 
-/**
- * 第 17 轮「观感 + 维度扩展」开关。
- *
- * 第 17 轮往报告末尾**再追加**六个纯计算维度（活跃集中度 / 复读与重复 / 提问与回应 /
- * 特殊消息雷达 / 连续活跃 / 昼夜话量）。与第 16 轮同一套纪律：只在末尾追加，
- * 老段落的文本一字未改，所以默认开启不会改变任何既有解析结果；关掉就退回第 16 轮的篇幅。
- *
- * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
- */
-object ChatAnalysisRound17Dims {
-    private const val KEY_DIMS17 = "chat_analysis_dims_v17"
-
-    /** 第 17 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
-    const val DIM_COUNT = 6
-
-    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_DIMS17, true) }.getOrDefault(true)
-
-    fun setEnabled(on: Boolean) {
-        runCatching { WePrefs.putBool(KEY_DIMS17, on) }
-    }
-}
-
-/**
- * 第 18 轮「事件、节奏与关系网络」开关。
- *
- * 第 18 轮往报告末尾**再追加**七个维度：
- *  - 【撤回与系统事件】 谁最爱说出口又收回去，系统事件占比多少；
- *  - 【对话轮次结构】   一轮连续对话有多长（连续对话长度分布）；
- *  - 【沉默间隔谱】     从"隔一分钟"到"隔一天"的全量静默分档 + 最长沉默的起止时间点；
- *  - 【每人说话画像】   人均字数榜（谁是长文大户）；
- *  - 【表情符号排行】   用得最多的表情 Top N；
- *  - 【默契搭档】       最常互相接话的两个人（关系网络，而不是单向排行）；
- *  - 【每日开场与收尾】 每天第一句 / 最后一句是谁说的。
- *
- * 与第 16/17 轮**同一套纪律**：只在报告末尾追加，老段落的每一行文本一字未改，
- * 所以默认开启不会改变任何既有解析结果；关掉就退回第 17 轮的篇幅。
- *
- * 存的是布尔值，读失败一律按"开启"处理（宁可多显示，也不要因为一次读盘异常把功能吞掉）。
- */
-object ChatAnalysisRound18Dims {
-    private const val KEY_DIMS18 = "chat_analysis_dims_v18"
-
-    /** 第 18 轮新增的维度数量：设置页与统计口径都用它，避免两处写死数字。 */
-    const val DIM_COUNT = 7
-
-    fun isEnabled(): Boolean = runCatching { WePrefs.getBoolOrDef(KEY_DIMS18, true) }.getOrDefault(true)
-
-    fun setEnabled(on: Boolean) {
-        runCatching { WePrefs.putBool(KEY_DIMS18, on) }
+    fun setEnabled(pack: Int, on: Boolean) {
+        if (pack < 0 || pack >= KEYS.size) return
+        runCatching { WePrefs.putBool(KEYS[pack], on) }
     }
 }

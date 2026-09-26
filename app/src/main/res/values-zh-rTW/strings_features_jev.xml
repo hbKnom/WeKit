@@ -21,6 +21,7 @@
     <string name="jev_hint_copy">長按複製解讀</string>
     <string name="jev_hint_note">提示：%1$s</string>
     <string name="jev_meta_confidence">信賴度 %1$d%%</string>
+    <string name="jev_meta_score">強度 %1$s</string>
     <string name="jev_advice">建議：%1$s</string>
     <string name="jev_trend_flat">與前幾句持平</string>
     <string name="jev_trend_up">較前幾句 ↑%1$d</string>
@@ -118,6 +119,7 @@
     <string name="jev_settings_count">%1$d/%2$d 已開</string>
     <string name="jev_settings_preview">卡片預覽</string>
     <string name="jev_settings_preview_desc">下面這些開關生效後，插在訊息下方的卡片大致長這樣。</string>
+    <string name="jev_preview_monet">配色跟隨莫奈取色，實機卡片會略有不同。</string>
     <string name="jev_preview_mood">平靜</string>
     <string name="jev_preview_reading">這句可能在給見面留位置。</string>
     <string name="jev_preview_advice">順著剛提到的事，問一個還沒說到的細節。</string>

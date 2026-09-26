@@ -1250,37 +1250,52 @@ object ChatAnalysisPng {
     }
 
     /**
-     * 第 17 轮：分节归属色。
+     * 第 17 轮引入、第 20 轮跟着「25 维整合」重排的分节归属色。
      *
-     * 与弹窗 ChatAnalysisUi.sectionAccent **同一套落点**（同族信息不同色、与相邻章节错开），
-     * 只是把弹窗的三个主题色位映射成导出图的两个（后为四个）固定色：
-     * ToneAccent→COLOR_ACCENT、ToneAlt→COLOR_ACCENT2、ToneThird→COLOR_ACCENT3。
-     * 第 17 轮的六个新段位也按同一条规则接上去（老报告末段是【作息画像】，所以从蓝色接）。
+     * 与弹窗 ChatAnalysisUi.sectionAccent **同一套落点**（同族信息同色、与相邻章节错开），
+     * 只是把弹窗的三个主题色位映射成导出图的四个固定色：
+     * ToneAccent→COLOR_ACCENT、ToneAlt→COLOR_ACCENT2、ToneThird→COLOR_ACCENT3，
+     * 第 20 轮的六个新段位（回复速度榜 / 个人作息雷达 / 情绪词雷达 / 打字习惯 /
+     * 约定与提醒 / 时段话量画像）继续沿用同一条规则接在后面。
      *
-     * 取不到（AI 报告的自由标题、空标题）返回 null，由调用方回退到分组色。
+     * 判断一律用"标题包含关键词"（章节标题是本地拼的常量，同时也能吃掉 AI 报告里
+     * 沿用了老标题的情况）：先用整段新标题的关键词，再兜住整合前的老标题关键词，
+     * 所以旧报告、AI 自由标题都能取到颜色，取不到才返回 null 由调用方回退到分组色。
      */
     private fun sectionAccentOf(title: String): Int? = when {
-        title.contains("载体偏好") || title.contains("高频词") || title.contains("活跃日历") -> COLOR_ACCENT2
-        title.contains("活跃频次") || title.contains("情绪指纹") || title.contains("互动节奏") -> COLOR_ACCENT3
-        title.contains("核心指标") || title.contains("发言排行") || title.contains("昼夜结构") -> COLOR_ACCENT
-        title.contains("消息长度") || title.contains("口头禅") -> COLOR_ACCENT2
-        title.contains("标点与语气") || title.contains("沉默与主动性") -> COLOR_ACCENT3
-        title.contains("互动平衡") || title.contains("话题切换") -> COLOR_ACCENT
-        title.contains("活跃热力") || title.contains("媒体与表情") -> COLOR_ACCENT3
-        title.contains("回复延迟") || title.contains("话题关键词") -> COLOR_ACCENT2
-        title.contains("连击与打断") || title.contains("@与互动") -> COLOR_ACCENT
-        title.contains("活跃集中度") || title.contains("特殊消息") -> COLOR_ACCENT
-        title.contains("复读") || title.contains("昼夜话量") -> COLOR_ACCENT2
-        title.contains("提问与回应") || title.contains("连续活跃") -> COLOR_ACCENT3
-        // 第 18 轮新增的七个段位：与弹窗（ChatAnalysisUi.sectionAccent）逐条对齐，
-        // 保证同一份报告在弹窗里和导出的图片里是同一个颜色。
-        title.contains("撤回与系统事件") -> COLOR_ACCENT3
-        title.contains("对话轮次") -> COLOR_ACCENT
-        title.contains("沉默间隔") -> COLOR_ACCENT2
-        title.contains("每人说话") -> COLOR_ACCENT3
-        title.contains("表情符号") -> COLOR_ACCENT
-        title.contains("默契搭档") -> COLOR_ACCENT2
-        title.contains("每日开场") -> COLOR_ACCENT3
+        // ---- 第 20 轮的 25 个段位 ----
+        title.contains("核心指标") -> COLOR_ACCENT
+        title.contains("内容载体") || title.contains("载体偏好") -> COLOR_ACCENT2
+        title.contains("活跃时段") || title.contains("活跃频次") -> COLOR_ACCENT3
+        title.contains("活跃热力") -> COLOR_ACCENT
+        title.contains("作息与昼夜") || title.contains("昼夜结构") ||
+            title.contains("昼夜话量") || title.contains("作息画像") -> COLOR_ACCENT2
+        title.contains("节奏与沉默") || title.contains("互动节奏") ||
+            title.contains("沉默") -> COLOR_ACCENT3
+        title.contains("消息长度") || title.contains("废话") || title.contains("每人说话") -> COLOR_ACCENT2
+        title.contains("情绪与语气") || title.contains("情绪指纹") ||
+            title.contains("标点与语气") -> COLOR_ACCENT3
+        title.contains("高频词") || title.contains("口头禅") -> COLOR_ACCENT2
+        title.contains("话题雷达") || title.contains("话题切换") ||
+            title.contains("话题关键词") || title.contains("话题时段") -> COLOR_ACCENT
+        title.contains("发言与互动") || title.contains("发言排行") ||
+            title.contains("发言对比") || title.contains("互动平衡") -> COLOR_ACCENT3
+        title.contains("特殊消息") || title.contains("@与互动") ||
+            title.contains("撤回与系统事件") -> COLOR_ACCENT
+        title.contains("每日开场") -> COLOR_ACCENT2
+        title.contains("活跃日历") || title.contains("每日趋势") -> COLOR_ACCENT
+        title.contains("回应速度") || title.contains("回复延迟") -> COLOR_ACCENT3
+        title.contains("活跃密度") || title.contains("连续活跃") || title.contains("发言密度") -> COLOR_ACCENT2
+        title.contains("连击与轮次") || title.contains("连击") || title.contains("对话轮次") -> COLOR_ACCENT
+        title.contains("接话") || title.contains("提问与回应") || title.contains("默契") -> COLOR_ACCENT2
+        title.contains("复读") -> COLOR_ACCENT3
+        title.contains("回复速度") -> COLOR_ACCENT
+        title.contains("个人作息") -> COLOR_ACCENT2
+        title.contains("情绪词雷达") || title.contains("情绪词") -> COLOR_ACCENT3
+        title.contains("打字习惯") || title.contains("打字") -> COLOR_ACCENT2
+        title.contains("约定与提醒") || title.contains("约定") -> COLOR_ACCENT
+        title.contains("时段话量") || title.contains("话量") -> COLOR_ACCENT3
+        title.contains("表情符号") || title.contains("媒体与表情") -> COLOR_ACCENT
         else -> null
     }
 
@@ -1388,6 +1403,8 @@ object ChatAnalysisPng {
         val bodyP = paint(FS_BODY, COLOR_BODY)
 
         // ---- 第一遍：纯几何（先把所有高度算准，再决定分页）----
+        // 两套断点：preferred = 只在「条目边界」（卡片 / 分节条的分界）断开，
+        // cuts = 全部合法断点（含卡片内部的行首）。分页优先用前者 —— 见 [paginate]。
         val header = layoutHeader(sessionName, sessionWxid, period, generated)
         val items = buildItems(stats, ai, bodyP)
 
@@ -1400,8 +1417,8 @@ object ChatAnalysisPng {
         }
         val contentEnd = content.coerceAtLeast(CANVAS_PAD + header.height)
         val canvasHeight = (contentEnd + CARD_GAP + FOOTER_H + BOTTOM_PAD).coerceAtLeast(MIN_H)
-
-        val pages = paginate(pageCuts(items, itemTops, contentEnd), contentEnd)
+        val preferred = itemCuts(itemTops, contentEnd)
+        val pages = paginate(preferred, pageCuts(items, itemTops, contentEnd), contentEnd)
         val multi = pages.size > 1
         val paths = ArrayList<String>(pages.size)
 
@@ -1409,18 +1426,25 @@ object ChatAnalysisPng {
             val label = "第 ${index + 1} / ${pages.size} 页"
             val path = if (multi) "$dir/${baseName}_第${index + 1}页.png" else "$dir/$baseName.png"
 
+            // 跨页提示：本页顶部落在某张卡片内部（= 上一页没画完、这一页接着画）时，
+            // 页脚要写清「接的是哪一节」，否则单张图不知道自己画的是谁的续页。
+            val continues = continuedTitle(items, itemTops, page.top)
+            // 本页内容是不是在卡片中途被打断（断点不是任何一条条目边界）
+            val splits = splitsInsideItem(itemTops, page.contentBottom, contentEnd)
+
             // 单页时沿用「最小画布高度」（短报告不会被压成一条，观感与旧版一致）；
             // 多页时每页高度完全由分页几何决定，不额外加高。
             val pageHeight = if (multi) page.height else maxOf(page.height, MIN_H)
             val bmp = Bitmap.createBitmap(W, pageHeight, Bitmap.Config.ARGB_8888)
             try {
                 val cv = Canvas(bmp)
-                // 裁剪 + 平移：之后所有绘制代码用的都是「整幅画布」的绝对坐标，
+                // 平移：之后所有绘制代码用的都是「整幅画布」的绝对坐标，
                 // 与本页落在哪一段无关（绘制代码一行都不用改）。
-                cv.clipRect(0f, 0f, W.toFloat(), page.height.toFloat())
                 cv.translate(0f, -page.top.toFloat())
 
-                // 背景：极浅的竖向渐变（上浅蓝 → 下纯白），跨页仍然连续
+                // ---- 背景：极浅的竖向渐变（上浅蓝 → 下纯白），跨页仍然连续 ----
+                cv.save()
+                cv.clipRect(0f, page.top.toFloat(), W.toFloat(), (page.top + page.height).toFloat())
                 cv.drawRect(0f, 0f, W.toFloat(), canvasHeight.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     shader = LinearGradient(
                         0f, 0f, 0f, canvasHeight.toFloat(),
@@ -1429,6 +1453,18 @@ object ChatAnalysisPng {
                         Shader.TileMode.CLAMP,
                     )
                 })
+                cv.restore()
+
+                // ---- 内容区：严格裁到本页的内容边界 ----
+                // 这里是「每张分页图底部总溢出」的根因修复点：
+                // 旧实现整页只有一个裁剪矩形（裁到 page.height），而被分页切开的卡片
+                // 会把内容边界**之下**的那半截行继续画出来 —— 于是内容越过 CARD_GAP
+                // 压在页脚上、又从页脚下方（BOTTOM_PAD 那段空白）露出来；
+                // 每张分页图的底部都长这样，看着就是"内容溢出画布边框"。
+                // 现在内容区硬裁到 contentBottom：越界的半截行只会在下一页出现，
+                // 一次不多、一次不少，卡片边界与页脚永远不会被内容侵占。
+                cv.save()
+                cv.clipRect(0f, page.top.toFloat(), W.toFloat(), page.contentBottom.toFloat())
 
                 // ---- 第二遍：按同一份几何绘制 ----
                 var y = CANVAS_PAD
@@ -1455,9 +1491,41 @@ object ChatAnalysisPng {
                     }
                     y += h
                 }
+                cv.restore()
 
-                // 页脚画在「内容末 + CARD_GAP」，与旧版单张图的位置逐像素一致
-                drawFooter(cv, page.contentBottom + CARD_GAP, label, footerMeta)
+                // ---- 截断收口：只在「卡片被拦腰截断」的页面上画 ----
+                // 位置取内容边界与页脚之间的 CARD_GAP 空档，不占内容高度、不动任何既有坐标。
+                if (splits) {
+                    cv.save()
+                    cv.clipRect(
+                        0f,
+                        page.contentBottom.toFloat(),
+                        W.toFloat(),
+                        (page.contentBottom + CARD_GAP).toFloat(),
+                    )
+                    drawContinuedCap(cv, page.contentBottom)
+                    cv.restore()
+                }
+
+                // ---- 页脚区：独立裁剪，与内容区互不侵占 ----
+                cv.save()
+                cv.clipRect(
+                    0f,
+                    (page.contentBottom + CARD_GAP).toFloat(),
+                    W.toFloat(),
+                    (page.top + page.height).toFloat(),
+                )
+                drawFooter(
+                    cv = cv,
+                    top = page.contentBottom + CARD_GAP,
+                    pageLabel = label,
+                    meta = footerMeta,
+                    hint = if (continues.isBlank()) "" else "接上页 · $continues",
+                    pageIndex = index + 1,
+                    pageCount = pages.size,
+                )
+                cv.restore()
+
                 writePng(bmp, path)
             } finally {
                 if (!bmp.isRecycled) bmp.recycle()
@@ -1474,6 +1542,77 @@ object ChatAnalysisPng {
         return Page(top, contentBottom, height)
     }
 
+
+    /** 只取「条目边界」（卡片 / 分节条的分界）：在这些位置分页，每页都以完整卡片收尾。 */
+    private fun itemCuts(itemTops: IntArray, contentEnd: Int): IntArray {
+        val cuts = java.util.TreeSet<Int>()
+        cuts.add(contentEnd)
+        for (t in itemTops) {
+            if (t > 0 && t < contentEnd) cuts.add(t)
+        }
+        return cuts.toIntArray()
+    }
+
+    /**
+     * 本页顶部落在哪张卡片内部 → 返回该卡片标题（页脚写「接上页 · 标题」用）。
+     *
+     * 正好卡在条目边界上、或落在分节条里，都返回空串（不需要提示）。
+     * 只有分页真的做了一次"拦腰截断"才会有非空结果，所以这段逻辑对单页导出零开销。
+     */
+    private fun continuedTitle(items: List<Item>, itemTops: IntArray, top: Int): String {
+        if (top <= 0) return ""
+        for (i in items.indices) {
+            val t = itemTops[i]
+            if (t >= top) return ""
+            if (top < t + itemHeight(items[i])) {
+                val it = items[i]
+                return if (it is Item.Card) it.title.orEmpty() else ""
+            }
+        }
+        return ""
+    }
+
+    /** 本页内容是否在卡片内部被拦腰截断（断点不是任何一条条目边界，也不是整幅内容的末尾）。 */
+    private fun splitsInsideItem(itemTops: IntArray, contentBottom: Int, contentEnd: Int): Boolean {
+        if (contentBottom >= contentEnd) return false
+        for (t in itemTops) {
+            if (t == contentBottom) return false
+        }
+        return true
+    }
+
+    /**
+     * 「本节未完 · 见下页」收口。
+     *
+     * 画在内容边界到页脚之间的 [CARD_GAP] 空档里：右侧一句提示 + 一条渐隐细线，
+     * 明确告诉读者"这张卡片不是到这里就结束了，是被分页断开的"，
+     * 免得看图的人以为内容画漏了。不占内容高度、不改动任何既有坐标。
+     */
+    private fun drawContinuedCap(cv: Canvas, contentBottom: Int) {
+        val lineY = contentBottom + 8f
+        cv.drawRect(
+            RectF(CARD_LEFT.toFloat(), lineY, CARD_RIGHT.toFloat(), lineY + 2f),
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    CARD_LEFT.toFloat(), 0f, CARD_RIGHT.toFloat(), 0f,
+                    intArrayOf(
+                        withAlpha(COLOR_ACCENT, 0x00),
+                        withAlpha(COLOR_ACCENT, 0x59),
+                        withAlpha(COLOR_ACCENT, 0x00),
+                    ),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+            },
+        )
+        val p = paint(FS_SMALL, COLOR_ACCENT, bold = true)
+        val text = "本节未完 · 见下页"
+        val textW = p.measureText(text)
+        val bandTop = lineY + 2f
+        val bandH = (contentBottom + CARD_GAP - bandTop).coerceAtLeast(1f)
+        val clip = RectF(CARD_RIGHT - textW - 8f, bandTop, CARD_RIGHT.toFloat(), bandTop + bandH)
+        drawClipped(cv, text, clip.left, fitBaseline(bandTop, bandH, p, clip.bottom), clip, p)
+    }
     /**
      * 可断点集合（内容纵坐标）。
      *
@@ -1499,12 +1638,19 @@ object ChatAnalysisPng {
     }
 
     /**
-     * 分页：优先均衡（各页高度尽量接近），断点从 [cuts] 里挑最接近理想位置的那个。
+     * 分页：先把内容按「条目边界」切，切不动才退到行首，最后才硬切。
      *
-     * 找不到合适断点（例如某个超大图形卡片内部没有行首）就退化为硬切 —— 因为每页都是
-     * 「平移后重放同一套绘制」，硬切同样**不会丢内容**，只是那一段的卡片圆角会跨页。
+     * 第 20 轮改的一处：断点优先从 [preferred]（条目边界）里选，而不是从全部断点里
+     * 选"最接近理想位置"的那个。原因是旧的策略几乎总挑到**卡片内部**的一行行首，
+     * 于是每张分页图的末页都是"半张卡片"，底边没有圆角、没有收口 —— 观感上就是
+     * 内容溢出了卡片边框。改成优先在整卡片边界断开后，每页都以完整卡片收尾。
+     *
+     * [cuts] 是全部合法断点（含卡片内部行首），只在"某张卡片本身就比一页还高"
+     * （preferred 里找不到可用断点）时才会用到；硬切是最后的兜底，硬切同样不丢内容
+     * （每页都是平移后重放同一套绘制），只是那一段的卡片圆角会跨页 —— 这时会由
+     * [drawContinuedCap] 在页面底部补一句「本节未完 · 见下页」。
      */
-    private fun paginate(cuts: IntArray, contentEnd: Int): List<Page> {
+    private fun paginate(preferred: IntArray, cuts: IntArray, contentEnd: Int): List<Page> {
         val reserved = CARD_GAP + FOOTER_H + BOTTOM_PAD
         val usable = MAX_HEIGHT - reserved
         require(usable > 0) { "PNG 单页可用高度必须为正" }
@@ -1521,22 +1667,29 @@ object ChatAnalysisPng {
             val minCut = maxOf(top + 1, contentEnd - restPages * usable)
             val maxCut = minOf(top + usable, contentEnd - 1)
             val ideal = Math.round(target * k).toInt()
-            var cut = minCut
-            var best = Int.MAX_VALUE
-            for (c in cuts) {
-                if (c < minCut || c > maxCut) continue
-                val delta = Math.abs(c - ideal)
-                if (delta < best) {
-                    best = delta
-                    cut = c
-                }
-            }
-            if (best == Int.MAX_VALUE) cut = ideal.coerceIn(minCut, maxCut)
+            val cut = nearestCut(preferred, minCut, maxCut, ideal)
+                ?: nearestCut(cuts, minCut, maxCut, ideal)
+                ?: ideal.coerceIn(minCut, maxCut)
             pages.add(pageOf(top, cut))
             top = cut
         }
         pages.add(pageOf(top, contentEnd))
         return pages
+    }
+
+    /** 在 [lo, hi] 区间内挑离 [ideal] 最近的断点；一个都没有就返回 null（交给下一档断点或硬切）。 */
+    private fun nearestCut(cuts: IntArray, lo: Int, hi: Int, ideal: Int): Int? {
+        var best = Int.MAX_VALUE
+        var hit: Int? = null
+        for (c in cuts) {
+            if (c < lo || c > hi) continue
+            val d = Math.abs(c - ideal)
+            if (d < best) {
+                best = d
+                hit = c
+            }
+        }
+        return hit
     }
 
     /** 落盘（含目录校验与 fsync），失败一律抛异常交给上层提示。 */
@@ -2564,13 +2717,26 @@ object ChatAnalysisPng {
     }
 
     /**
-     * 页脚：顶部渐变细线 + 元信息行（会话名 · 时间范围 · 生成时间 · 数据来源）+ 左品牌 + 右页码，
-     * 底部一条品牌渐变条当水印。
+     * 页脚：顶部渐隐细线 + 元信息行（会话名 · 时间范围 · 生成时间 · 数据来源）+ 左品牌 + 右页码，
+     * 底部一条品牌渐变条当水印（分页导出时改成「页码进度条」）。
      *
-     * 第 14 轮新增的 [meta] 行：分页导出成多张图后，单张图脱离弹窗就"不知道自己是谁、什么时候生成的"，
+     * [meta]：分页导出成多张图后，单张图脱离弹窗就"不知道自己是谁、什么时候生成的"，
      * 所以每页都带上归属信息；空串时整行不画（排版位置仍按常量预留，不会影响任何既有坐标）。
+     * [hint]：第 20 轮新增。本页是"上一页的续页"时，在元信息行右侧补一句
+     * "接上页 · 节名"，让单张图也能自证画的是哪一节的续页；
+     * 提示占宽从元信息行里预留，元信息自身会先按剩余宽度省略 —— 两者永不重叠。
+     * [pageIndex]/[pageCount]：多页时把底部渐变条换成"页码进度条"，
+     * 一眼就能看出这是第几张、总共几张（单张图仍按老样子画整条渐变）。
      */
-    private fun drawFooter(cv: Canvas, top: Int, pageLabel: String = FOOTER_PAGE_TEXT, meta: String = "") {
+    private fun drawFooter(
+        cv: Canvas,
+        top: Int,
+        pageLabel: String = FOOTER_PAGE_TEXT,
+        meta: String = "",
+        hint: String = "",
+        pageIndex: Int = 1,
+        pageCount: Int = 1,
+    ) {
         cv.drawRect(
             RectF(CARD_LEFT.toFloat(), top.toFloat(), CARD_RIGHT.toFloat(), top + 3f),
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -2587,18 +2753,32 @@ object ChatAnalysisPng {
             },
         )
 
-        // 元信息行：左对齐的说明文字，超过一行宽就省略（绝不越出版心）
+        // 元信息行：左对齐的说明文字 + 右侧的「接上页」提示（提示存在时先给提示留宽）
+        val metaP = paint(FS_SMALL, COLOR_META)
+        val metaH = FOOTER_META_H.toFloat()
         var textTop = (top + FOOTER_TOP_GAP).toFloat()
         if (meta.isNotEmpty()) {
-            val metaP = paint(FS_SMALL, COLOR_META)
-            val metaH = FOOTER_META_H.toFloat()
+            val hintP = paint(FS_SMALL, COLOR_ACCENT, bold = true)
+            val hintText = if (hint.isEmpty()) "" else truncateToWidth(hint, metaH * 9f, hintP)
+            val hintW = if (hintText.isEmpty()) 0f else hintP.measureText(hintText) + COL_GAP
             val metaClip = RectF(CARD_LEFT.toFloat(), textTop, CARD_RIGHT.toFloat(), textTop + metaH)
-            val metaText = truncateToWidth(meta, metaClip.width(), metaP)
+            val metaText = truncateToWidth(meta, (metaClip.width() - hintW).coerceAtLeast(120f), metaP)
             drawClipped(
                 cv, metaText, metaClip.left,
                 fitBaseline(textTop, metaH, metaP, metaClip.bottom),
                 metaClip, metaP,
             )
+            if (hintText.isNotEmpty()) {
+                val hintLeft = maxOf(metaClip.left, CARD_RIGHT - hintW + COL_GAP)
+                val hintClip = RectF(hintLeft, textTop, CARD_RIGHT.toFloat(), textTop + metaH)
+                if (hintClip.width() > 0f) {
+                    drawClipped(
+                        cv, hintText, hintClip.left,
+                        fitBaseline(textTop, metaH, hintP, hintClip.bottom),
+                        hintClip, hintP,
+                    )
+                }
+            }
             textTop += metaH + FOOTER_META_GAP
         }
 
@@ -2631,22 +2811,57 @@ object ChatAnalysisPng {
             brandClip, brandP,
         )
 
-        // 底部品牌渐变条（水印感，同时收住整张图的下边缘）
+        // 底部：单张图 = 品牌渐变条（水印感，收住整张图的下边缘）；
+        // 分页导出 = 页码进度条（已画到第几张一目了然，仍收在同一高度里）
         val stripTop = textTop + textH + FOOTER_STRIP_GAP
+        if (pageCount > 1) {
+            drawFooterProgress(cv, stripTop, pageIndex, pageCount)
+        } else {
+            cv.drawRoundRect(
+                RectF(
+                    CARD_LEFT.toFloat(), stripTop,
+                    CARD_RIGHT.toFloat(), stripTop + FOOTER_STRIP_H,
+                ),
+                FOOTER_STRIP_H / 2f, FOOTER_STRIP_H / 2f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = LinearGradient(
+                        CARD_LEFT.toFloat(), 0f, CARD_RIGHT.toFloat(), 0f,
+                        intArrayOf(COLOR_ACCENT, COLOR_ACCENT2, withAlpha(COLOR_SUCCESS, 0xB3)),
+                        null, Shader.TileMode.CLAMP,
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * 页码进度条：底槽低透明度铺满，已画到的比例用品牌渐变填上。
+     *
+     * 高度仍取 [FOOTER_STRIP_H]（与单张图的品牌条同高），所以不会撑高页脚、
+     * 也不会让 `init` 里的页脚排版断言失效。
+     */
+    private fun drawFooterProgress(cv: Canvas, top: Float, index: Int, count: Int) {
+        val left = CARD_LEFT.toFloat()
+        val right = CARD_RIGHT.toFloat()
+        val r = FOOTER_STRIP_H / 2f
         cv.drawRoundRect(
-            RectF(
-                CARD_LEFT.toFloat(), stripTop,
-                CARD_RIGHT.toFloat(), stripTop + FOOTER_STRIP_H,
-            ),
-            FOOTER_STRIP_H / 2f, FOOTER_STRIP_H / 2f,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                shader = LinearGradient(
-                    CARD_LEFT.toFloat(), 0f, CARD_RIGHT.toFloat(), 0f,
-                    intArrayOf(COLOR_ACCENT, COLOR_ACCENT2, withAlpha(COLOR_SUCCESS, 0xB3)),
-                    null, Shader.TileMode.CLAMP,
-                )
-            },
+            RectF(left, top, right, top + FOOTER_STRIP_H), r, r,
+            shapePaint(withAlpha(COLOR_ACCENT, 0x26)),
         )
+        val ratio = (index.toFloat() / count.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+        val fillRight = left + (right - left) * ratio
+        if (fillRight - left >= FOOTER_STRIP_H) {
+            cv.drawRoundRect(
+                RectF(left, top, fillRight, top + FOOTER_STRIP_H), r, r,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = LinearGradient(
+                        left, 0f, right, 0f,
+                        intArrayOf(COLOR_ACCENT, COLOR_ACCENT2, withAlpha(COLOR_SUCCESS, 0xB3)),
+                        null, Shader.TileMode.CLAMP,
+                    )
+                },
+            )
+        }
     }
 
     // ==================================================================

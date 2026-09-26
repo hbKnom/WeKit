@@ -21,6 +21,7 @@
     <string name="jev_hint_copy">Long press to copy the reading</string>
     <string name="jev_hint_note">Note: %1$s</string>
     <string name="jev_meta_confidence">confidence %1$d%%</string>
+    <string name="jev_meta_score">score %1$s</string>
     <string name="jev_advice">Advice: %1$s</string>
     <string name="jev_trend_flat">steady vs previous</string>
     <string name="jev_trend_up">up %1$d vs previous</string>
@@ -118,6 +119,7 @@
     <string name="jev_settings_count">%1$d of %2$d on</string>
     <string name="jev_settings_preview">Card preview</string>
     <string name="jev_settings_preview_desc">With the switches below, the card under a message looks roughly like this.</string>
+    <string name="jev_preview_monet">Colors follow your Monet palette, so the real card may differ slightly.</string>
     <string name="jev_preview_mood">Calm</string>
     <string name="jev_preview_reading">This line is probably leaving room for a meet-up.</string>
     <string name="jev_preview_advice">Pick up what they just mentioned and ask one more detail.</string>

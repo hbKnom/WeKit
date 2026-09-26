@@ -648,29 +648,29 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                                 BadgedBox(
                                                     badge = {
                                                         if (index == 0 && unreadCount > 0) {
-                                                            Badge(containerColor = Color(0xFFFF3B30)) {
+                                                            Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                                 Text(
                                                                     if (unreadCount <= 99) unreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                    color = Color.White, fontSize = 10.sp
+                                                                    color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                                 )
                                                             }
                                                         } else if (item.wechatIndex == 1 && contactUnreadCount > 0) {
-                                                            Badge(containerColor = Color(0xFFFF3B30)) {
+                                                            Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                                 Text(
                                                                     if (contactUnreadCount <= 99) contactUnreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                    color = Color.White, fontSize = 10.sp
+                                                                    color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                                 )
                                                             }
                                                         } else if (item.wechatIndex == 2 && showFinderBadge) {
                                                             if (finderUnreadCount > 0) {
-                                                                Badge(containerColor = Color(0xFFFF3B30)) {
+                                                                Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                                     Text(
                                                                         if (finderUnreadCount <= 99) finderUnreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                        color = Color.White, fontSize = 10.sp
+                                                                        color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                                     )
                                                                 }
                                                             } else if (showFinderDot) {
-                                                                Badge(containerColor = Color(0xFFFF3B30))
+                                                                Badge(containerColor = MaterialTheme.colorScheme.error)
                                                             }
                                                         }
                                                     }
@@ -800,29 +800,29 @@ object ReplaceNavigationBar : ClickableFeature(), IResolveDex {
                                             BadgedBox(
                                                 badge = {
                                                     if (index == 0 && unreadCount > 0) {
-                                                        Badge(containerColor = Color(0xFFFF3B30)) {
+                                                        Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                             Text(
                                                                 if (unreadCount <= 99) unreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                color = Color.White, fontSize = 10.sp
+                                                                color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                             )
                                                         }
                                                     } else if (item.wechatIndex == 1 && contactUnreadCount > 0) {
-                                                        Badge(containerColor = Color(0xFFFF3B30)) {
+                                                        Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                             Text(
                                                                 if (contactUnreadCount <= 99) contactUnreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                color = Color.White, fontSize = 10.sp
+                                                                color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                             )
                                                         }
                                                     } else if (item.wechatIndex == 2 && showFinderBadge) {
                                                         if (finderUnreadCount > 0) {
-                                                            Badge(containerColor = Color(0xFFFF3B30)) {
+                                                            Badge(containerColor = MaterialTheme.colorScheme.error) {
                                                                 Text(
                                                                     if (finderUnreadCount <= 99) finderUnreadCount.toString() else stringResource(R.string.badge_count_overflow),
-                                                                    color = Color.White, fontSize = 10.sp
+                                                                    color = MaterialTheme.colorScheme.onError, fontSize = 10.sp
                                                                 )
                                                             }
                                                         } else if (showFinderDot) {
-                                                            Badge(containerColor = Color(0xFFFF3B30))
+                                                            Badge(containerColor = MaterialTheme.colorScheme.error)
                                                         }
                                                     }
                                                 }

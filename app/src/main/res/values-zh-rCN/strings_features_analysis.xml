@@ -3,10 +3,10 @@
      由三语同表生成，key 必须三份一致；报告正文本身不走资源（它是数据，
      由引擎生成、被弹窗与 PNG 两侧的解析器按字形识别，不能本地化）。 -->
 <resources>
-    <string name="chat_analysis_extra_dims_card">扩展分析维度</string>
-    <string name="chat_analysis_extra_dims_badge">%1$d 项新增</string>
-    <string name="chat_analysis_extra_dims_title">扩展维度包</string>
-    <string name="chat_analysis_extra_dims_desc">在报告末尾追加 6 个维度：发言密度、每日趋势、回应速度画像、被接话榜、话题时段偏好、作息画像。关掉即回到上一版的篇幅。</string>
+    <string name="chat_analysis_extra_dims_card">维度包 · 时间</string>
+    <string name="chat_analysis_extra_dims_badge">%1$d 项维度</string>
+    <string name="chat_analysis_extra_dims_title">时间维度包</string>
+    <string name="chat_analysis_extra_dims_desc">时间包 4 个维度：活跃日历与趋势、回应速度、活跃密度与连续、连击与轮次。全部在同一次扫描里算完，关掉只是不输出这一包。</string>
     <string name="chat_analysis_extra_dims_list_title">本包包含的维度</string>
 
     <string name="chat_analysis_dim_density">发言密度</string>
@@ -16,10 +16,10 @@
     <string name="chat_analysis_dim_topic_period">话题时段偏好</string>
     <string name="chat_analysis_dim_rhythm">作息画像</string>
     <!-- 第 17 轮：观感美化 + 六个新维度（同样只追加，老 key 一字未改） -->
-    <string name="chat_analysis_dims17_card">扩展分析维度 II</string>
-    <string name="chat_analysis_dims17_badge">%1$d 项新增</string>
-    <string name="chat_analysis_dims17_title">扩展维度包 II</string>
-    <string name="chat_analysis_dims17_desc">在报告末尾再追加 6 个维度：活跃集中度、复读与重复、提问与回应、特殊消息雷达、连续活跃、昼夜话量。全部在原来那一次扫描里算完，不多读一条消息。关掉即回到上一版的篇幅。</string>
+    <string name="chat_analysis_dims17_card">维度包 · 关系</string>
+    <string name="chat_analysis_dims17_badge">%1$d 项维度</string>
+    <string name="chat_analysis_dims17_title">关系维度包</string>
+    <string name="chat_analysis_dims17_desc">关系包 4 个维度：接话·提问·默契、复读与重复、回复速度榜、个人作息雷达。全部在同一次扫描里算完，关掉只是不输出这一包。</string>
     <string name="chat_analysis_dims17_list_title">本包包含的维度</string>
 
     <string name="chat_analysis_dim_concentration">活跃集中度</string>
@@ -31,10 +31,10 @@
     <!-- ===== 第 18 轮：第三个扩展维度包 + 全弹窗文案三语化 =====
          key 与 values / values-zh-rTW 两份**必须同名**；
          报告正文本身不走资源（它是数据，由引擎生成、被弹窗与 PNG 两侧解析器按字形识别）。 -->
-    <string name="chat_analysis_dims18_card">扩展分析维度 III</string>
-    <string name="chat_analysis_dims18_badge">%1$d 项新增</string>
-    <string name="chat_analysis_dims18_title">扩展维度包 III</string>
-    <string name="chat_analysis_dims18_desc">在报告末尾再追加 7 个维度：撤回与系统事件、对话轮次结构、沉默间隔谱、每人说话画像、表情符号排行、默契搭档、每日开场与收尾。全部在原来那一次扫描里算完，不多读一条消息。关掉即回到上一版的篇幅。</string>
+    <string name="chat_analysis_dims18_card">维度包 · 语言</string>
+    <string name="chat_analysis_dims18_badge">%1$d 项维度</string>
+    <string name="chat_analysis_dims18_title">语言维度包</string>
+    <string name="chat_analysis_dims18_desc">语言包 4 个维度：情绪词雷达、打字习惯、约定与提醒、时段话量画像。全部在同一次扫描里算完，关掉只是不输出这一包。</string>
     <string name="chat_analysis_dims18_list_title">本包包含的维度</string>
 
     <string name="chat_analysis_dim_revoke">撤回与系统事件</string>
@@ -44,6 +44,13 @@
     <string name="chat_analysis_dim_emoji">表情符号排行</string>
     <string name="chat_analysis_dim_pair">默契搭档</string>
     <string name="chat_analysis_dim_daily">每日开场与收尾</string>
+    <!-- ===== 第 20 轮：维度整合（25 个维度 = 核心 13 + 三个进阶包各 4）新增的维度名 ===== -->
+    <string name="chat_analysis_dim_reply_rank">回复速度榜</string>
+    <string name="chat_analysis_dim_profile_radar">个人作息雷达</string>
+    <string name="chat_analysis_dim_mood_words">情绪词雷达</string>
+    <string name="chat_analysis_dim_typing">打字习惯</string>
+    <string name="chat_analysis_dim_appointment">约定与提醒</string>
+    <string name="chat_analysis_dim_hour_volume">时段话量画像</string>
 
     <!-- 弹窗与设置页的界面文案（与报告正文无关，可以本地化） -->
     <string name="chat_analysis_copy_report">复制报告</string>

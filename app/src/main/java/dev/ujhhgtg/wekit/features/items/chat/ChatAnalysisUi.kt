@@ -1109,12 +1109,11 @@ internal object ChatAnalysisUi {
         val rankOn = ChatAnalysisEngine.FEATURE_RANK in features
         val enabledCount = listOf(aiOn, statsOn, rankOn).count { it }
         val modelReady = selectedModelName.isNotBlank()
-        // 第 16 轮：扩展维度包的开关状态（自己是唯一写者，改动即时落盘，下一次分析生效）
-        var extraDimsOn by remember { mutableStateOf(ChatAnalysisExtraDims.isEnabled()) }
-        // 第 17 轮：第二个扩展维度包的开关状态（同一套纪律：即时落盘、下一次分析生效）
-        var dims17On by remember { mutableStateOf(ChatAnalysisRound17Dims.isEnabled()) }
-        // 第 18 轮：第三个扩展维度包的开关状态（同上）
-        var dims18On by remember { mutableStateOf(ChatAnalysisRound18Dims.isEnabled()) }
+        // 第 20 轮：报告整合成 25 个维度（核心 13 个始终输出 + 三个进阶包各 4 个），
+        // 三个开关各自记着自己的包是否输出；自己是唯一写者，改动即时落盘，下一次分析生效。
+        var packTimeOn by remember { mutableStateOf(ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_TIME)) }
+        var packRelationOn by remember { mutableStateOf(ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_RELATION)) }
+        var packLanguageOn by remember { mutableStateOf(ChatAnalysisDimPacks.isEnabled(ChatAnalysisDimPacks.PACK_LANGUAGE)) }
 
         BudgetedDialog(
             title = {
@@ -1263,14 +1262,15 @@ internal object ChatAnalysisUi {
                         )
                     }
                 }
-                // 第 16 轮：扩展维度包（默认开启，纯追加；关掉报告就回到第 15 轮的篇幅）
-                item(key = "extra_dims") {
+                // 第 20 轮：报告整合为 25 个维度（核心 13 + 三个进阶包各 4）。
+                // 三张卡就是三个进阶包的开关：关掉只少这一包的四段，核心与其它包一行都不变。
+                item(key = "pack_time") {
                     GroupCard(
                         title = stringResource(R.string.chat_analysis_extra_dims_card),
                         index = 4,
                         badge = stringResource(
                             R.string.chat_analysis_extra_dims_badge,
-                            ChatAnalysisExtraDims.EXTRA_DIM_COUNT,
+                            ChatAnalysisDimPacks.PACK_DIM_COUNT,
                         ),
                     ) {
                         SwitchWidget(
@@ -1278,10 +1278,10 @@ internal object ChatAnalysisUi {
                             iconPlaceholder = true,
                             title = stringResource(R.string.chat_analysis_extra_dims_title),
                             description = stringResource(R.string.chat_analysis_extra_dims_desc),
-                            checked = extraDimsOn,
+                            checked = packTimeOn,
                             onCheckedChange = { on ->
-                                extraDimsOn = on
-                                ChatAnalysisExtraDims.setEnabled(on)
+                                packTimeOn = on
+                                ChatAnalysisDimPacks.setEnabled(ChatAnalysisDimPacks.PACK_TIME, on)
                             },
                         )
                         InCardDivider()
@@ -1303,24 +1303,21 @@ internal object ChatAnalysisUi {
                                 horizontalArrangement = Arrangement.spacedBy(ChipGap),
                                 verticalArrangement = Arrangement.spacedBy(ChipGap),
                             ) {
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_density))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_trend))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_latency))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_reply_fetch))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_topic_period))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_rhythm))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_density))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_rounds))
                             }
                         }
                     }
                 }
-                // 第 17 轮：第二个扩展维度包（同样纯追加、默认开启；关掉就回到第 16 轮的篇幅）
-                item(key = "dims17") {
+                item(key = "pack_relation") {
                     GroupCard(
                         title = stringResource(R.string.chat_analysis_dims17_card),
                         index = 5,
                         badge = stringResource(
                             R.string.chat_analysis_dims17_badge,
-                            ChatAnalysisRound17Dims.DIM_COUNT,
+                            ChatAnalysisDimPacks.PACK_DIM_COUNT,
                         ),
                     ) {
                         SwitchWidget(
@@ -1328,10 +1325,10 @@ internal object ChatAnalysisUi {
                             iconPlaceholder = true,
                             title = stringResource(R.string.chat_analysis_dims17_title),
                             description = stringResource(R.string.chat_analysis_dims17_desc),
-                            checked = dims17On,
+                            checked = packRelationOn,
                             onCheckedChange = { on ->
-                                dims17On = on
-                                ChatAnalysisRound17Dims.setEnabled(on)
+                                packRelationOn = on
+                                ChatAnalysisDimPacks.setEnabled(ChatAnalysisDimPacks.PACK_RELATION, on)
                             },
                         )
                         InCardDivider()
@@ -1353,25 +1350,21 @@ internal object ChatAnalysisUi {
                                 horizontalArrangement = Arrangement.spacedBy(ChipGap),
                                 verticalArrangement = Arrangement.spacedBy(ChipGap),
                             ) {
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_concentration))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_repeat))
                                 DimensionChip(stringResource(R.string.chat_analysis_dim_ask_reply))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_special_msg))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_streak))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_daynight_words))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_repeat))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_reply_rank))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_profile_radar))
                             }
                         }
                     }
                 }
-                // 第 18 轮：第三个扩展维度包（事件 / 节奏 / 关系网络）。同样纯追加、默认开启；
-                // 关掉就回到第 17 轮的篇幅，已有段落一行都不会变。
-                item(key = "dims18") {
+                item(key = "pack_language") {
                     GroupCard(
                         title = stringResource(R.string.chat_analysis_dims18_card),
                         index = 6,
                         badge = stringResource(
                             R.string.chat_analysis_dims18_badge,
-                            ChatAnalysisRound18Dims.DIM_COUNT,
+                            ChatAnalysisDimPacks.PACK_DIM_COUNT,
                         ),
                     ) {
                         SwitchWidget(
@@ -1379,10 +1372,10 @@ internal object ChatAnalysisUi {
                             iconPlaceholder = true,
                             title = stringResource(R.string.chat_analysis_dims18_title),
                             description = stringResource(R.string.chat_analysis_dims18_desc),
-                            checked = dims18On,
+                            checked = packLanguageOn,
                             onCheckedChange = { on ->
-                                dims18On = on
-                                ChatAnalysisRound18Dims.setEnabled(on)
+                                packLanguageOn = on
+                                ChatAnalysisDimPacks.setEnabled(ChatAnalysisDimPacks.PACK_LANGUAGE, on)
                             },
                         )
                         InCardDivider()
@@ -1404,13 +1397,10 @@ internal object ChatAnalysisUi {
                                 horizontalArrangement = Arrangement.spacedBy(ChipGap),
                                 verticalArrangement = Arrangement.spacedBy(ChipGap),
                             ) {
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_revoke))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_rounds))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_silence))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_profile))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_emoji))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_pair))
-                                DimensionChip(stringResource(R.string.chat_analysis_dim_daily))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_mood_words))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_typing))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_appointment))
+                                DimensionChip(stringResource(R.string.chat_analysis_dim_hour_volume))
                             }
                         }
                     }
@@ -2100,34 +2090,43 @@ internal object ChatAnalysisUi {
     @Composable
     private fun sectionAccent(title: String?, fallback: Color): Color = when {
         title == null -> fallback
-        title.contains("载体偏好") || title.contains("高频词") || title.contains("活跃日历") -> ToneAlt
-        title.contains("活跃频次") || title.contains("情绪指纹") || title.contains("互动节奏") -> ToneThird
-        title.contains("核心指标") || title.contains("发言排行") || title.contains("昼夜结构") -> ToneAccent
-        // 第 14 轮新增
-        title.contains("消息长度") || title.contains("口头禅") -> ToneAlt
-        title.contains("标点与语气") || title.contains("沉默与主动性") -> ToneThird
-        title.contains("互动平衡") || title.contains("话题切换") -> ToneAccent
-        // 第 15 轮新增的六个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
-        // 老报告排在最后的是【话题切换】= ToneAccent，所以热力从 ToneThird 接上）
-        title.contains("活跃热力") || title.contains("媒体与表情") -> ToneThird
-        title.contains("回复延迟") || title.contains("话题关键词") -> ToneAlt
-        title.contains("连击与打断") || title.contains("@与互动") -> ToneAccent
-        // 第 17 轮新增的六个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
-        // 老报告排在最后的是【作息画像】= ToneThird，所以集中度从 ToneAccent 接上）。
-        // 弹窗与 PNG 导出（ChatAnalysisPng.sectionAccentOf）用同一套落点，两边颜色对得上。
-        title.contains("活跃集中度") || title.contains("特殊消息") -> ToneAccent
-        title.contains("复读") || title.contains("昼夜话量") -> ToneAlt
-        title.contains("提问与回应") || title.contains("连续活跃") -> ToneThird
-        // 第 18 轮新增的七个段位：沿用同一条规则（同族信息不同色、且与相邻章节错开；
-        // 老报告排在最后的是【昼夜话量】= ToneAlt，所以撤回段从 ToneThird 接上）。
-        // 弹窗与 PNG 导出（ChatAnalysisPng.sectionAccentOf）用同一套落点，两边颜色对得上。
-        title.contains("撤回与系统事件") -> ToneThird
-        title.contains("对话轮次") -> ToneAccent
-        title.contains("沉默间隔") -> ToneAlt
-        title.contains("每人说话") -> ToneThird
-        title.contains("表情符号") -> ToneAccent
-        title.contains("默契搭档") -> ToneAlt
-        title.contains("每日开场") -> ToneThird
+        // 第 20 轮：报告整合成 25 个段位后，这里与导出图 ChatAnalysisPng.sectionAccentOf
+        // 用**同一套落点**（同族信息同色、与相邻章节错开）：那边的四个固定色位在弹窗里
+        // 收敛成三个主题色位（COLOR_ACCENT / 2 / 3 → ToneAccent / ToneAlt / ToneThird）。
+        // 判断一律"标题包含关键词"：先吃新标题，再兜住整合前的老标题关键词，
+        // 所以旧报告、AI 自由标题也能取到颜色，取不到才回退到分组色。
+        title.contains("核心指标") -> ToneAccent
+        title.contains("内容载体") || title.contains("载体偏好") -> ToneAlt
+        title.contains("活跃时段") || title.contains("活跃频次") -> ToneThird
+        title.contains("活跃热力") -> ToneAccent
+        title.contains("作息与昼夜") || title.contains("昼夜结构") ||
+            title.contains("昼夜话量") || title.contains("作息画像") -> ToneAlt
+        title.contains("节奏与沉默") || title.contains("互动节奏") ||
+            title.contains("沉默") -> ToneThird
+        title.contains("消息长度") || title.contains("废话") || title.contains("每人说话") -> ToneAlt
+        title.contains("情绪与语气") || title.contains("情绪指纹") ||
+            title.contains("标点与语气") -> ToneThird
+        title.contains("高频词") || title.contains("口头禅") -> ToneAlt
+        title.contains("话题雷达") || title.contains("话题切换") ||
+            title.contains("话题关键词") || title.contains("话题时段") -> ToneAccent
+        title.contains("发言与互动") || title.contains("发言排行") ||
+            title.contains("发言对比") || title.contains("互动平衡") -> ToneThird
+        title.contains("特殊消息") || title.contains("@与互动") ||
+            title.contains("撤回与系统事件") -> ToneAccent
+        title.contains("每日开场") -> ToneAlt
+        title.contains("活跃日历") || title.contains("每日趋势") -> ToneAccent
+        title.contains("回应速度") || title.contains("回复延迟") -> ToneThird
+        title.contains("活跃密度") || title.contains("连续活跃") || title.contains("发言密度") -> ToneAlt
+        title.contains("连击与轮次") || title.contains("连击") || title.contains("对话轮次") -> ToneAccent
+        title.contains("接话") || title.contains("提问与回应") || title.contains("默契") -> ToneAlt
+        title.contains("复读") -> ToneThird
+        title.contains("回复速度") -> ToneAccent
+        title.contains("个人作息") -> ToneAlt
+        title.contains("情绪词雷达") || title.contains("情绪词") -> ToneThird
+        title.contains("打字习惯") || title.contains("打字") -> ToneAlt
+        title.contains("约定与提醒") || title.contains("约定") -> ToneAccent
+        title.contains("时段话量") || title.contains("话量") -> ToneThird
+        title.contains("表情符号") || title.contains("媒体与表情") -> ToneAccent
         else -> fallback
     }
 
