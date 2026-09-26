@@ -714,7 +714,7 @@ object ChatRecordAnalysis : SwitchFeature(), WeChatMessageContextMenuApi.IMenuIt
         showToast("正在导出 PNG…")
         Thread {
             try {
-                val period = currentPeriodLabel()
+                val period = currentPeriodLabel(view.context)
                 val paths = ChatAnalysisPng.export(
                     stats = gStats,
                     ai = gAi,

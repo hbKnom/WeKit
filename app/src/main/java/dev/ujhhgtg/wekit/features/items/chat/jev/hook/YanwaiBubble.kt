@@ -108,7 +108,7 @@ import kotlin.math.roundToInt
  * 铁律（这一版全部满足，别再退回子 View 注入）：
  *  - 绝不向宿主 RecyclerView（或宿主任意行、容器）增删子 View；
  *  - 渲染失败一律降级为「这张卡不画」，绝不抛异常、绝不影响宿主与其他功能；
- *  - 逐 bind / 逐帧诊断日志一律走 [MoodLog.v]（`verboseEnabled` 门闩）。
+ *  - 逐 bind / 逐帧诊断日志一律走 `MoodLog`（`verboseEnabled` 门闩）。
  */
 object YanwaiBubble {
 
@@ -285,8 +285,10 @@ object YanwaiBubble {
      * [Drawable] 是 framework 类，宿主列表的 `ViewOverlay` 认它；`draw` 收到的 canvas
      * 就在**列表自己的坐标系**里，所以这里每帧现算每张卡的位置。
      */
-    private class CardLayer(private val draw: (Canvas) -> Unit) : Drawable() {
-        override fun draw(canvas: Canvas) = draw(canvas)
+    private class CardLayer(private val render: (Canvas) -> Unit) : Drawable() {
+        override fun draw(canvas: Canvas) {
+            render(canvas)
+        }
         override fun setAlpha(alpha: Int) = Unit
         override fun setColorFilter(colorFilter: ColorFilter?) = Unit
         @Suppress("OVERRIDE_DEPRECATION")
@@ -431,7 +433,7 @@ object YanwaiBubble {
         val added = runCatching { list.overlay.add(layer) }.isSuccess
         if (!added) return
         layers[list] = layer
-        MoodLog.v("卡片层已挂到宿主列表 ${list.javaClass.simpleName}")
+        MoodLog.i("卡片层已挂到宿主列表 ${list.javaClass.simpleName}")
     }
 
     /**
@@ -607,7 +609,7 @@ object YanwaiBubble {
             buildCard(row, card, width, pal, accent, mood, failure)
         }.getOrElse {
             // 拿不到辅助信息（截图/OCR/native/洞察失败）只降级：这张卡这一帧不画，绝不影响分析
-            MoodLog.v("卡片排版降级：${it.javaClass.simpleName} ${it.message}")
+            MoodLog.i("卡片排版降级：${it.javaClass.simpleName} ${it.message}")
             return
         }
         card.width = width
@@ -624,7 +626,7 @@ object YanwaiBubble {
     private fun logFirstDraw(card: Card, layout: CardLayout) {
         if (drewOnce) return
         drewOnce = true
-        MoodLog.v(
+        MoodLog.i(
             "首张卡片已排版并交给宿主绘制：${card.width}x${layout.height}px，" +
                 "ops=${layout.ops.size}，容器=${card.container?.javaClass?.simpleName}，" +
                 "列表=${card.list?.javaClass?.simpleName}"
@@ -771,7 +773,7 @@ object YanwaiBubble {
                     right = x + w,
                     bottom = top + height,
                     radius = dp(6f),
-                    background = MonetColors.blend(pal.card, color, 0.12f),
+                    background = MonetColors.blend(pal.card, color, 0.12),
                     text = label,
                     textColor = color,
                     textSize = sp(10f),
@@ -787,14 +789,14 @@ object YanwaiBubble {
         /** 建议块：一层底色 + 左侧强调条，把「最该看的一行」从正文里托出来。 */
         fun advice(text: CharSequence) {
             val innerPad = dp(9f)
-            val innerWidth = (contentWidth - innerPad - dp(10f)).coerceAtLeast(1)
+            val innerWidth = (contentWidth - innerPad - dp(10f)).coerceAtLeast(1f)
             val layout = build(text, 12f, pal.title, lineSpacingDp = 2f, widthPx = innerWidth.toInt())
             val innerPadV = dp(7f)
             val top = y
             val bottom = top + layout.height + innerPadV * 2
             ops += RectOp(
                 contentLeft, top, contentRight, bottom,
-                MonetColors.blend(pal.card, accent, 0.08f), dp(8f),
+                MonetColors.blend(pal.card, accent, 0.08), dp(8f),
             )
             ops += RectOp(
                 contentLeft, top, contentLeft + dp(3f), bottom, accent, dp(1.5f),
@@ -977,13 +979,13 @@ object YanwaiBubble {
         val head = ArrayList<Op>(2)
         head += RectOp(
             0f, 0f, width.toFloat(), height.toFloat(),
-            if (failure != null) MonetColors.blend(pal.card, pal.warning, 0.12f) else pal.card,
+            if (failure != null) MonetColors.blend(pal.card, pal.warning, 0.12) else pal.card,
             dpf(metrics.density, CARD_RADIUS_DP),
             dpf(metrics.density, CARD_STROKE_DP),
             if (failure != null) {
-                MonetColors.blend(pal.stroke, pal.warning, 0.55f)
+                MonetColors.blend(pal.stroke, pal.warning, 0.55)
             } else {
-                MonetColors.blend(pal.stroke, accent, 0.18f)
+                MonetColors.blend(pal.stroke, accent, 0.18)
             },
         )
         head += PathOp(stripePath(metrics.density, height), accent)
@@ -1449,8 +1451,8 @@ object YanwaiBubble {
             neutral = base.neutral,
             negative = base.negative,
             warning = base.warning,
-            chip = MonetColors.blend(tokens.surfaceContainerHigh, tokens.accent, 0.10f),
-            divider = MonetColors.blend(tokens.surfaceContainer, tokens.onSurface, 0.14f),
+            chip = MonetColors.blend(tokens.surfaceContainerHigh, tokens.accent, 0.10),
+            divider = MonetColors.blend(tokens.surfaceContainer, tokens.onSurface, 0.14),
         )
     }
 
