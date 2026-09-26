@@ -1559,7 +1559,9 @@ object ChatAnalysisEngine {
             r.append("媒体占全部消息：").append(pct(dMedia, totalAll)).append("%\n")
             r.append("分享物总量：").append(dShare + dMedia).append(" 条（")
                 .append(pct(dShare + dMedia, totalAll)).append("%）\n")
-            r.append("分享密度：").append(shareDensityText(pct(dShare + dMedia, totalAll)))
+            // pct(...) 返回的是 Int 百分数（调用点自己补 "%"），而 shareDensityText
+            // 收的是字符串形式的百分数，这里必须显式 toString()。
+            r.append("分享密度：").append(shareDensityText(pct(dShare + dMedia, totalAll).toString()))
                 .append("\n")
         } else {
             r.append("样本区间内没有消息，暂不出具分享密度画像。\n")
